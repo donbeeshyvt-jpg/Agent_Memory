@@ -45,6 +45,46 @@ python -X utf8 -m agent_memory.cli chat "你好" --persona steward --context fir
 # 此時 user 預設 vault 不被覆蓋；要回正式 vault 直接不指定 -VaultRoot 重跑即可。
 ```
 
+## 1.6) 切換到線上 API 模型（Google Gemini / OpenAI / OpenRouter / Claude）
+```powershell
+.\scripts\switch-llm.ps1 -PersistKey
+# 互動選 provider [1-6]，再選 model：
+#   [1] 本機 llama-cpp-python (GGUF)
+#   [2] Google Gemini API     (推薦 gemini-2.5-flash, 免費層夠用)
+#   [3] OpenAI                (gpt-4.1-mini)
+#   [4] OpenRouter            (anthropic/claude-sonnet-4.6 或各家)
+#   [5] Anthropic Claude      (claude-sonnet-4-6)
+#   [6] 本機 Ollama
+# 沒設過 API key 會 SecureString 安全 prompt（輸入不顯示）
+# -PersistKey 把 key 寫入 Windows 使用者環境變數（registry，不寫檔案、不推 git）
+# 切完自動跑一次 chat smoke 驗證
+```
+
+兩條切換命令任挑一條（同樣的事）：
+```powershell
+# A. 用 switch-llm.ps1（互動、自動 prompt key）
+.\scripts\switch-llm.ps1
+
+# B. 直接 CLI 命令（你已經設好 env 變數時用這個比較快）
+$env:GOOGLE_API_KEY = "你的Gemini key"
+python -X utf8 -m agent_memory.cli llm-set-default --profile gemini --model gemini-2.5-flash
+```
+
+可用 provider id 與最常見 model：
+| Provider | API key env | 推薦 model |
+|---|---|---|
+| `llama_cpp_local` | (無) | `../../0_Models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q8_0.gguf` |
+| `gemini` | `GOOGLE_API_KEY` | `gemini-2.5-flash` / `gemini-2.5-pro` |
+| `openai` | `OPENAI_API_KEY` | `gpt-4.1-mini` / `gpt-4.1` |
+| `openrouter` | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.6` |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
+| `ollama_local` | (無) | `qwen2.5:14b` |
+
+要單獨給某個角色用線上、其他角色仍本機：
+```powershell
+python -X utf8 -m agent_memory.cli llm-set-persona --persona steward --profile gemini --model gemini-2.5-flash
+```
+
 ## 2) 手動安裝（如果 wizard 失敗想 step-by-step debug）
 ```powershell
 cd "<PROJECT_ROOT>/agent-memory-core"

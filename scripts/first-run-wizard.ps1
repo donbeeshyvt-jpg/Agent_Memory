@@ -820,6 +820,10 @@ if ($summary.overall_ok) {
     Write-Host " [3] 跑工具能力 smoke（驗證 steward 可用 /tool 寫檔）：" -ForegroundColor Yellow
     Write-Host "     .\scripts\run-tooling-smoke.ps1 -Json"
     Write-Host ""
+    Write-Host " [3.5] 換用線上 API 模型（OpenAI / Gemini / OpenRouter / Claude）：" -ForegroundColor Yellow
+    Write-Host "       .\scripts\switch-llm.ps1                # 互動選號碼"
+    Write-Host "       .\scripts\switch-llm.ps1 -PersistKey     # 同上，API key 寫入 user 環境變數，下次自動載入"
+    Write-Host ""
 
     $hasDiscordStep = $false
     foreach ($row in $summary.steps) {
