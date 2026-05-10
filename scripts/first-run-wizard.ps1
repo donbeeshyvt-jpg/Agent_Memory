@@ -214,7 +214,23 @@ function Invoke-PythonStreaming {
     $previousEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        & $Python.launcher @($Python.prefix + $ArgList) 2>&1 | ForEach-Object { $_ | Out-Host }
+        $allArgs = @($Python.prefix + $ArgList)
+        $quoted = @()
+        foreach ($arg in $allArgs) {
+            if ($arg -match "[\s`"]") {
+                $safe = $arg -replace '"', '\"'
+                $quoted += '"' + $safe + '"'
+            }
+            else {
+                $quoted += $arg
+            }
+        }
+        $exe = $Python.executable_path
+        if (-not $exe) {
+            $exe = $Python.launcher
+        }
+        $cmdLine = '"' + $exe + '" ' + ($quoted -join " ")
+        & cmd.exe /d /s /c "$cmdLine 2>&1" | Out-Host
     }
     finally {
         $ErrorActionPreference = $previousEap
@@ -306,12 +322,13 @@ try {
     }
 
     Write-Host "[INFO] Installing core package (pip install -e .)..." -ForegroundColor Cyan
+    Write-Host "[INFO] First install may take 1-10 minutes at metadata/build steps. Please wait." -ForegroundColor DarkCyan
     if ($Json) {
-        $editableInstall = Invoke-Python -Python $python -ArgList @("-m", "pip", "install", "-e", ".", "--disable-pip-version-check", "--no-input")
+        $editableInstall = Invoke-Python -Python $python -ArgList @("-m", "pip", "install", "-e", ".", "-v", "--disable-pip-version-check", "--no-input")
     }
     else {
         Write-Host "[INFO] pip output will be shown below..." -ForegroundColor DarkCyan
-        $editableInstall = Invoke-PythonStreaming -Python $python -ArgList @("-m", "pip", "install", "-e", ".", "--disable-pip-version-check", "--no-input")
+        $editableInstall = Invoke-PythonStreaming -Python $python -ArgList @("-m", "pip", "install", "-e", ".", "-v", "--disable-pip-version-check", "--no-input")
     }
     Add-Step -Rows $summary.steps -Name "pip-install-editable" -Ok ($editableInstall.exit_code -eq 0) -Detail (First-Line -Text $editableInstall.output)
     if ($editableInstall.exit_code -ne 0) {
