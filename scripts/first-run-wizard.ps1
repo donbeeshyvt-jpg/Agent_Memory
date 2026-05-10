@@ -38,6 +38,28 @@ function Join-OutputText {
     return [string]$Value
 }
 
+function Save-DiagnosticLog {
+    param(
+        [string]$ProjectRoot,
+        [string]$Prefix,
+        [string]$Text
+    )
+    try {
+        $dir = Join-Path $ProjectRoot "artifacts/bootstrap"
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+        $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $path = Join-Path $dir ("{0}-{1}.log" -f $Prefix, $stamp)
+        $value = if ([string]::IsNullOrWhiteSpace($Text)) { "(empty)" } else { $Text }
+        Set-Content -LiteralPath $path -Value $value -Encoding UTF8
+        return $path
+    }
+    catch {
+        return ""
+    }
+}
+
 function First-Line {
     param([string]$Text)
 
@@ -398,10 +420,19 @@ try {
 
     Write-Host "[INFO] Running bootstrap-v1..." -ForegroundColor Cyan
     $bootstrapScript = Join-Path $projectRoot "scripts/bootstrap-v1.ps1"
-    $bootstrapOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $bootstrapScript -PythonExe $python.executable_path -SetDefaultVault -Json
+    $bootstrapOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $bootstrapScript -PythonExe $python.executable_path -SetDefaultVault -Json 2>&1
     $bootstrapExit = $LASTEXITCODE
     if ($bootstrapExit -ne 0) {
-        Add-Step -Rows $summary.steps -Name "bootstrap-v1" -Ok $false -Detail (First-Line -Text (Join-OutputText -Value $bootstrapOut))
+        $bootstrapText = Join-OutputText -Value $bootstrapOut
+        $bootstrapDetail = First-Line -Text $bootstrapText
+        if (-not $bootstrapDetail) {
+            $bootstrapDetail = "bootstrap failed; see diagnostic log"
+        }
+        Add-Step -Rows $summary.steps -Name "bootstrap-v1" -Ok $false -Detail $bootstrapDetail
+        $diagPath = Save-DiagnosticLog -ProjectRoot $projectRoot -Prefix "bootstrap-v1-error" -Text $bootstrapText
+        if ($diagPath) {
+            $summary.notes.Add("bootstrap diagnostic: $diagPath") | Out-Null
+        }
         throw "bootstrap-v1 failed."
     }
 
