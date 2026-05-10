@@ -15,6 +15,15 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# Force UTF-8 IO encoding (critical for CJK Windows where console codepage is CP-950/936).
+# Without this, Python -X utf8 child output gets mangled and ConvertFrom-Json fails.
+try {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+    [Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
+    $OutputEncoding = [System.Text.UTF8Encoding]::new()
+}
+catch { }
+
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 

@@ -10,6 +10,14 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# Force UTF-8 IO encoding (critical for CJK Windows where console codepage is CP-950/936).
+try {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+    [Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
+    $OutputEncoding = [System.Text.UTF8Encoding]::new()
+}
+catch { }
+
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 
@@ -57,7 +65,11 @@ function Invoke-JsonCommand {
 
 $pythonCmd = Get-Command $PythonExe -ErrorAction SilentlyContinue
 if (-not $pythonCmd) {
-    throw "Python executable not found: ${PythonExe}."
+    # 防呆：Get-Command 對非 PATH 的絕對路徑偶爾會 miss，但檔案實際存在。
+    # 改用 Test-Path 二次確認，避免誤殺。
+    if (-not (Test-Path -LiteralPath $PythonExe)) {
+        throw "Python executable not found: ${PythonExe}."
+    }
 }
 
 if (-not $SecondBrainRoot) {

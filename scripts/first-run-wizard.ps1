@@ -1,14 +1,33 @@
-param(
+﻿param(
     [string]$PreferredPythonVersion = "3.12",
     [switch]$InstallEditable,
+    [switch]$SkipInstallEditable,
     [switch]$UpgradePipPackages,
     [switch]$SkipLlamaCpp,
+    [switch]$SkipModelCheck,
+    [switch]$SkipModelDownload,
+    [switch]$SkipConfigureLLM,
+    [string]$VaultRoot = "",
+    [switch]$SetupDiscord,
+    [string]$DiscordPersona = "steward",
+    [string]$DiscordChannelId = "",
+    [string]$DiscordTokenEnv = "DISCORD_BOT_TOKEN_STEWARD",
     [switch]$NonInteractive,
     [switch]$Json
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+# Force UTF-8 IO encoding so Python -X utf8 child output is decoded correctly.
+# PS5.1 default $OutputEncoding is ASCII; on CJK Windows the console codepage is
+# usually CP-950/936 — both will mangle Python JSON output and break ConvertFrom-Json.
+try {
+    [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new()
+    [Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
+    $OutputEncoding = [System.Text.UTF8Encoding]::new()
+}
+catch { }
 
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
@@ -172,12 +191,18 @@ function Resolve-PythonCommand {
         if (-not $version) { continue }
         if (-not (Compare-VersionGte -CurrentVersion $version -MinVersion "3.10")) { continue }
 
-        $pathProbe = Invoke-External -Exe $launcher -ArgList ($prefix + @("-c", "import sys;print(sys.executable)"))
-        if ($pathProbe.exit_code -ne 0) { continue }
-
-        $exePath = (First-Line -Text $pathProbe.output)
-        if (-not $exePath -and $launcher -eq "python") {
+        # 重要：優先用 Get-Command 拿到的 .Source 路徑（Win32 API 直接吐 UTF-16，
+        # 中文路徑保證正確）。Python -c print(sys.executable) 的 stdout 會被 PS5.1
+        # 用錯誤 codepage 解碼成 mojibake，路徑變壞 (e.g. 練習用 → �m�ߥ�)。
+        $exePath = ""
+        if ($cmd.Source) {
             $exePath = [string]$cmd.Source
+        }
+        else {
+            $pathProbe = Invoke-External -Exe $launcher -ArgList ($prefix + @("-c", "import sys;print(sys.executable)"))
+            if ($pathProbe.exit_code -eq 0) {
+                $exePath = (First-Line -Text $pathProbe.output)
+            }
         }
         if (-not $exePath) { continue }
 
@@ -234,26 +259,18 @@ function Invoke-PythonStreaming {
         [string[]]$ArgList
     )
 
+    # 注意：不要再用 `cmd.exe /d /s /c "..."` 包一層 — 在 CJK locale + 中文路徑下
+    # cmd.exe 的 codepage 處理會把路徑當作不存在（"The system cannot find the path specified"）。
+    # 直接用 PowerShell native call，stdout/stderr 自動串到 host。
     $previousEap = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        $allArgs = @($Python.prefix + $ArgList)
-        $quoted = @()
-        foreach ($arg in $allArgs) {
-            if ($arg -match "[\s`"]") {
-                $safe = $arg -replace '"', '\"'
-                $quoted += '"' + $safe + '"'
-            }
-            else {
-                $quoted += $arg
-            }
-        }
         $exe = $Python.executable_path
         if (-not $exe) {
             $exe = $Python.launcher
         }
-        $cmdLine = '"' + $exe + '" ' + ($quoted -join " ")
-        & cmd.exe /d /s /c "$cmdLine 2>&1" | Out-Host
+        $allArgs = @($Python.prefix + $ArgList)
+        & $exe @allArgs
     }
     finally {
         $ErrorActionPreference = $previousEap
@@ -287,21 +304,29 @@ function Resolve-PowerShellExe {
 function Invoke-PowerShellScriptJson {
     param(
         [string]$ScriptPath,
-        [string[]]$Args
+        [hashtable]$SplatArgs = @{}
     )
 
-    $psExe = Resolve-PowerShellExe
-    if (-not $psExe) {
-        throw "PowerShell executable not found."
-    }
+    # 重要：用 in-process invoke 避免 spawn powershell.exe 時 Windows 把中文路徑用
+    # 當前 codepage 編碼壞掉（即使 chcp 65001 也救不到 argv）。
+    # 用 hashtable splat 確保 switch+named param 都能正確 bind（array splat 在 PS5.1
+    # 對「-SwitchA -ParamB Value」這種混合會 binding 失敗）。
+    $finalSplat = $SplatArgs.Clone()
+    $finalSplat["Json"] = $true
 
-    $allArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ScriptPath) + $Args + @("-Json")
-    $stdout = & $psExe @allArgs 2>&1
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $stdout = & $ScriptPath @finalSplat 2>&1
+    }
+    finally {
+        $ErrorActionPreference = $previousEap
+    }
     $exitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
     return [ordered]@{
         exit_code = $exitCode
         output = (Join-OutputText -Value $stdout).Trim()
-        command = "$psExe $($allArgs -join ' ')"
+        command = "& $ScriptPath @<splat:$($finalSplat.Keys -join ',')>"
     }
 }
 
@@ -384,9 +409,16 @@ try {
         Add-Step -Rows $summary.steps -Name "pip-upgrade" -Ok $true -Detail "skipped (use -UpgradePipPackages to enable)"
     }
 
-    $shouldInstallEditable = $InstallEditable
-
-    if ($shouldInstallEditable) {
+    $shouldInstallEditable = -not $SkipInstallEditable
+    # 注意：不能單純用 `import agent_memory` 偵測，因為 cwd 有 source 時 Python
+    # 會直接吃本地檔案，但依賴（PyYAML 等）沒裝 CLI 還是會炸。改成試跑 --help。
+    $importProbe = Invoke-Python -Python $python -ArgList @("-m", "agent_memory.cli", "--help")
+    $alreadyImportable = ($importProbe.exit_code -eq 0)
+    if ($alreadyImportable -and -not $InstallEditable) {
+        $shouldInstallEditable = $false
+        Add-Step -Rows $summary.steps -Name "pip-install-editable" -Ok $true -Detail "skipped (agent_memory already importable)"
+    }
+    elseif ($shouldInstallEditable) {
         Write-Host "[INFO] Installing core package (pip install -e .)..." -ForegroundColor Cyan
         Write-Host "[INFO] First install may take 1-10 minutes at metadata/build steps. Please wait." -ForegroundColor DarkCyan
         if ($Json) {
@@ -402,7 +434,7 @@ try {
         }
     }
     else {
-        Add-Step -Rows $summary.steps -Name "pip-install-editable" -Ok $true -Detail "skipped by default (use -InstallEditable to enable)"
+        Add-Step -Rows $summary.steps -Name "pip-install-editable" -Ok $true -Detail "skipped (use without -SkipInstallEditable to enable)"
         $summary.notes.Add("Core package install skipped. Run: python -m pip install -e .") | Out-Null
     }
 
@@ -466,56 +498,71 @@ try {
     }
 
     $plans = New-Object System.Collections.ArrayList
-    $plans.Add([ordered]@{
-            name = "python_exe_default_paths"
-            python = [string]$python.executable_path
-            second_brain = ""
-            models = ""
-        }) | Out-Null
-    if ($python.launcher -and ($python.launcher -ne $python.executable_path)) {
+    if ($VaultRoot) {
+        # 使用者顯式指定 vault root，只試這一個（用於測試或自訂大腦位置）。
         $plans.Add([ordered]@{
-                name = "python_launcher_default_paths"
-                python = [string]$python.launcher
-                second_brain = ""
+                name = "user_specified_vault_root"
+                python = [string]$python.executable_path
+                second_brain = $VaultRoot
                 models = ""
             }) | Out-Null
     }
-    if ($fallbackSecondBrainRoot -and $fallbackModelsRoot) {
+    else {
         $plans.Add([ordered]@{
-                name = "python_exe_userprofile_paths"
+                name = "python_exe_default_paths"
                 python = [string]$python.executable_path
-                second_brain = $fallbackSecondBrainRoot
-                models = $fallbackModelsRoot
+                second_brain = ""
+                models = ""
             }) | Out-Null
         if ($python.launcher -and ($python.launcher -ne $python.executable_path)) {
             $plans.Add([ordered]@{
-                    name = "python_launcher_userprofile_paths"
+                    name = "python_launcher_default_paths"
                     python = [string]$python.launcher
+                    second_brain = ""
+                    models = ""
+                }) | Out-Null
+        }
+        if ($fallbackSecondBrainRoot -and $fallbackModelsRoot) {
+            $plans.Add([ordered]@{
+                    name = "python_exe_userprofile_paths"
+                    python = [string]$python.executable_path
                     second_brain = $fallbackSecondBrainRoot
                     models = $fallbackModelsRoot
                 }) | Out-Null
+            if ($python.launcher -and ($python.launcher -ne $python.executable_path)) {
+                $plans.Add([ordered]@{
+                        name = "python_launcher_userprofile_paths"
+                        python = [string]$python.launcher
+                        second_brain = $fallbackSecondBrainRoot
+                        models = $fallbackModelsRoot
+                    }) | Out-Null
+            }
         }
     }
 
     $bootstrapOk = $false
     $bootstrapRaw = ""
     foreach ($plan in $plans) {
-        $args = @("-PythonExe", [string]$plan.python, "-SetDefaultVault")
+        # 用 hashtable splat 避免 array splat 在 switch+param 混用時 binding 錯亂
+        $splat = @{
+            PythonExe = [string]$plan.python
+            SetDefaultVault = $true
+        }
         if ($plan.second_brain) {
-            $args += @("-SecondBrainRoot", [string]$plan.second_brain)
+            $splat["SecondBrainRoot"] = [string]$plan.second_brain
         }
         if ($plan.models) {
-            $args += @("-ModelsRoot", [string]$plan.models)
+            $splat["ModelsRoot"] = [string]$plan.models
         }
 
-        $run = Invoke-PowerShellScriptJson -ScriptPath $bootstrapScript -Args $args
+        $run = Invoke-PowerShellScriptJson -ScriptPath $bootstrapScript -SplatArgs $splat
         $attemptLine = "{0} exit={1} detail={2}" -f $plan.name, $run.exit_code, (First-Line -Text $run.output)
         $attempts.Add($attemptLine) | Out-Null
 
         if ($run.exit_code -eq 0) {
             $bootstrapOk = $true
             $bootstrapRaw = $run.output
-            if ($plan.second_brain) {
+            if ($plan.second_brain -and $plan.name -ne "user_specified_vault_root") {
                 $summary.notes.Add("bootstrap used fallback roots under USERPROFILE.") | Out-Null
             }
             break
@@ -543,6 +590,174 @@ try {
         $summary.bootstrap = $null
     }
     Add-Step -Rows $summary.steps -Name "bootstrap-v1" -Ok $true -Detail "ok"
+
+    $resolvedVaultRoot = ""
+    if ($summary.bootstrap -and $summary.bootstrap.second_brain_root) {
+        $resolvedVaultRoot = [string]$summary.bootstrap.second_brain_root
+    }
+
+    # Step: explicit vault-set (fix for SetDefaultVault not propagating through wizard)
+    # 注意：當使用者透過 -VaultRoot 指定（通常是測試大腦）時，不去動 user config 預設值，
+    # 避免污染正式 vault 路徑。
+    if ($VaultRoot) {
+        Add-Step -Rows $summary.steps -Name "vault-set-default" -Ok $true -Detail "skipped (-VaultRoot 指定，不修改 user config 預設值)"
+    }
+    elseif ($resolvedVaultRoot) {
+        $vaultSetRun = Invoke-Python -Python $python -ArgList @("-X", "utf8", "-m", "agent_memory.cli", "vault-set", $resolvedVaultRoot)
+        $vaultSetOk = ($vaultSetRun.exit_code -eq 0)
+        Add-Step -Rows $summary.steps -Name "vault-set-default" -Ok $vaultSetOk -Detail (First-Line -Text $vaultSetRun.output)
+        if (-not $vaultSetOk) {
+            $summary.notes.Add("vault-set failed; you may need to pass --vault-root explicitly. Detail: $(First-Line -Text $vaultSetRun.output)") | Out-Null
+        }
+    }
+    else {
+        Add-Step -Rows $summary.steps -Name "vault-set-default" -Ok $false -Detail "second_brain_root not resolved from bootstrap output"
+    }
+
+    # Step: model presence check (steward 預設用 gemma-4 E4B)
+    $modelsRoot = ""
+    if ($summary.bootstrap -and $summary.bootstrap.models_root) {
+        $modelsRoot = [string]$summary.bootstrap.models_root
+    }
+    if (-not $modelsRoot) {
+        $modelsRoot = (Join-Path $projectRoot "..\\0_Models")
+    }
+    $gemmaDir = Join-Path $modelsRoot "gemma-4-E4B-it-GGUF"
+    $gemmaModel = Join-Path $gemmaDir "gemma-4-E4B-it-Q8_0.gguf"
+    $qwen8bModel = Join-Path $modelsRoot "Qwen3.5-9B-GGUF\Qwen3.5-9B-Q8_0.gguf"
+    $hasGemma = Test-Path -LiteralPath $gemmaModel
+    $hasQwen8b = Test-Path -LiteralPath $qwen8bModel
+
+    if ($SkipModelCheck) {
+        Add-Step -Rows $summary.steps -Name "model-check" -Ok $true -Detail "skipped (-SkipModelCheck)"
+    }
+    else {
+        $gemmaState = if ($hasGemma) { "ok" } else { "missing" }
+        $qwen8bState = if ($hasQwen8b) { "ok" } else { "missing" }
+        Add-Step -Rows $summary.steps -Name "model-check" -Ok $true -Detail "gemma4=$gemmaState qwen8b=$qwen8bState"
+
+        # Step: offer to download gemma-4 E4B (steward default) if missing
+        if (-not $hasGemma) {
+            $shouldDownload = $false
+            if ($SkipModelDownload) {
+                Add-Step -Rows $summary.steps -Name "model-download-gemma4" -Ok $true -Detail "skipped (-SkipModelDownload)"
+            }
+            elseif ($NonInteractive) {
+                Add-Step -Rows $summary.steps -Name "model-download-gemma4" -Ok $true -Detail "skipped (NonInteractive; pass -InstallEditable + interactive run to download)"
+                $summary.notes.Add("gemma-4 E4B 未下載；無本地模型對話會 degraded。手動下載命令：huggingface-cli download ggml-org/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q8_0.gguf --local-dir `"$gemmaDir`"") | Out-Null
+            }
+            else {
+                $shouldDownload = Ask-YesNo -Prompt "管家預設模型 gemma-4 E4B 不存在。要現在下載嗎？(~10GB 到 $gemmaDir)" -Default $true
+                if ($shouldDownload) {
+                    Write-Host "[INFO] 安裝 huggingface_hub[cli] (若未安裝)..." -ForegroundColor Cyan
+                    $hubInstall = Invoke-Python -Python $python -ArgList @("-m", "pip", "install", "-q", "-U", "huggingface_hub[cli]")
+                    if ($hubInstall.exit_code -ne 0) {
+                        Add-Step -Rows $summary.steps -Name "model-download-gemma4" -Ok $false -Detail "huggingface_hub install failed"
+                    }
+                    else {
+                        Write-Host "[INFO] 下載 gemma-4 E4B Q8_0 (~10GB; 視網速 5~30 分鐘)..." -ForegroundColor Cyan
+                        $hfCli = "huggingface-cli"
+                        $dlRun = Invoke-External -Exe $hfCli -ArgList @("download", "ggml-org/gemma-4-E4B-it-GGUF", "gemma-4-E4B-it-Q8_0.gguf", "--local-dir", $gemmaDir)
+                        $hasGemma = Test-Path -LiteralPath $gemmaModel
+                        if ($dlRun.exit_code -eq 0 -and $hasGemma) {
+                            Add-Step -Rows $summary.steps -Name "model-download-gemma4" -Ok $true -Detail "downloaded to $gemmaDir"
+                        }
+                        else {
+                            Add-Step -Rows $summary.steps -Name "model-download-gemma4" -Ok $false -Detail "download failed: $(First-Line -Text $dlRun.output)"
+                        }
+                    }
+                }
+                else {
+                    Add-Step -Rows $summary.steps -Name "model-download-gemma4" -Ok $true -Detail "user declined"
+                }
+            }
+        }
+
+        # Step: configure llama_cpp_local + steward to use gemma-4 E4B
+        if ($SkipConfigureLLM) {
+            Add-Step -Rows $summary.steps -Name "configure-local-llm" -Ok $true -Detail "skipped (-SkipConfigureLLM)"
+        }
+        elseif ($hasGemma -and $resolvedVaultRoot) {
+            $routerYaml = Join-Path $resolvedVaultRoot "00_System\08_Runtime_Profiles\llm_router.yaml"
+            $modelRefRel = "../../0_Models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q8_0.gguf"
+            $cudaPath = ""
+            $ollamaCuda = Join-Path $env:LOCALAPPDATA "Programs\Ollama\lib\ollama\cuda_v12"
+            if (Test-Path -LiteralPath $ollamaCuda) {
+                $cudaPath = $ollamaCuda -replace '\\', '/'
+            }
+            $configArgs = @("scripts/_set_llm_router.py", "--router-yaml", $routerYaml, "--model", $modelRefRel, "--profile", "llama_cpp_local", "--json")
+            if ($cudaPath) {
+                $configArgs += @("--cuda-path", $cudaPath)
+            }
+            $configRun = Invoke-Python -Python $python -ArgList $configArgs
+            if ($configRun.exit_code -eq 0) {
+                $cudaDetail = if ($cudaPath) { "cuda=$cudaPath" } else { "cuda=none (依賴系統 PATH)" }
+                Add-Step -Rows $summary.steps -Name "configure-local-llm" -Ok $true -Detail "model=gemma-4-E4B-Q8_0 $cudaDetail"
+            }
+            else {
+                Add-Step -Rows $summary.steps -Name "configure-local-llm" -Ok $false -Detail "yaml patch failed: $(First-Line -Text $configRun.output)"
+            }
+        }
+        else {
+            Add-Step -Rows $summary.steps -Name "configure-local-llm" -Ok $true -Detail "skipped (no gemma-4 model)"
+        }
+    }
+
+    # Step: optional Discord setup (writes scripts/discord-relay-stack.local.json with one steward relay)
+    if ($SetupDiscord -and $resolvedVaultRoot) {
+        $discordOk = $true
+        $discordDetail = "ready"
+        $effectiveChannelId = $DiscordChannelId
+        if (-not $effectiveChannelId -and -not $NonInteractive) {
+            $effectiveChannelId = (Read-Host "Discord channel id for $DiscordPersona (Enter to skip)").Trim()
+        }
+        if ([string]::IsNullOrWhiteSpace($effectiveChannelId)) {
+            $discordOk = $true
+            $discordDetail = "skipped (no channel id provided)"
+        }
+        else {
+            $relayConfig = [ordered]@{
+                bridge_url = "http://127.0.0.1:16000"
+                python_exe = "python"
+                allow_llm_degraded = $true
+                disable_message_content_intent = $false
+                timeout_sec = 120
+                notes = [ordered]@{
+                    generated_by = "first-run-wizard"
+                    credentials_must_be_env_var_only = $true
+                }
+                relays = @(
+                    [ordered]@{
+                        name = "$DiscordPersona-relay"
+                        token_env = $DiscordTokenEnv
+                        mode = "executor"
+                        persona = $DiscordPersona
+                        channel_ids = @($effectiveChannelId)
+                    }
+                )
+            }
+            $relayPath = Join-Path $projectRoot "scripts/discord-relay-stack.local.json"
+            ($relayConfig | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $relayPath -Encoding UTF8
+
+            $bindRun = Invoke-Python -Python $python -ArgList @("-X", "utf8", "-m", "agent_memory.cli", "--vault-root", $resolvedVaultRoot, "channel-bind", "--transport", "discord", "--channel-id", $effectiveChannelId, "--persona", $DiscordPersona, "--operator", "first-run-wizard", "--json")
+            $bindOk = ($bindRun.exit_code -eq 0)
+            if (-not $bindOk) {
+                $discordOk = $false
+                $discordDetail = "channel-bind failed: $(First-Line -Text $bindRun.output)"
+            }
+            else {
+                $discordDetail = "relay config + channel-bind ready (channel=$effectiveChannelId persona=$DiscordPersona)"
+                $tokenSet = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($DiscordTokenEnv, "Process"))
+                if (-not $tokenSet) {
+                    $summary.notes.Add("Discord token env var '$DiscordTokenEnv' not set. Set it before starting relay: `$env:$DiscordTokenEnv = 'YOUR_BOT_TOKEN'") | Out-Null
+                }
+            }
+        }
+        Add-Step -Rows $summary.steps -Name "discord-setup" -Ok $discordOk -Detail $discordDetail
+    }
+    else {
+        Add-Step -Rows $summary.steps -Name "discord-setup" -Ok $true -Detail "skipped (use -SetupDiscord to enable)"
+    }
 }
 catch {
     $summary.overall_ok = $false
@@ -583,4 +798,164 @@ foreach ($note in $summary.notes) {
     Write-Host ("[NOTE] {0}" -f $note) -ForegroundColor Yellow
 }
 
-if ($summary.overall_ok) { exit 0 } else { exit 1 }
+if ($summary.overall_ok) {
+    $vaultForOutput = ""
+    if ($summary.bootstrap -and $summary.bootstrap.second_brain_root) {
+        $vaultForOutput = [string]$summary.bootstrap.second_brain_root
+    }
+
+    Write-Host ""
+    Write-Host "===============================================================" -ForegroundColor Cyan
+    Write-Host " 核心已就緒 / Core ready" -ForegroundColor Cyan
+    Write-Host "===============================================================" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host " 第二大腦 vault: $vaultForOutput"
+    Write-Host ""
+    Write-Host " [1] 立刻和管家對話一次（驗證核心可用，模型未下載會 degraded）：" -ForegroundColor Yellow
+    Write-Host "     python -X utf8 -m agent_memory.cli chat `"hello`" --persona steward --context first-run --session smoke-1 --allow-llm-degraded"
+    Write-Host ""
+    Write-Host " [2] 啟動 Bridge（Discord/LINE/Web 都會走這個 :16000 入口）：" -ForegroundColor Yellow
+    Write-Host "     .\scripts\run-bridge.ps1 -Port 16000"
+    Write-Host ""
+    Write-Host " [3] 跑工具能力 smoke（驗證 steward 可用 /tool 寫檔）：" -ForegroundColor Yellow
+    Write-Host "     .\scripts\run-tooling-smoke.ps1 -Json"
+    Write-Host ""
+
+    $hasDiscordStep = $false
+    foreach ($row in $summary.steps) {
+        if ($row.name -eq "discord-setup" -and $row.detail -notlike "skipped*") {
+            $hasDiscordStep = $true
+            break
+        }
+    }
+    # 也偵測既有 relay 設定（之前跑過 wizard 留下的）。
+    $existingRelayConfig = Join-Path $projectRoot "scripts/discord-relay-stack.local.json"
+    $hasExistingRelay = Test-Path -LiteralPath $existingRelayConfig
+
+    if ($hasDiscordStep -or $hasExistingRelay) {
+        Write-Host " [4] 上線管家到 Discord（一鍵）：" -ForegroundColor Yellow
+        Write-Host "     .\scripts\start-steward.ps1                # 第一次會 prompt 你貼 token"
+        Write-Host "     .\scripts\start-steward.ps1 -PersistToken   # 同上，但記住 token，下次自動載入"
+        if ($hasExistingRelay -and -not $hasDiscordStep) {
+            Write-Host "     (偵測到既有 discord-relay-stack.local.json，可直接使用)" -ForegroundColor DarkGray
+        }
+        Write-Host ""
+    }
+    else {
+        Write-Host " [4] (選配) 之後想串 Discord：等下會問你，或重跑 wizard 加 -SetupDiscord。" -ForegroundColor DarkGray
+        Write-Host ""
+    }
+    Write-Host "===============================================================" -ForegroundColor Cyan
+
+    # ========== 跟進步驟 1：自動跑一次管家對話 smoke ==========
+    Write-Host ""
+    Write-Host "[VERIFY] 自動跑一次管家對話確認核心可用..." -ForegroundColor Cyan
+    Write-Host "         (本地模型第一次載入會吃 30 秒~2 分鐘，請耐心等候)" -ForegroundColor DarkGray
+    $smokeArgs = @("-X", "utf8", "-m", "agent_memory.cli")
+    if ($VaultRoot -and $resolvedVaultRoot) {
+        $smokeArgs += @("--vault-root", $resolvedVaultRoot)
+    }
+    $smokeArgs += @("chat", "請只回 OK 兩個字，不要其他內容。", "--persona", "steward", "--context", "first-run", "--session", "first-run-smoke", "--allow-llm-degraded", "--json")
+    $smokeRun = Invoke-Python -Python $python -ArgList $smokeArgs
+    if ($smokeRun.exit_code -eq 0) {
+        # llama-cpp-python 把載入訊息寫到 stderr，跟 stdout JSON 混在一起。
+        # 抽出第一個 '{' 到最後一個 '}' 之間的內容當作 JSON。
+        $rawSmoke = [string]$smokeRun.output
+        $jsonStart = $rawSmoke.IndexOf('{')
+        $jsonEnd = $rawSmoke.LastIndexOf('}')
+        if ($jsonStart -ge 0 -and $jsonEnd -gt $jsonStart) {
+            $rawSmoke = $rawSmoke.Substring($jsonStart, $jsonEnd - $jsonStart + 1)
+        }
+        try {
+            $smokeData = $rawSmoke | ConvertFrom-Json
+            $isDegraded = [bool]$smokeData.degraded
+            $respText = [string]$smokeData.response
+            $respShort = $respText
+            if ($respShort.Length -gt 90) {
+                $respShort = $respShort.Substring(0, 90) + "..."
+            }
+            $sessionPath = ""
+            if ($smokeData.memory_paths -and $smokeData.memory_paths.session) {
+                $sessionPath = [string]$smokeData.memory_paths.session
+            }
+            if ($isDegraded) {
+                Write-Host "  [WARN] 管家已建立，但目前對話 degraded（沒有可用 LLM）：" -ForegroundColor Yellow
+                Write-Host "         response: $respShort" -ForegroundColor DarkGray
+                Write-Host "         session 已落盤: $sessionPath" -ForegroundColor DarkGray
+                Write-Host "         要本地對話：先安裝 llama-cpp-python + 下載模型；要雲端：設 OPENAI_API_KEY 或 OPENROUTER_API_KEY。" -ForegroundColor Yellow
+            }
+            else {
+                Write-Host "  [OK] 管家可正常對話：" -ForegroundColor Green
+                Write-Host "       response: $respShort"
+                Write-Host "       session 已落盤: $sessionPath"
+            }
+        }
+        catch {
+            Write-Host "  [WARN] smoke 跑了但 JSON 解析失敗：$($_.Exception.Message)" -ForegroundColor Yellow
+        }
+    }
+    else {
+        Write-Host "  [ERR] smoke 失敗 (exit=$($smokeRun.exit_code))" -ForegroundColor Red
+    }
+
+    # ========== 跟進步驟 2：問要不要現在設 Discord ==========
+    # 偵測既有設定，避免對「重跑」的使用者重複問。
+    if ((-not $hasDiscordStep) -and (-not $hasExistingRelay) -and (-not $NonInteractive)) {
+        Write-Host ""
+        $wantDiscord = Ask-YesNo -Prompt "現在要設定 Discord steward 頻道嗎？(會寫 discord-relay-stack.local.json + 綁定 channel)" -Default $false
+        if ($wantDiscord) {
+            $cid = (Read-Host "  Discord channel id (留空跳過)").Trim()
+            if (-not [string]::IsNullOrWhiteSpace($cid)) {
+                $resolvedVaultRoot = ""
+                if ($summary.bootstrap -and $summary.bootstrap.second_brain_root) {
+                    $resolvedVaultRoot = [string]$summary.bootstrap.second_brain_root
+                }
+                $relayConfigInline = [ordered]@{
+                    bridge_url = "http://127.0.0.1:16000"
+                    python_exe = "python"
+                    allow_llm_degraded = $true
+                    disable_message_content_intent = $false
+                    timeout_sec = 120
+                    notes = [ordered]@{
+                        generated_by = "first-run-wizard-followup"
+                        credentials_must_be_env_var_only = $true
+                    }
+                    relays = @(
+                        [ordered]@{
+                            name = "$DiscordPersona-relay"
+                            token_env = $DiscordTokenEnv
+                            mode = "executor"
+                            persona = $DiscordPersona
+                            channel_ids = @($cid)
+                        }
+                    )
+                }
+                $relayPathInline = Join-Path $projectRoot "scripts/discord-relay-stack.local.json"
+                ($relayConfigInline | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $relayPathInline -Encoding UTF8
+                $bindRunInline = Invoke-Python -Python $python -ArgList @("-X", "utf8", "-m", "agent_memory.cli", "--vault-root", $resolvedVaultRoot, "channel-bind", "--transport", "discord", "--channel-id", $cid, "--persona", $DiscordPersona, "--operator", "first-run-wizard-followup", "--json")
+                if ($bindRunInline.exit_code -eq 0) {
+                    Write-Host ""
+                    Write-Host "  [OK] Discord 綁定完成 (channel=$cid persona=$DiscordPersona)" -ForegroundColor Green
+                    Write-Host "  [TODO] 一鍵上線管家：" -ForegroundColor Yellow
+                    Write-Host "         .\scripts\start-steward.ps1 -PersistToken"
+                    Write-Host "         (第一次會 SecureString prompt 你貼 token；-PersistToken 會記住，下次免再貼)"
+                }
+                else {
+                    Write-Host "  [ERR] channel-bind 失敗：$(First-Line -Text $bindRunInline.output)" -ForegroundColor Red
+                }
+            }
+            else {
+                Write-Host "  [INFO] Discord 已跳過。" -ForegroundColor DarkGray
+            }
+        }
+    }
+
+    Write-Host ""
+    Write-Host "===============================================================" -ForegroundColor Cyan
+    Write-Host " 完成！可以關掉這個視窗，或按任意鍵結束。" -ForegroundColor Green
+    Write-Host "===============================================================" -ForegroundColor Cyan
+    exit 0
+}
+else {
+    exit 1
+}
