@@ -2,26 +2,67 @@
 
 目標：fresh clone 後最少步驟啟動核心，並確保第二大腦/模型都在核心目錄外。
 
-## 0) 一鍵引導（推薦給新使用者）
-Windows 直接雙擊 `START_SETUP.bat`，或：
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\first-run-wizard.ps1
+## 0) 一鍵啟動（推薦）
+Windows 直接雙擊 `START_SETUP.bat` → 進入**美化選單**：
+
+```
+╔════════════════════════════════════════════════════════════════╗
+║                                                                ║
+║ AGENT MEMORY CORE                                     v0.1.0  ║
+║ 本機 LLM × 多角色記憶 × Discord 串接                              ║
+║                                                                ║
+╚════════════════════════════════════════════════════════════════╝
+
+  目前環境狀態：
+    [✓] Python                : v3.10.6
+    [✓] agent_memory CLI      : 可用
+    [✓] 第二大腦 vault         : default_second_brain
+    [✓] LLM 預設              : llama_cpp_local / gemma-4-E4B-Q8_0
+    [○] Discord token         : 未設
+
+  請選擇：
+    [1] 快速設定               自動建大腦 + 配本機 gemma-4 + 跑 chat 驗證
+    [2] 自訂設定               逐步互動：選 LLM、要不要 Discord、要不要下載
+    [3] 上線管家到 Discord     啟 bridge + relay，貼 token 即上線
+    [4] 切換 LLM 模型          本機 ↔ Gemini / OpenAI / OpenRouter / Claude
+    [5] CLI 試聊管家           直接在這視窗對話
+    [6] 跑工具能力 smoke       驗證 /tool 寫檔
+    [7] 重新掃描狀態
+    [Q] 離開
 ```
 
+選號碼即可，每個動作完成回主選單。**Q 離開**。
+
+要直接跑舊版 wizard：`START_SETUP.bat --legacy`
+
+## 0.5) 各選項對應的 sub-script（給 power user）
+| 選項 | 對應命令 |
+|---|---|
+| [1] 快速設定 | `.\scripts\first-run-wizard.ps1 -NonInteractive` |
+| [2] 自訂設定 | `.\scripts\first-run-wizard.ps1` |
+| [3] 上線 DC | `.\scripts\start-steward.ps1 -PersistToken` |
+| [4] 切 LLM | `.\scripts\switch-llm.ps1 -PersistKey` |
+| [5] CLI chat | `python -m agent_memory.cli chat ...` |
+| [6] tooling smoke | `.\scripts\run-tooling-smoke.ps1` |
+
+## 0.6) wizard 細節（[1] / [2] 跑的東西）
 wizard 預設會做：
 - 檢查 Git / Python ≥ 3.10（缺的話用 winget 自動裝）
 - **`pip install -e .` 自動執行**（已可 import 則自動 skip；要強制重裝加 `-InstallEditable`，要完全跳過加 `-SkipInstallEditable`）
 - 跑 `bootstrap-v1`（建第二大腦 00~99 + 管家 steward）
 - 把 vault 設為 user 預設（`vault-set`），之後 CLI 不用每次傳 `--vault-root`
-- 檢查 `../0_Models` 裡的 GGUF（缺的話印下載命令）
-- 跑完印「立刻可貼的下一步指令」
+- 檢查 `../0_Models` 裡的 GGUF（缺的話互動詢問下載 ~10GB）
+- 把 gemma-4 配進 `llm_router.yaml`（自動偵測 Ollama CUDA path）
+- 跑一次 chat smoke 驗證
 
 可選旗標：
 - `-InstallEditable`：強制 `pip install -e .`（即使已可 import）
 - `-SkipInstallEditable`：完全跳過 pip 安裝
 - `-SkipModelCheck`：跳過模型檢查
+- `-SkipModelDownload`：跳過模型下載提示
 - `-UpgradePipPackages`：升級 pip/setuptools/wheel
 - `-SetupDiscord -DiscordChannelId <id>`：一併設定 Discord steward relay
+- `-VaultRoot <path>`：用獨立測試大腦（不污染正式 vault）
 - `-NonInteractive -Json`：自動化模式（CI / 腳本用）
 
 ## 1) 想要一起設 Discord（管家先在你的伺服器上線）
