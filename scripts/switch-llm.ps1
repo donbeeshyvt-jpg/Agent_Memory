@@ -77,15 +77,19 @@ $providers = @(
     },
     [ordered]@{
         id = "gemini"
-        display = "Google Gemini API"
+        display = "Google Gemini / Gemma API"
         api_key_env = "GOOGLE_API_KEY"
         recommended_models = @(
             "gemini-2.5-flash",
             "gemini-2.5-pro",
             "gemini-2.5-flash-lite",
-            "gemini-2.0-flash"
+            "gemini-2.0-flash",
+            "gemma-4-31b-it",
+            "gemma-4-26b-a4b-it",
+            "gemma-4-9b-it",
+            "gemma-4-4b-it"
         )
-        notes = "OpenAI-compatible 端點。免費層門檻很大，個人試聊夠用。"
+        notes = "OpenAI-compatible 端點。Gemini 系列穩定可用；Gemma 系列視 AI Studio 是否開放對應名稱。"
     },
     [ordered]@{
         id = "openai"

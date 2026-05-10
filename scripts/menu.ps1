@@ -148,6 +148,7 @@ function Test-Status {
     # Default LLM
     $llmDetail = "尚未設定"
     $llmOk = $false
+    $llmMode = ""
     if ($cliOk -and $hasVault) {
         try {
             $prevEap = $ErrorActionPreference
@@ -160,11 +161,39 @@ function Test-Status {
                 $modelRaw = $m.Groups[2].Value.Trim()
                 # 縮短模型路徑顯示
                 $modelShort = $modelRaw
-                if ($modelShort.Length -gt 30) {
-                    $modelShort = "..." + $modelShort.Substring($modelShort.Length - 30)
+                if ($modelShort.Length -gt 32) {
+                    $modelShort = "..." + $modelShort.Substring($modelShort.Length - 32)
                 }
-                $llmDetail = "$profile / $modelShort"
+                # 區分線上 API vs 本機推理
+                $apiProfiles = @("gemini", "openai", "anthropic", "openrouter", "opencode_zen", "opencode_go")
+                $localProfiles = @("llama_cpp_local", "ollama_local")
+                $llmMode = if ($apiProfiles -contains $profile) { "[線上 API]" }
+                           elseif ($localProfiles -contains $profile) { "[本機推理]" }
+                           else { "[?]" }
+                $llmDetail = "$llmMode $profile / $modelShort"
                 $llmOk = $true
+
+                # API 模式：檢查 key 是否設好
+                if ($apiProfiles -contains $profile) {
+                    $apiKeyEnvMap = @{
+                        "gemini" = "GOOGLE_API_KEY"
+                        "openai" = "OPENAI_API_KEY"
+                        "anthropic" = "ANTHROPIC_API_KEY"
+                        "openrouter" = "OPENROUTER_API_KEY"
+                        "opencode_zen" = "OPENCODE_ZEN_API_KEY"
+                        "opencode_go" = "OPENCODE_GO_API_KEY"
+                    }
+                    $envName = $apiKeyEnvMap[$profile]
+                    if ($envName) {
+                        $procKey = [Environment]::GetEnvironmentVariable($envName, "Process")
+                        $userKey = [Environment]::GetEnvironmentVariable($envName, "User")
+                        $hasKey = (-not [string]::IsNullOrWhiteSpace($procKey)) -or (-not [string]::IsNullOrWhiteSpace($userKey))
+                        if (-not $hasKey) {
+                            $llmDetail = "$llmMode $profile / $modelShort (⚠ $envName 未設)"
+                            $llmOk = $false
+                        }
+                    }
+                }
             }
         }
         catch { }
