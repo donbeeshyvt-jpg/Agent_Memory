@@ -2,7 +2,15 @@
 
 目標：只用最少步驟啟動核心，並確保第二大腦/模型都在核心目錄外。
 
-## 1) 安裝
+## 0) 一鍵引導（建議）
+Windows 直接雙擊 `START_SETUP.bat`，或：
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\first-run-wizard.ps1
+```
+
+> 這個引導會幫你做安裝檢查、`pip install -e .`、以及 `bootstrap-v1`。
+
+## 1) 手動安裝
 ```powershell
 cd "<PROJECT_ROOT>/agent-memory-core"
 pip install -e .
@@ -15,6 +23,7 @@ pip install -e .
 
 ## 3) 下載模型（到核心外的 `../0_Models`）
 ```powershell
+pip install -e .[llama-cpp]
 pip install -U "huggingface_hub[cli]"
 huggingface-cli download ggml-org/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q8_0.gguf --local-dir "../0_Models/gemma-4-E4B-it-GGUF"
 huggingface-cli download seerware/Qwen3.5-9B-GGUF Qwen3.5-9B-Q8_0.gguf --local-dir "../0_Models/Qwen3.5-9B-GGUF"

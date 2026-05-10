@@ -12,7 +12,25 @@
 - 模型資料夾必須在核心目錄外。
 - 橋接服務預設埠為 `16000`。
 
-## 一個命令起手（建立環境）
+## 安裝入口（像 openclaw/hermes 的引導）
+Windows 直接雙擊：
+```bat
+START_SETUP.bat
+```
+
+或命令列執行：
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\first-run-wizard.ps1
+```
+
+這個引導會做：
+- 檢查/安裝 `git`（可選，自動詢問）。
+- 檢查/安裝 `python`（可選，自動詢問）。
+- 安裝核心套件（`pip install -e .`）。
+- 可選安裝 `llama-cpp-python`（你可先跳過）。
+- 建立第二大腦 + 初始化管家角色（呼叫 `bootstrap-v1.ps1`）。
+
+## 一個命令起手（手動建立環境）
 ```powershell
 cd "<PROJECT_ROOT>/agent-memory-core"
 .\scripts\bootstrap-v1.ps1 -SetDefaultVault -Json
@@ -23,6 +41,11 @@ cd "<PROJECT_ROOT>/agent-memory-core"
 - 模型目錄：`../0_Models`
 
 ## 模型下載（你目前使用的兩款）
+若要使用本地 GGUF 推理（`llama_cpp_python` provider），先安裝可選依賴：
+```powershell
+pip install -e .[llama-cpp]
+```
+
 先安裝 huggingface CLI：
 ```powershell
 pip install -U "huggingface_hub[cli]"

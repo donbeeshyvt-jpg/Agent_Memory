@@ -10,6 +10,10 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
   "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+llama-cpp = [
   "llama-cpp-python>=0.3.9",
 ]
 
