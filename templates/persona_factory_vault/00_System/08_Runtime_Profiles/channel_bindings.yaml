@@ -1,0 +1,17 @@
+schema_version: 1
+description: 多入口 channel 綁定 persona。key 格式：<transport>:<channel_id>
+default_persona: core
+bindings:
+  web:dashboard-main:
+    transport: web
+    channel_id: dashboard-main
+    persona_id: core
+    operator: user
+    updated_at: '2026-05-07T07:33:37.862149+00:00'
+  web:web-main:
+    transport: web
+    channel_id: web-main
+    persona_id: core
+    operator: user
+    updated_at: '2026-05-07T07:52:18.815961+00:00'
+updated_at: '2026-05-07T07:52:18.816961+00:00'

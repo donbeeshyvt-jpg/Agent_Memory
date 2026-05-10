@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-memory-core"
+version = "0.1.0"
+description = "Agent_Memory unified memory core for Obsidian vaults."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "PyYAML>=6.0",
+  "llama-cpp-python>=0.3.9",
+]
+
+[project.scripts]
+memory-cli = "agent_memory.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent_memory*"]

@@ -1,0 +1,14 @@
+schema_version: 1
+default_persona: core
+personas:
+  core:
+    persona_path: personas/core.md
+    route_path: routes/core.yaml
+    status: active
+  writer-curator:
+    persona_path: personas/writer-curator.md
+    route_path: routes/writer-curator.yaml
+    status: active
+    imported_at: '2026-05-07T11:31:26.708782+00:00'
+    imported_from_bundle: Z:\Cursor練習用\Agent_Memory\Agent_Memory\ObsidianVault\11_AI_Mirror\external_ingest\persona_bundles\persona-writer-curator-20260507-113111.zip
+updated_at: '2026-05-07T11:31:26.708782+00:00'

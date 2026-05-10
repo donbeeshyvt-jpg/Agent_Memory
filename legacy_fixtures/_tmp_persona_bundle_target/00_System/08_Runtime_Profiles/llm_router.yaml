@@ -1,0 +1,73 @@
+schema_version: 1
+description: 全域預設 LLM + 人格覆蓋 + fallback 鏈。改這裡即可影響所有入口。
+resolution_order:
+- request_override
+- persona_override
+- global_default
+- fallback_chain
+global_default:
+  profile: ollama_local
+  model: qwen3:14b
+fallback_chain:
+- profile: openrouter
+  model: anthropic/claude-sonnet-4.6
+- profile: openai
+  model: gpt-4.1-mini
+persona_overrides: {}
+providers:
+  ollama_local:
+    kind: ollama
+    zh_label: 本地免費模型（Ollama）
+    base_url: http://127.0.0.1:11434
+    api_key_env: OLLAMA_API_KEY
+    requires_api_key: false
+  llama_cpp_local:
+    kind: llama_cpp_python
+    zh_label: 本機 GGUF 直連（llama-cpp-python）
+    base_url: local://llama-cpp-python
+    api_key_env: ''
+    requires_api_key: false
+    model_path: ../../0_Models/Qwen3-30B-A3B-Q4_K_M.gguf
+    n_ctx: 4096
+    n_gpu_layers: 999
+    n_batch: 512
+    n_threads: 16
+    flash_attn: true
+    max_tokens: 1024
+    strip_think_tags: true
+  openai:
+    kind: openai_compatible
+    zh_label: OpenAI 商用 API
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    requires_api_key: true
+  anthropic:
+    kind: anthropic
+    zh_label: Anthropic 商用 API
+    base_url: https://api.anthropic.com/v1
+    api_key_env: ANTHROPIC_API_KEY
+    requires_api_key: true
+  gemini:
+    kind: openai_compatible
+    zh_label: Google Gemini API
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai
+    api_key_env: GOOGLE_API_KEY
+    requires_api_key: true
+  openrouter:
+    kind: openai_compatible
+    zh_label: OpenRouter 聚合 API
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    requires_api_key: true
+  opencode_zen:
+    kind: openai_compatible
+    zh_label: OpenCode Zen 商用聚合
+    base_url: https://opencode.ai/zen/v1
+    api_key_env: OPENCODE_ZEN_API_KEY
+    requires_api_key: true
+  opencode_go:
+    kind: openai_compatible
+    zh_label: OpenCode Go（偏開源模型池）
+    base_url: https://opencode.ai/zen/go/v1
+    api_key_env: OPENCODE_GO_API_KEY
+    requires_api_key: true

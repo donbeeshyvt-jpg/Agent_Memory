@@ -1,0 +1,16 @@
+schema_version: 1
+description: "自訂檢索 benchmark 案例（可複製到 vault runtime profiles 後修改）"
+cases:
+  - query: "retrieval router mmr embedding"
+    expected_paths:
+      - "00_System/08_Runtime_Profiles/retrieval_router.yaml"
+    expected_keywords:
+      - "mmr"
+      - "embedding"
+      - "default_strategy"
+  - query: "task board completion"
+    expected_paths:
+      - "10_Permanent/Facts/task_completion_log.md"
+    expected_keywords:
+      - "task"
+      - "completion"

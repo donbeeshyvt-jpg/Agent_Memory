@@ -1,0 +1,26 @@
+{
+  "llm": {
+    "default_profile": "llama_cpp_local",
+    "default_model": "../0_Models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q8_0.gguf",
+    "writer_curator_profile": "llama_cpp_local",
+    "writer_curator_model": "../0_Models/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q8_0.gguf",
+    "coder_profile": "llama_cpp_local",
+    "coder_model": "../0_Models/Qwen3-30B-A3B-UD-Q4_K_XL.gguf",
+    "require_nondegraded": true
+  },
+  "discord": {
+    "channel_id": "YOUR_DISCORD_CHANNEL_ID",
+    "persona": "core",
+    "default_persona": "core",
+    "operator": "entry-setup",
+    "mode": "standard",
+    "bridge_url": "http://127.0.0.1:16000",
+    "probe_bridge": true,
+    "allow_llm_degraded": true,
+    "require_nondegraded": true
+  },
+  "notes": {
+    "discord_bot_token_env": "DISCORD_BOT_TOKEN",
+    "do_not_store_token_in_json": true
+  }
+}

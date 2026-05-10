@@ -1,0 +1,21 @@
+schema_version: 1
+brain_id: brain-_tmp_persona_bundle_target-70fdcaf6
+owner_id: tester
+vault_name: _tmp_persona_bundle_target
+namespace:
+  range: 00-99
+  is_second_brain_root: true
+  rule: 00~99 命名空間皆屬同一第二大腦實例。
+core_paths:
+  system: 00_System/
+  permanent: 10_Permanent/
+  ai_mirror: 11_AI_Mirror/
+  session_logs: 70_Active_Plans/Session_Logs/
+governance:
+  raw_readonly_zones:
+  - 20_Literature/
+  - 80_Fleeting/
+  - 90_Daily_Journal/
+  portable_repoint_enabled: true
+created_at: '2026-05-07T11:31:19.652918+00:00'
+updated_at: '2026-05-07T11:31:19.652918+00:00'

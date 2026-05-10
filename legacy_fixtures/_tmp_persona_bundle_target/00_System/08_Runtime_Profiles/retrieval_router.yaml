@@ -1,0 +1,13 @@
+schema_version: 1
+description: 檢索策略：embedding backend（hash/provider）與 MMR 參數。
+embedding:
+  mode: hash
+  profile: openai
+  model: text-embedding-3-small
+  timeout_s: 20.0
+search:
+  default_strategy: hybrid
+  mmr_enabled: true
+  mmr_lambda: 0.7
+  mmr_candidate_multiplier: 4
+persona_overrides: {}

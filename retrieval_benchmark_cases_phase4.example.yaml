@@ -1,0 +1,83 @@
+schema_version: 1
+description: "Phase 4 檢索品質 gate 案例（偏穩定路徑命中，適合回歸）"
+cases:
+  - query: "retrieval_router.yaml mmr_candidate_multiplier"
+    expected_paths:
+      - "00_System/08_Runtime_Profiles/retrieval_router.yaml"
+    expected_keywords: ["mmr", "candidate", "default_strategy"]
+  - query: "llm_router.yaml persona_overrides fallback_chain"
+    expected_paths:
+      - "00_System/08_Runtime_Profiles/llm_router.yaml"
+    expected_keywords: ["global_default", "persona_overrides", "fallback_chain"]
+  - query: "transport_profiles.yaml line_webhook discord_message"
+    expected_paths:
+      - "00_System/08_Runtime_Profiles/transport_profiles.yaml"
+    expected_keywords: ["line", "discord", "web"]
+  - query: "channel_bindings.yaml default_persona bindings"
+    expected_paths:
+      - "00_System/08_Runtime_Profiles/channel_bindings.yaml"
+    expected_keywords: ["default_persona", "bindings", "channel_id"]
+  - query: "dialogue_modes.yaml strategist coach executor"
+    expected_paths:
+      - "00_System/08_Runtime_Profiles/dialogue_modes.yaml"
+    expected_keywords: ["strategist", "coach", "executor"]
+  - query: "registry.yaml personas routes"
+    expected_paths:
+      - "00_System/08_Runtime_Profiles/registry.yaml"
+    expected_keywords: ["personas", "routes", "core"]
+  - query: "brain_manifest.yaml range 00-99"
+    expected_paths:
+      - "00_System/08_Runtime_Profiles/brain_manifest.yaml"
+    expected_keywords: ["range", "00-99", "brain_id"]
+  - query: "llm_route_events.jsonl persona_id profile model"
+    expected_paths:
+      - "11_AI_Mirror/ingestion_logs/llm_route_events.jsonl"
+    expected_keywords: ["persona_id", "profile", "model"]
+  - query: "notion_publish_queue.md notion_queue_id pending status"
+    expected_paths:
+      - "11_AI_Mirror/ingestion_logs/notion_publish_queue.md"
+    expected_keywords: ["notion_queue_id", "pending", "status"]
+  - query: "session_compaction.md compacted_turns keep_recent_turns"
+    expected_paths:
+      - "11_AI_Mirror/ingestion_logs/session_compaction.md"
+    expected_keywords: ["compacted_turns", "keep_recent_turns", "status"]
+  - query: "promotion_events.md promoted target_type score"
+    expected_paths:
+      - "11_AI_Mirror/ingestion_logs/promotion_events.md"
+    expected_keywords: ["promoted", "target_type", "score"]
+  - query: "task_events.md supervisor assignees checklist"
+    expected_paths:
+      - "11_AI_Mirror/ingestion_logs/task_events.md"
+    expected_keywords: ["supervisor", "assignees", "checklist"]
+  - query: "skill_events.md resolved_task_id counts_for_growth"
+    expected_paths:
+      - "11_AI_Mirror/ingestion_logs/skill_events.md"
+    expected_keywords: ["resolved_task_id", "counts_for_growth", "skill_id"]
+  - query: "task_completion_log.md task_id completed_at"
+    expected_paths:
+      - "10_Permanent/Facts/task_completion_log.md"
+    expected_keywords: ["task_id", "completed_at", "done"]
+  - query: "_smoke_suite.md integration readiness token"
+    expected_paths:
+      - "10_Permanent/Facts/_smoke_suite.md"
+    expected_keywords: ["integration", "readiness", "token"]
+  - query: "_SKILLS_INDEX.md persona shared maintenance"
+    expected_paths:
+      - "00_System/Skills/_SKILLS_INDEX.md"
+    expected_keywords: ["persona", "shared", "maintenance"]
+  - query: "tasks.yaml in_progress blocked done"
+    expected_paths:
+      - "70_Active_Plans/Task_Board/tasks.yaml"
+    expected_keywords: ["in_progress", "blocked", "done"]
+  - query: "TASKS.md todo in_progress cancelled"
+    expected_paths:
+      - "70_Active_Plans/Task_Board/TASKS.md"
+    expected_keywords: ["todo", "in_progress", "cancelled"]
+  - query: "03_Recent_Updates.md generated_at return_to"
+    expected_paths:
+      - "00_System/09_Index/03_Recent_Updates.md"
+    expected_keywords: ["generated_at", "return_to", "recent"]
+  - query: "retrieval_benchmark_cases_phase4.yaml schema_version"
+    expected_paths:
+      - "00_System/08_Runtime_Profiles/retrieval_benchmark_cases_phase4.yaml"
+    expected_keywords: ["schema_version", "phase 4", "cases"]

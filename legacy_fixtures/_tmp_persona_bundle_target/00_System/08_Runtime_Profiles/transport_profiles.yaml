@@ -1,0 +1,56 @@
+schema_version: 1
+description: 多媒介入口設定。只定義事件解析與預設 context/session，不限制角色行為。
+defaults:
+  enabled: true
+  use_binding: true
+  context_template: '{transport}:{channel_id}'
+  session_template: '{transport}-{channel_id}'
+  parser: generic
+transports:
+  web:
+    enabled: true
+    parser: generic
+    message_candidates:
+    - message
+    - text
+    - content
+    channel_candidates:
+    - channel_id
+    - conversation_id
+    - thread_id
+    - user_id
+    user_candidates:
+    - user_id
+    - author_id
+  discord:
+    enabled: true
+    parser: discord_message
+    message_candidates:
+    - content
+    - message.content
+    - text
+    channel_candidates:
+    - channel_id
+    - message.channel_id
+    - thread_id
+    user_candidates:
+    - author.id
+    - user.id
+    - member.user.id
+  line:
+    enabled: true
+    parser: line_webhook
+    message_candidates:
+    - events[0].message.text
+    - message
+    - text
+    channel_candidates:
+    - events[0].source.groupId
+    - events[0].source.roomId
+    - events[0].source.userId
+    - channel_id
+    - user_id
+    user_candidates:
+    - events[0].source.userId
+    - user_id
+updated_at: '2026-05-07T11:31:19.576857+00:00'

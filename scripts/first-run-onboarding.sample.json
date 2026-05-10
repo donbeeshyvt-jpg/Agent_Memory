@@ -1,0 +1,28 @@
+﻿{
+  "vault_root": "../SecondBrains/default_second_brain",
+  "template_vault": "",
+  "owner_id": "owner",
+  "brain_id": "",
+  "set_default_vault": true,
+  "channel_default_persona": "steward",
+  "seed": {
+    "overwrite": false,
+    "include_shared_skills": false,
+    "skip_personas": false,
+    "skip_persona_skills": false,
+    "skip_dialogue_modes": false
+  },
+  "butler": {
+    "enabled": false,
+    "persona_id": "steward",
+    "display_name": "管家",
+    "mission": "作為管家角色，協助建立環境、管理角色，並可操作工具改寫專案檔案。",
+    "style": "concise",
+    "language": "zh-Hant",
+    "role_type": "tooling",
+    "default_mode": "executor",
+    "operator": "first-run"
+  },
+  "channels": [],
+  "run_smoke": false
+}

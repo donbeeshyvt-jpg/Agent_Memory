@@ -1,0 +1,15 @@
+{
+  "default_persona": "core",
+  "discord_channel_id": "guild-main",
+  "discord_persona": "writer-curator",
+  "operator": "entry-setup",
+  "mode": "standard",
+  "bridge_url": "http://127.0.0.1:16000",
+  "probe_bridge": true,
+  "allow_llm_degraded": true,
+  "require_nondegraded": false,
+  "discord_bot_token_env": "DISCORD_BOT_TOKEN",
+  "discord_application_id": "YOUR_DISCORD_APPLICATION_ID",
+  "discord_guild_id": "YOUR_DISCORD_GUILD_ID",
+  "discord_user_id": "YOUR_DISCORD_USER_ID"
+}

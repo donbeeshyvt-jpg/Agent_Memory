@@ -1,0 +1,55 @@
+{
+  "bridge_url": "http://127.0.0.1:16000",
+  "python_exe": "python",
+  "allow_llm_degraded": true,
+  "disable_message_content_intent": false,
+  "timeout_sec": 120,
+  "notes": {
+    "this_is_only_a_template": true,
+    "replace_all_channel_ids_before_use": true,
+    "credentials_must_be_env_var_only": true
+  },
+  "relays": [
+    {
+      "name": "role1-core",
+      "token_env": "DISCORD_BOT_TOKEN_ROLE1",
+      "mode": "standard",
+      "persona": "core",
+      "channel_ids": [
+        "YOUR_ROLE1_CHANNEL_ID",
+        "YOUR_SHARED_CHANNEL_ID"
+      ],
+      "mention_only_channel_ids": [
+        "YOUR_SHARED_CHANNEL_ID"
+      ]
+    },
+    {
+      "name": "role2-writer",
+      "token_env": "DISCORD_BOT_TOKEN_ROLE2",
+      "mode": "coach",
+      "persona": "writer-curator",
+      "channel_ids": [
+        "YOUR_ROLE2_CHANNEL_ID",
+        "YOUR_SHARED_CHANNEL_ID"
+      ],
+      "mention_only_channel_ids": [
+        "YOUR_SHARED_CHANNEL_ID"
+      ],
+      "disable_message_content_intent": true
+    },
+    {
+      "name": "role3-butler",
+      "token_env": "DISCORD_BOT_TOKEN_ROLE3",
+      "mode": "executor",
+      "persona": "role3",
+      "channel_ids": [
+        "YOUR_ROLE3_CHANNEL_ID",
+        "YOUR_SHARED_CHANNEL_ID"
+      ],
+      "mention_only_channel_ids": [
+        "YOUR_SHARED_CHANNEL_ID"
+      ],
+      "timeout_sec": 180
+    }
+  ]
+}

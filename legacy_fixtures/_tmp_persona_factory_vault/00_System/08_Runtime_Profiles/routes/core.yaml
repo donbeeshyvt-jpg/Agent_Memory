@@ -1,0 +1,35 @@
+schema_version: 1
+persona_id: core
+default_mode: core
+memory_scope:
+  include:
+  - 00_System/
+  - 10_Permanent/
+  - 11_AI_Mirror/
+  - 20_Literature/
+  - 30_Programming/
+  - 40_Gaming/
+  - 50_Media/
+  - 60_Other_Domains/
+  - 70_Active_Plans/
+  - 80_Fleeting/
+  - 90_Daily_Journal/
+  - 99_Archive/
+  exclude: []
+write_scope:
+  allow:
+  - 00_System/Skills/
+  - 10_Permanent/
+  - 11_AI_Mirror/
+  - 70_Active_Plans/
+  deny:
+  - 20_Literature/
+  - 80_Fleeting/
+  - 90_Daily_Journal/
+guardrails:
+  path_priority_over_metadata: true
+  immutable_sources:
+  - 20_Literature/
+  - 80_Fleeting/
+  - 90_Daily_Journal/
+updated_at: '2026-05-07T07:12:17.254856+00:00'

@@ -1,0 +1,26 @@
+schema_version: 1
+default_persona: core
+personas:
+  core:
+    persona_path: personas/core.md
+    route_path: routes/core.yaml
+    status: active
+  research-synthesizer:
+    persona_path: personas/research-synthesizer.md
+    route_path: routes/research-synthesizer.yaml
+    status: disabled
+    approved_at: '2026-05-07T07:12:17.349725+00:00'
+    approved_by: tester
+    disabled_at: '2026-05-07T07:12:17.372722+00:00'
+    disabled_by: tester
+    disabled_reason: validation
+  writer-curator:
+    persona_path: personas/writer-curator.md
+    route_path: routes/writer-curator.yaml
+    status: disabled
+    approved_at: '2026-05-07T07:12:34.602294+00:00'
+    approved_by: tester
+    disabled_at: '2026-05-07T07:12:44.437916+00:00'
+    disabled_by: tester
+    disabled_reason: cli validation
+updated_at: '2026-05-07T07:12:44.437916+00:00'

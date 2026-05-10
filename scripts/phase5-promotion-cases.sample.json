@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "min_score": 0.0,
+    "min_recall": 2,
+    "min_queries": 2,
+    "min_days": 1,
+    "grace_hours": 0.0,
+    "max_promotions": 5
+  },
+  "cases": [
+    {
+      "id": "engineering_handoff",
+      "description": "工程交接與待辦拆解",
+      "body_lines": [
+        "# phase5 engineering handoff",
+        "",
+        "- topic: migrate relay watchdog workflow",
+        "- owner: steward",
+        "- constraints: no parallel heavy jobs, preserve audit trail",
+        "- deliverables: rollout checklist + rollback plan + smoke commands"
+      ],
+      "queries": [
+        "phase5-engineering-handoff-watchdog",
+        "phase5-engineering-handoff-rollout-checklist"
+      ]
+    },
+    {
+      "id": "product_decision_log",
+      "description": "產品決策紀錄與取捨原因",
+      "body_lines": [
+        "# phase5 product decision log",
+        "",
+        "- decision: enforce mention-only response in shared channel",
+        "- rationale: avoid simultaneous role thinking overload",
+        "- tradeoff: slower response speed but lower collision risk",
+        "- followup: add per-role cooldown metrics in dashboard"
+      ],
+      "queries": [
+        "phase5-product-decision-mention-only",
+        "phase5-product-decision-cooldown-metrics"
+      ]
+    },
+    {
+      "id": "incident_postmortem",
+      "description": "故障復盤與修復策略",
+      "body_lines": [
+        "# phase5 incident postmortem",
+        "",
+        "- incident: role2 no response after token rotation",
+        "- root_cause: message-content intent mismatch and stale relay process",
+        "- mitigation: restart relay stack and validate intents one by one",
+        "- prevention: onboarding checklist must include token and intent probes"
+      ],
+      "queries": [
+        "phase5-incident-role2-intent-mismatch",
+        "phase5-incident-relay-restart-prevention"
+      ]
+    }
+  ]
+}
