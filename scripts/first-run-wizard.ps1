@@ -199,10 +199,31 @@ function Invoke-WingetInstall {
 function Invoke-Python {
     param(
         [object]$Python,
-        [string[]]$Args
+        [string[]]$ArgList
     )
 
-    return Invoke-External -Exe $Python.launcher -ArgList ($Python.prefix + $Args)
+    return Invoke-External -Exe $Python.launcher -ArgList ($Python.prefix + $ArgList)
+}
+
+function Invoke-PythonStreaming {
+    param(
+        [object]$Python,
+        [string[]]$ArgList
+    )
+
+    $previousEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Python.launcher @($Python.prefix + $ArgList) 2>&1 | ForEach-Object { $_ | Out-Host }
+    }
+    finally {
+        $ErrorActionPreference = $previousEap
+    }
+    $exitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
+    return [ordered]@{
+        exit_code = $exitCode
+        output = ""
+    }
 }
 
 $summary = [ordered]@{
@@ -274,7 +295,7 @@ try {
 
     if ($UpgradePipPackages) {
         Write-Host "[INFO] Upgrading pip/setuptools/wheel..." -ForegroundColor Cyan
-        $pipUpgrade = Invoke-Python -Python $python -Args @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
+        $pipUpgrade = Invoke-Python -Python $python -ArgList @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
         Add-Step -Rows $summary.steps -Name "pip-upgrade" -Ok ($pipUpgrade.exit_code -eq 0) -Detail (First-Line -Text $pipUpgrade.output)
         if ($pipUpgrade.exit_code -ne 0) {
             throw "pip upgrade failed."
@@ -285,7 +306,13 @@ try {
     }
 
     Write-Host "[INFO] Installing core package (pip install -e .)..." -ForegroundColor Cyan
-    $editableInstall = Invoke-Python -Python $python -Args @("-m", "pip", "install", "-e", ".")
+    if ($Json) {
+        $editableInstall = Invoke-Python -Python $python -ArgList @("-m", "pip", "install", "-e", ".", "--disable-pip-version-check", "--no-input")
+    }
+    else {
+        Write-Host "[INFO] pip output will be shown below..." -ForegroundColor DarkCyan
+        $editableInstall = Invoke-PythonStreaming -Python $python -ArgList @("-m", "pip", "install", "-e", ".", "--disable-pip-version-check", "--no-input")
+    }
     Add-Step -Rows $summary.steps -Name "pip-install-editable" -Ok ($editableInstall.exit_code -eq 0) -Detail (First-Line -Text $editableInstall.output)
     if ($editableInstall.exit_code -ne 0) {
         throw "pip install -e . failed."
