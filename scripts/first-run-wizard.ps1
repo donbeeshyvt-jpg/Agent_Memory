@@ -1,5 +1,6 @@
 param(
     [string]$PreferredPythonVersion = "3.12",
+    [switch]$InstallEditable,
     [switch]$UpgradePipPackages,
     [switch]$SkipLlamaCpp,
     [switch]$NonInteractive,
@@ -321,18 +322,29 @@ try {
         Add-Step -Rows $summary.steps -Name "pip-upgrade" -Ok $true -Detail "skipped (use -UpgradePipPackages to enable)"
     }
 
-    Write-Host "[INFO] Installing core package (pip install -e .)..." -ForegroundColor Cyan
-    Write-Host "[INFO] First install may take 1-10 minutes at metadata/build steps. Please wait." -ForegroundColor DarkCyan
-    if ($Json) {
-        $editableInstall = Invoke-Python -Python $python -ArgList @("-m", "pip", "install", "-e", ".", "-v", "--disable-pip-version-check", "--no-input")
+    $shouldInstallEditable = $InstallEditable
+    if (-not $Json -and -not $NonInteractive -and -not $InstallEditable) {
+        $shouldInstallEditable = Ask-YesNo -Prompt "Install core package into current Python now? (pip install -e .; may take longer)" -Default $false
+    }
+
+    if ($shouldInstallEditable) {
+        Write-Host "[INFO] Installing core package (pip install -e .)..." -ForegroundColor Cyan
+        Write-Host "[INFO] First install may take 1-10 minutes at metadata/build steps. Please wait." -ForegroundColor DarkCyan
+        if ($Json) {
+            $editableInstall = Invoke-Python -Python $python -ArgList @("-m", "pip", "install", "-e", ".", "-v", "--disable-pip-version-check", "--no-input")
+        }
+        else {
+            Write-Host "[INFO] pip output will be shown below..." -ForegroundColor DarkCyan
+            $editableInstall = Invoke-PythonStreaming -Python $python -ArgList @("-m", "pip", "install", "-e", ".", "-v", "--disable-pip-version-check", "--no-input")
+        }
+        Add-Step -Rows $summary.steps -Name "pip-install-editable" -Ok ($editableInstall.exit_code -eq 0) -Detail (First-Line -Text $editableInstall.output)
+        if ($editableInstall.exit_code -ne 0) {
+            throw "pip install -e . failed."
+        }
     }
     else {
-        Write-Host "[INFO] pip output will be shown below..." -ForegroundColor DarkCyan
-        $editableInstall = Invoke-PythonStreaming -Python $python -ArgList @("-m", "pip", "install", "-e", ".", "-v", "--disable-pip-version-check", "--no-input")
-    }
-    Add-Step -Rows $summary.steps -Name "pip-install-editable" -Ok ($editableInstall.exit_code -eq 0) -Detail (First-Line -Text $editableInstall.output)
-    if ($editableInstall.exit_code -ne 0) {
-        throw "pip install -e . failed."
+        Add-Step -Rows $summary.steps -Name "pip-install-editable" -Ok $true -Detail "skipped (use -InstallEditable to enable)"
+        $summary.notes.Add("Core package install skipped. Run: python -m pip install -e .") | Out-Null
     }
 
     $shouldInstallLlama = $false
