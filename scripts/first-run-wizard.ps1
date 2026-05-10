@@ -1,5 +1,6 @@
 param(
     [string]$PreferredPythonVersion = "3.12",
+    [switch]$UpgradePipPackages,
     [switch]$SkipLlamaCpp,
     [switch]$NonInteractive,
     [switch]$Json
@@ -271,11 +272,16 @@ try {
 
     $summary.python = $python
 
-    Write-Host "[INFO] Upgrading pip/setuptools/wheel..." -ForegroundColor Cyan
-    $pipUpgrade = Invoke-Python -Python $python -Args @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
-    Add-Step -Rows $summary.steps -Name "pip-upgrade" -Ok ($pipUpgrade.exit_code -eq 0) -Detail (First-Line -Text $pipUpgrade.output)
-    if ($pipUpgrade.exit_code -ne 0) {
-        throw "pip upgrade failed."
+    if ($UpgradePipPackages) {
+        Write-Host "[INFO] Upgrading pip/setuptools/wheel..." -ForegroundColor Cyan
+        $pipUpgrade = Invoke-Python -Python $python -Args @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel")
+        Add-Step -Rows $summary.steps -Name "pip-upgrade" -Ok ($pipUpgrade.exit_code -eq 0) -Detail (First-Line -Text $pipUpgrade.output)
+        if ($pipUpgrade.exit_code -ne 0) {
+            throw "pip upgrade failed."
+        }
+    }
+    else {
+        Add-Step -Rows $summary.steps -Name "pip-upgrade" -Ok $true -Detail "skipped (use -UpgradePipPackages to enable)"
     }
 
     Write-Host "[INFO] Installing core package (pip install -e .)..." -ForegroundColor Cyan

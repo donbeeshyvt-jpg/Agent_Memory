@@ -26,6 +26,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\first-run-wizard.p
 這個引導會做：
 - 檢查/安裝 `git`（可選，自動詢問）。
 - 檢查/安裝 `python`（可選，自動詢問）。
+- 預設跳過 `pip/setuptools/wheel` 升級（需要時可加 `-UpgradePipPackages`）。
 - 安裝核心套件（`pip install -e .`）。
 - 可選安裝 `llama-cpp-python`（你可先跳過）。
 - 建立第二大腦 + 初始化管家角色（呼叫 `bootstrap-v1.ps1`）。
