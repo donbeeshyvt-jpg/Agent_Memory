@@ -360,15 +360,35 @@ try {
             $summary.notes.Add("Missing scripts/install-llama-cpp-windows.ps1") | Out-Null
         }
         else {
-            $llamaOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -PythonExe $python.executable_path -Json
-            $llamaExit = $LASTEXITCODE
-            if ($llamaExit -eq 0) {
-                Add-Step -Rows $summary.steps -Name "install-llama-cpp" -Ok $true -Detail "ok"
+            if ($Json -or $NonInteractive) {
+                $llamaOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -PythonExe $python.executable_path -Json
+                $llamaExit = $LASTEXITCODE
+                if ($llamaExit -eq 0) {
+                    try {
+                        $llamaSummary = $llamaOut | ConvertFrom-Json
+                        $llamaDetail = if ($llamaSummary.mode) { [string]$llamaSummary.mode } else { "ok" }
+                        Add-Step -Rows $summary.steps -Name "install-llama-cpp" -Ok $true -Detail $llamaDetail
+                    }
+                    catch {
+                        Add-Step -Rows $summary.steps -Name "install-llama-cpp" -Ok $true -Detail "ok"
+                    }
+                }
+                else {
+                    $llamaText = Join-OutputText -Value $llamaOut
+                    Add-Step -Rows $summary.steps -Name "install-llama-cpp" -Ok $false -Detail (First-Line -Text $llamaText)
+                    $summary.notes.Add("llama-cpp install failed. Rerun scripts/install-llama-cpp-windows.ps1 later.") | Out-Null
+                }
             }
             else {
-                $llamaText = Join-OutputText -Value $llamaOut
-                Add-Step -Rows $summary.steps -Name "install-llama-cpp" -Ok $false -Detail (First-Line -Text $llamaText)
-                $summary.notes.Add("llama-cpp install failed. Rerun scripts/install-llama-cpp-windows.ps1 later.") | Out-Null
+                & powershell -NoProfile -ExecutionPolicy Bypass -File $installer -PythonExe $python.executable_path
+                $llamaExit = $LASTEXITCODE
+                if ($llamaExit -eq 0) {
+                    Add-Step -Rows $summary.steps -Name "install-llama-cpp" -Ok $true -Detail "ok"
+                }
+                else {
+                    Add-Step -Rows $summary.steps -Name "install-llama-cpp" -Ok $false -Detail "failed (see output above)"
+                    $summary.notes.Add("llama-cpp install failed. Rerun scripts/install-llama-cpp-windows.ps1 later.") | Out-Null
+                }
             }
         }
     }
