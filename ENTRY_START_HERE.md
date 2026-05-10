@@ -10,7 +10,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\first-run-wizard.p
 
 > 這個引導會幫你做安裝檢查與 `bootstrap-v1`（`pip install -e .` 預設跳過，可選擇啟用）。
 > 預設會跳過 `pip/setuptools/wheel` 升級；若要強制升級可加 `-UpgradePipPackages`。
-> 預設也會跳過 `pip install -e .`；若要一併安裝可加 `-InstallEditable`。
+> 預設也會跳過 `pip install -e .`（不主動詢問）；若要一併安裝可加 `-InstallEditable`。
 
 ## 1) 手動安裝
 ```powershell

@@ -265,6 +265,46 @@ function Invoke-PythonStreaming {
     }
 }
 
+function Resolve-PowerShellExe {
+    $candidates = @(
+        (Join-Path $PSHOME "powershell.exe"),
+        "powershell.exe",
+        "powershell"
+    )
+    foreach ($candidate in $candidates) {
+        if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+        if (Test-Path -LiteralPath $candidate) {
+            return (Resolve-Path -LiteralPath $candidate).Path
+        }
+        $cmd = Get-Command $candidate -ErrorAction SilentlyContinue
+        if ($cmd) {
+            return [string]$cmd.Source
+        }
+    }
+    return ""
+}
+
+function Invoke-PowerShellScriptJson {
+    param(
+        [string]$ScriptPath,
+        [string[]]$Args
+    )
+
+    $psExe = Resolve-PowerShellExe
+    if (-not $psExe) {
+        throw "PowerShell executable not found."
+    }
+
+    $allArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $ScriptPath) + $Args + @("-Json")
+    $stdout = & $psExe @allArgs 2>&1
+    $exitCode = if ($null -ne $LASTEXITCODE) { $LASTEXITCODE } else { 0 }
+    return [ordered]@{
+        exit_code = $exitCode
+        output = (Join-OutputText -Value $stdout).Trim()
+        command = "$psExe $($allArgs -join ' ')"
+    }
+}
+
 $summary = [ordered]@{
     started_at = (Get-Date).ToString("o")
     ended_at = ""
@@ -345,9 +385,6 @@ try {
     }
 
     $shouldInstallEditable = $InstallEditable
-    if (-not $Json -and -not $NonInteractive -and -not $InstallEditable) {
-        $shouldInstallEditable = Ask-YesNo -Prompt "Install core package into current Python now? (pip install -e .; may take longer)" -Default $false
-    }
 
     if ($shouldInstallEditable) {
         Write-Host "[INFO] Installing core package (pip install -e .)..." -ForegroundColor Cyan
@@ -365,7 +402,7 @@ try {
         }
     }
     else {
-        Add-Step -Rows $summary.steps -Name "pip-install-editable" -Ok $true -Detail "skipped (use -InstallEditable to enable)"
+        Add-Step -Rows $summary.steps -Name "pip-install-editable" -Ok $true -Detail "skipped by default (use -InstallEditable to enable)"
         $summary.notes.Add("Core package install skipped. Run: python -m pip install -e .") | Out-Null
     }
 
@@ -420,10 +457,73 @@ try {
 
     Write-Host "[INFO] Running bootstrap-v1..." -ForegroundColor Cyan
     $bootstrapScript = Join-Path $projectRoot "scripts/bootstrap-v1.ps1"
-    $bootstrapOut = & powershell -NoProfile -ExecutionPolicy Bypass -File $bootstrapScript -PythonExe $python.executable_path -SetDefaultVault -Json 2>&1
-    $bootstrapExit = $LASTEXITCODE
-    if ($bootstrapExit -ne 0) {
-        $bootstrapText = Join-OutputText -Value $bootstrapOut
+    $attempts = New-Object System.Collections.ArrayList
+    $fallbackSecondBrainRoot = ""
+    $fallbackModelsRoot = ""
+    if ($env:USERPROFILE) {
+        $fallbackSecondBrainRoot = Join-Path $env:USERPROFILE "SecondBrains\\default_second_brain"
+        $fallbackModelsRoot = Join-Path $env:USERPROFILE "0_Models"
+    }
+
+    $plans = New-Object System.Collections.ArrayList
+    $plans.Add([ordered]@{
+            name = "python_exe_default_paths"
+            python = [string]$python.executable_path
+            second_brain = ""
+            models = ""
+        }) | Out-Null
+    if ($python.launcher -and ($python.launcher -ne $python.executable_path)) {
+        $plans.Add([ordered]@{
+                name = "python_launcher_default_paths"
+                python = [string]$python.launcher
+                second_brain = ""
+                models = ""
+            }) | Out-Null
+    }
+    if ($fallbackSecondBrainRoot -and $fallbackModelsRoot) {
+        $plans.Add([ordered]@{
+                name = "python_exe_userprofile_paths"
+                python = [string]$python.executable_path
+                second_brain = $fallbackSecondBrainRoot
+                models = $fallbackModelsRoot
+            }) | Out-Null
+        if ($python.launcher -and ($python.launcher -ne $python.executable_path)) {
+            $plans.Add([ordered]@{
+                    name = "python_launcher_userprofile_paths"
+                    python = [string]$python.launcher
+                    second_brain = $fallbackSecondBrainRoot
+                    models = $fallbackModelsRoot
+                }) | Out-Null
+        }
+    }
+
+    $bootstrapOk = $false
+    $bootstrapRaw = ""
+    foreach ($plan in $plans) {
+        $args = @("-PythonExe", [string]$plan.python, "-SetDefaultVault")
+        if ($plan.second_brain) {
+            $args += @("-SecondBrainRoot", [string]$plan.second_brain)
+        }
+        if ($plan.models) {
+            $args += @("-ModelsRoot", [string]$plan.models)
+        }
+
+        $run = Invoke-PowerShellScriptJson -ScriptPath $bootstrapScript -Args $args
+        $attemptLine = "{0} exit={1} detail={2}" -f $plan.name, $run.exit_code, (First-Line -Text $run.output)
+        $attempts.Add($attemptLine) | Out-Null
+
+        if ($run.exit_code -eq 0) {
+            $bootstrapOk = $true
+            $bootstrapRaw = $run.output
+            if ($plan.second_brain) {
+                $summary.notes.Add("bootstrap used fallback roots under USERPROFILE.") | Out-Null
+            }
+            break
+        }
+    }
+
+    if (-not $bootstrapOk) {
+        $bootstrapText = [string]::Join([Environment]::NewLine, ($attempts | ForEach-Object { [string]$_ }))
         $bootstrapDetail = First-Line -Text $bootstrapText
         if (-not $bootstrapDetail) {
             $bootstrapDetail = "bootstrap failed; see diagnostic log"
@@ -437,7 +537,7 @@ try {
     }
 
     try {
-        $summary.bootstrap = ($bootstrapOut | ConvertFrom-Json)
+        $summary.bootstrap = ($bootstrapRaw | ConvertFrom-Json)
     }
     catch {
         $summary.bootstrap = $null
