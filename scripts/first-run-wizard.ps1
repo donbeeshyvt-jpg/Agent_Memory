@@ -691,14 +691,48 @@ try {
                         $existingKey = [Environment]::GetEnvironmentVariable($envName, "User")
                         if ($existingKey) {
                             Set-Item -LiteralPath "Env:$envName" -Value $existingKey
-                            Write-Host "  [OK] 從使用者環境變數載入 $envName" -ForegroundColor Green
                         }
                     }
-                    if (-not $existingKey) {
+
+                    $needPrompt = $true
+                    if ($existingKey) {
+                        # 已有 key — 顯示遮蔽片段,問要不要沿用 / 重貼 / 跳過
+                        $maskedKey = ""
+                        if ($existingKey.Length -ge 8) {
+                            $maskedKey = $existingKey.Substring(0, 4) + "..." + $existingKey.Substring($existingKey.Length - 4)
+                        }
+                        else {
+                            $maskedKey = "***"
+                        }
+                        Write-Host ""
+                        Write-Host "  [偵測到] 已有 $envName ($maskedKey)" -ForegroundColor Green
+                        Write-Host "    [1] 沿用此 key" -ForegroundColor Yellow
+                        Write-Host "    [2] 重貼新 key" -ForegroundColor Yellow
+                        Write-Host "    [3] 移除 key 並跳過 API" -ForegroundColor Yellow
+                        while ($true) {
+                            $subChoice = (Read-Host "  選 [1-3]").Trim()
+                            if ($subChoice -in @("1", "2", "3")) { break }
+                            Write-Host "  請輸入 1 / 2 / 3" -ForegroundColor Red
+                        }
+                        if ($subChoice -eq "1") {
+                            $needPrompt = $false
+                        }
+                        elseif ($subChoice -eq "3") {
+                            [Environment]::SetEnvironmentVariable($envName, $null, "User")
+                            Remove-Item -LiteralPath "Env:$envName" -ErrorAction SilentlyContinue
+                            $existingKey = ""
+                            $useGoogleApiAsDefault = $false
+                            Add-Step -Rows $summary.steps -Name "model-or-api" -Ok $true -Detail "removed existing key, skipped API"
+                            $needPrompt = $false
+                        }
+                        # 選 [2] 落入 $needPrompt = true 走 prompt 流程
+                    }
+
+                    if ($needPrompt -and $useGoogleApiAsDefault) {
                         Write-Host ""
                         Write-Host "  需要 Google AI Studio API key (https://aistudio.google.com/apikey 申請,有免費層)" -ForegroundColor Yellow
                         Write-Host "  輸入時不會顯示,Enter 確認" -ForegroundColor DarkGray
-                        $sec = Read-Host -Prompt "  GOOGLE_API_KEY" -AsSecureString
+                        $sec = Read-Host -Prompt "  $envName" -AsSecureString
                         if ($sec -and $sec.Length -gt 0) {
                             $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
                             try {
@@ -708,19 +742,22 @@ try {
                                 [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
                             }
                             Set-Item -LiteralPath "Env:$envName" -Value $existingKey
-                            $persist = Ask-YesNo -Prompt "要記住 key 到 Windows 使用者環境變數,下次自動載入?" -Default $true
+                            $persist = Ask-YesNo -Prompt "  記住 key 到 Windows 使用者環境變數,下次自動載入?" -Default $true
                             if ($persist) {
                                 [Environment]::SetEnvironmentVariable($envName, $existingKey, "User")
                                 Write-Host "  [OK] $envName 已寫入使用者環境變數" -ForegroundColor Green
                             }
                         }
                     }
-                    if ($existingKey) {
-                        Add-Step -Rows $summary.steps -Name "model-or-api" -Ok $true -Detail "Google API key configured"
-                    }
-                    else {
-                        Add-Step -Rows $summary.steps -Name "model-or-api" -Ok $true -Detail "Google API chosen but no key set (chat will be degraded)"
-                        $summary.notes.Add("選了 Google API 但 GOOGLE_API_KEY 沒設,對話會 degraded。用 menu [4] 重設,或 setx GOOGLE_API_KEY <key>") | Out-Null
+
+                    if ($useGoogleApiAsDefault) {
+                        if ($existingKey) {
+                            Add-Step -Rows $summary.steps -Name "model-or-api" -Ok $true -Detail "Google API key configured"
+                        }
+                        else {
+                            Add-Step -Rows $summary.steps -Name "model-or-api" -Ok $true -Detail "Google API chosen but no key (chat will degrade)"
+                            $summary.notes.Add("沒貼 key,對話會 degraded。menu [4] 重設,或 setx GOOGLE_API_KEY <key>") | Out-Null
+                        }
                     }
                 }
                 else {
@@ -766,6 +803,62 @@ try {
         }
         else {
             Add-Step -Rows $summary.steps -Name "configure-llm" -Ok $true -Detail "skipped (no model, no API selected)"
+        }
+
+        # Step: verify-llm — 真實 chat 驗證 (在 Discord setup 之前確認 LLM 可用)
+        # 跳過: NonInteractive 或者前面選了 skip (沒設模型也沒設 API)
+        $shouldVerifyLlm = ($resolvedVaultRoot) -and ($useGoogleApiAsDefault -or $hasGemma)
+        if ($shouldVerifyLlm) {
+            $verifyArgs = @("-X", "utf8", "-m", "agent_memory.cli", "--vault-root", $resolvedVaultRoot, "chat", "請只回 OK", "--persona", "steward", "--context", "wizard-verify", "--session", "wizard-verify", "--allow-llm-degraded", "--json")
+            $verifyRun = Invoke-Python -Python $python -ArgList $verifyArgs
+            $verifyOk = $false
+            $verifyDetail = "no JSON output"
+            if ($verifyRun.exit_code -eq 0) {
+                $rawV = [string]$verifyRun.output
+                $jsStart = $rawV.IndexOf('{')
+                $jsEnd = $rawV.LastIndexOf('}')
+                if ($jsStart -ge 0 -and $jsEnd -gt $jsStart) {
+                    try {
+                        $jv = $rawV.Substring($jsStart, $jsEnd - $jsStart + 1) | ConvertFrom-Json
+                        $isDeg = [bool]$jv.degraded
+                        $modelUsed = [string]$jv.llm.model
+                        if ($isDeg) {
+                            $verifyDetail = "degraded — LLM 沒實際回應 (key 無效 / model 不支援 / 網路)"
+                        }
+                        else {
+                            $verifyOk = $true
+                            $shortModel = if ($modelUsed.Length -gt 40) { "..." + $modelUsed.Substring($modelUsed.Length - 40) } else { $modelUsed }
+                            $verifyDetail = "ok — $shortModel"
+                        }
+                    }
+                    catch {
+                        $verifyDetail = "JSON parse fail"
+                    }
+                }
+            }
+            else {
+                $verifyDetail = "exit=$($verifyRun.exit_code)"
+            }
+            Add-Step -Rows $summary.steps -Name "verify-llm" -Ok $verifyOk -Detail $verifyDetail
+            if (-not $verifyOk -and -not $NonInteractive) {
+                Write-Host ""
+                Write-Host "  ⚠ LLM 驗證失敗: $verifyDetail" -ForegroundColor Yellow
+                Write-Host "    Discord setup 仍可繼續,但 chat 時管家不會回應。" -ForegroundColor DarkGray
+                Write-Host "    要先修 LLM 嗎? [Y/n]: " -NoNewline -ForegroundColor Yellow
+                $fix = Ask-YesNo -Prompt "" -Default $true
+                if ($fix) {
+                    Write-Host ""
+                    Write-Host "  可選:" -ForegroundColor Cyan
+                    Write-Host "    .\scripts\switch-llm.ps1                改 model 或重貼 key" -ForegroundColor DarkGray
+                    Write-Host "    .\scripts\switch-llm.ps1 -RemoveKey     移除 API key 重試" -ForegroundColor DarkGray
+                    Write-Host "    .\scripts\download-model.ps1            下載本機 GGUF 走本機路徑" -ForegroundColor DarkGray
+                    Write-Host ""
+                    $summary.notes.Add("LLM verify 失敗 — 使用者選擇繼續 Discord,可後續用 switch-llm.ps1 修") | Out-Null
+                }
+            }
+        }
+        else {
+            Add-Step -Rows $summary.steps -Name "verify-llm" -Ok $true -Detail "skipped (no LLM configured)"
         }
     }
 
@@ -960,43 +1053,7 @@ if ($summary.overall_ok) {
         Write-Host ""
     }
     Write-Host "===============================================================" -ForegroundColor Cyan
-
-    # ========== 跟進步驟 1：自動跑一次管家對話 smoke ==========
-    Write-Host ""
-    Write-Host "  [檢查] 管家對話 smoke..." -ForegroundColor Cyan
-    $smokeArgs = @("-X", "utf8", "-m", "agent_memory.cli")
-    if ($VaultRoot -and $resolvedVaultRoot) {
-        $smokeArgs += @("--vault-root", $resolvedVaultRoot)
-    }
-    $smokeArgs += @("chat", "請只回 OK 兩個字，不要其他內容。", "--persona", "steward", "--context", "first-run", "--session", "first-run-smoke", "--allow-llm-degraded", "--json")
-    $smokeRun = Invoke-Python -Python $python -ArgList $smokeArgs
-    if ($smokeRun.exit_code -eq 0) {
-        # 抽 JSON（llama-cpp 載入訊息可能混進 stderr）。
-        $rawSmoke = [string]$smokeRun.output
-        $jsonStart = $rawSmoke.IndexOf('{')
-        $jsonEnd = $rawSmoke.LastIndexOf('}')
-        if ($jsonStart -ge 0 -and $jsonEnd -gt $jsonStart) {
-            $rawSmoke = $rawSmoke.Substring($jsonStart, $jsonEnd - $jsonStart + 1)
-        }
-        try {
-            $smokeData = $rawSmoke | ConvertFrom-Json
-            $isDegraded = [bool]$smokeData.degraded
-            if ($isDegraded) {
-                Write-Host "         ⚠ 管家暫無可用 LLM。設 token 或下載模型即可上線。" -ForegroundColor Yellow
-            }
-            else {
-                Write-Host "         ✓ 管家可正常對話" -ForegroundColor Green
-            }
-        }
-        catch {
-            Write-Host "         ⚠ smoke output parse 失敗" -ForegroundColor Yellow
-        }
-    }
-    else {
-        Write-Host "         ✗ smoke exit=$($smokeRun.exit_code)" -ForegroundColor Red
-    }
-
-    # Discord 已在主流程中完成,這裡不再重複問。
+    # 結尾的 chat smoke 已移到 verify-llm step (在 Discord setup 之前),這裡不再重複。
 
     Write-Host ""
     Write-Host "===============================================================" -ForegroundColor Cyan
