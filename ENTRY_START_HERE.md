@@ -51,32 +51,31 @@
 
 ---
 
-## 模型選擇
+## 模型選擇（基礎三套）
 
-### 本地（推薦給有 GPU/RAM 的）
+預設只提供 **2 個本地模型 + Google API**，三選一夠用。要更多進階選項見最下方「進階」段落。
+
+### A. 本地推理（推薦給有 GPU/8GB+ RAM 的）
 
 按 `[5] 下載本地模型`：
 
 | 號 | 模型 | 大小 | 適合 |
 |---|---|---|---|
-| 1 | gemma-4 E4B Instruct Q8 | 4 GB | 快速啟動，4-6GB RAM 也能跑 |
-| 2 | Qwen3-8B Instruct Q4 | 5 GB | 平衡，聊天角色推薦 |
-| 3 | Qwen3-14B Instruct Q4 | 9 GB | 推理強，工程角色 |
-| 4 | Qwen3-30B-A3B UD-Q4_K_XL | 17 GB | Sparse MoE，大模型 |
-| 5 | Qwen3.5-9B Q8 | 10 GB | 中文流暢 |
-| 6 | Llama-3.2-3B Q5 | 2 GB | 最輕量 |
-| 7 | Phi-3.5-mini Q5 | 2.7 GB | 微軟出品，小模型強推理 |
+| 1 | **gemma-4 E4B Instruct Q8** | ~4 GB | 快速啟動，4-6GB RAM 也能跑，預設首選 |
+| 2 | **Qwen3.5-9B Q8** | ~10 GB | 中文流暢，主要對話角色用 |
 
-### 雲端（推薦給不想跑模型的）
+下載完按 `[4] 切換 LLM 模型 → [1] 本機 llama-cpp-python` 選對應路徑即可。
 
-按 `[4] 切換 LLM 模型` → 選 provider：
+### B. 雲端 API（推薦給沒 GPU / 想試最新模型的）
 
-| Provider | API key env | 推薦 model |
+按 `[4] 切換 LLM 模型 → [2] Google Gemini / Gemma API`：
+
+| API key env | 推薦 model | 備註 |
 |---|---|---|
-| Google Gemini | `GOOGLE_API_KEY` | `gemini-2.5-flash`, `gemma-4-31b-it`, `gemma-4-26b-a4b-it` |
-| OpenAI | `OPENAI_API_KEY` | `gpt-4.1-mini`, `gpt-4.1` |
-| OpenRouter | `OPENROUTER_API_KEY` | `anthropic/claude-sonnet-4.6` (一個 key 用各家) |
-| Anthropic | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
+| `GOOGLE_API_KEY` | `gemini-2.5-flash` | 最快，免費層大，預設首選 |
+| `GOOGLE_API_KEY` | `gemini-2.5-pro` | 推理強，較慢 |
+| `GOOGLE_API_KEY` | `gemma-4-31b-it` | Gemma 系列大模型 |
+| `GOOGLE_API_KEY` | `gemma-4-26b-a4b-it` | Gemma sparse MoE |
 
 加 `-PersistKey` 旗標把 API key 寫入 Windows 使用者環境變數（registry，不寫檔，不推 git）。
 
@@ -99,18 +98,32 @@
 
 ---
 
-## 角色 / 模型搭配（給有多模型的人）
+## 角色 / 模型搭配
 
 每個 persona 可以單獨指定用哪個 model：
 ```powershell
-# 管家 steward 用本地大模型（推理強）
-python -X utf8 -m agent_memory.cli llm-set-persona --persona steward --profile llama_cpp_local --model "../../0_Models/Qwen3-14B-GGUF/qwen3-14b-instruct-q4_k_m.gguf"
+# 管家 steward 用本地 gemma-4（輕量、執行工具用）
+python -X utf8 -m agent_memory.cli llm-set-persona --persona steward --profile llama_cpp_local --model "../../0_Models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q8_0.gguf"
 
-# 但寫作角色 writer-curator 用 Qwen3.5-9B（中文流暢）
+# 主要對話角色用 Qwen3.5-9B（中文流暢）
 python -X utf8 -m agent_memory.cli llm-set-persona --persona writer-curator --profile llama_cpp_local --model "../../0_Models/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q8_0.gguf"
 
-# 全域 default 設成雲端 fallback
+# 全域 default 設成 Gemini（雲端 fallback）
 python -X utf8 -m agent_memory.cli llm-set-default --profile gemini --model gemini-2.5-flash
+```
+
+## 進階：其他 cloud provider（非預設）
+
+`switch-llm.ps1` 選單還有以下 provider，預設不主推但可選：
+- `[3] OpenAI 商用 API` — `OPENAI_API_KEY` / `gpt-4.1-mini`
+- `[4] OpenRouter` — `OPENROUTER_API_KEY` / `anthropic/claude-sonnet-4.6` (一個 key 用各家)
+- `[5] Anthropic Claude 直連` — `ANTHROPIC_API_KEY` / `claude-sonnet-4-6`
+- `[6] 本機 Ollama` — 需先 `ollama serve`
+
+要直接用 CLI 不開選單：
+```powershell
+$env:OPENAI_API_KEY = "sk-..."
+python -X utf8 -m agent_memory.cli llm-set-default --profile openai --model gpt-4.1-mini
 ```
 
 ---

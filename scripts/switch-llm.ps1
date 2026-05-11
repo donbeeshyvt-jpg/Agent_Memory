@@ -70,12 +70,7 @@ $providers = @(
         api_key_env = ""
         recommended_models = @(
             "../../0_Models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q8_0.gguf",
-            "../../0_Models/Qwen3-8B-GGUF/qwen3-8b-instruct-q4_k_m.gguf",
-            "../../0_Models/Qwen3-14B-GGUF/qwen3-14b-instruct-q4_k_m.gguf",
-            "../../0_Models/Qwen3-30B-A3B-GGUF/Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf",
-            "../../0_Models/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q8_0.gguf",
-            "../../0_Models/Llama-3.2-3B-GGUF/Llama-3.2-3B-Instruct-Q5_K_M.gguf",
-            "../../0_Models/Phi-3.5-mini-GGUF/Phi-3.5-mini-instruct-Q5_K_M.gguf"
+            "../../0_Models/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q8_0.gguf"
         )
         notes = "需要 GGUF 已下載 + llama-cpp-python 已裝。沒有的可用 download-model.ps1 抓。"
     },

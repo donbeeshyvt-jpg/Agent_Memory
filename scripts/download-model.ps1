@@ -72,58 +72,13 @@ $models = @(
         notes = "輕量,啟動快,推薦給 fresh user / 4-6GB RAM"
     },
     [ordered]@{
-        key = "qwen3-8b"
-        display = "Qwen3-8B Instruct Q4_K_M"
-        size = "~5 GB"
-        repo = "Qwen/Qwen3-8B-Instruct-GGUF"
-        file = "qwen3-8b-instruct-q4_k_m.gguf"
-        subdir = "Qwen3-8B-GGUF"
-        notes = "平衡,推薦給聊天角色 (8GB+ VRAM 流暢)"
-    },
-    [ordered]@{
-        key = "qwen3-14b"
-        display = "Qwen3-14B Instruct Q4_K_M"
-        size = "~9 GB"
-        repo = "Qwen/Qwen3-14B-Instruct-GGUF"
-        file = "qwen3-14b-instruct-q4_k_m.gguf"
-        subdir = "Qwen3-14B-GGUF"
-        notes = "推理強,推薦給工程角色 (12GB+ VRAM)"
-    },
-    [ordered]@{
-        key = "qwen3-30b"
-        display = "Qwen3-30B-A3B Instruct UD-Q4_K_XL"
-        size = "~17 GB"
-        repo = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
-        file = "Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf"
-        subdir = "Qwen3-30B-A3B-GGUF"
-        notes = "Sparse MoE,大力出奇蹟 (24GB+ VRAM)"
-    },
-    [ordered]@{
         key = "qwen35-9b"
         display = "Qwen3.5-9B Q8_0"
         size = "~10 GB"
         repo = "seerware/Qwen3.5-9B-GGUF"
         file = "Qwen3.5-9B-Q8_0.gguf"
         subdir = "Qwen3.5-9B-GGUF"
-        notes = "Qwen3.5 系列,中文流暢"
-    },
-    [ordered]@{
-        key = "llama32-3b"
-        display = "Llama-3.2-3B Instruct Q5_K_M"
-        size = "~2 GB"
-        repo = "bartowski/Llama-3.2-3B-Instruct-GGUF"
-        file = "Llama-3.2-3B-Instruct-Q5_K_M.gguf"
-        subdir = "Llama-3.2-3B-GGUF"
-        notes = "最輕量 (2-4GB RAM 也能跑)"
-    },
-    [ordered]@{
-        key = "phi35-mini"
-        display = "Phi-3.5-mini Instruct Q5_K_M"
-        size = "~2.7 GB"
-        repo = "bartowski/Phi-3.5-mini-instruct-GGUF"
-        file = "Phi-3.5-mini-instruct-Q5_K_M.gguf"
-        subdir = "Phi-3.5-mini-GGUF"
-        notes = "微軟出品,小模型強推理"
+        notes = "中文流暢,適合主要對話角色"
     }
 )
 
