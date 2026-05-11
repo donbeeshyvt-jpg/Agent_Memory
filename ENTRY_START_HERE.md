@@ -75,10 +75,10 @@
 
 | 推薦 model | 備註 |
 |---|---|
-| `gemini-2.5-flash` | 最快、免費層大、預設首選 |
-| `gemini-2.5-pro` | 推理強、較慢 |
-| `gemma-4-31b-it` | Gemma 系列大模型 |
+| `gemma-4-31b-it` | Gemma 系列大模型,**預設首選** |
+| `gemini-2.5-pro` | 推理強,較慢 |
 | `gemma-4-26b-a4b-it` | Gemma sparse MoE |
+| `gemini-2.5-flash` | 最快,免費層大 |
 
 第一次選 Google API 時會 **SecureString prompt** 你貼 `GOOGLE_API_KEY`（輸入不顯示）;
 回 y 「記住 key」會用 `setx` 寫進 Windows 使用者環境變數 (registry,**不寫檔案、不推 git**),下次自動載入。

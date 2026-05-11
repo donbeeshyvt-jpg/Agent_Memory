@@ -80,10 +80,10 @@ $providers = @(
         display = "Google Gemini / Gemma API"
         api_key_env = "GOOGLE_API_KEY"
         recommended_models = @(
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
             "gemma-4-31b-it",
-            "gemma-4-26b-a4b-it"
+            "gemini-2.5-pro",
+            "gemma-4-26b-a4b-it",
+            "gemini-2.5-flash"
         )
         notes = "OpenAI-compatible 端點。沒設過 GOOGLE_API_KEY 會 SecureString prompt 你貼。"
     }

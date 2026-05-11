@@ -734,10 +734,10 @@ try {
             Add-Step -Rows $summary.steps -Name "configure-llm" -Ok $true -Detail "skipped (-SkipConfigureLLM)"
         }
         elseif ($useGoogleApiAsDefault -and $resolvedVaultRoot) {
-            # 設 global_default 為 gemini-2.5-flash
-            $setRun = Invoke-Python -Python $python -ArgList @("-X", "utf8", "-m", "agent_memory.cli", "--vault-root", $resolvedVaultRoot, "llm-set-default", "--profile", "gemini", "--model", "gemini-2.5-flash", "--json")
+            # 設 global_default 為 gemma-4-31b-it（預設首選）
+            $setRun = Invoke-Python -Python $python -ArgList @("-X", "utf8", "-m", "agent_memory.cli", "--vault-root", $resolvedVaultRoot, "llm-set-default", "--profile", "gemini", "--model", "gemma-4-31b-it", "--json")
             if ($setRun.exit_code -eq 0) {
-                Add-Step -Rows $summary.steps -Name "configure-llm" -Ok $true -Detail "global_default=gemini/gemini-2.5-flash"
+                Add-Step -Rows $summary.steps -Name "configure-llm" -Ok $true -Detail "global_default=gemini/gemma-4-31b-it"
             }
             else {
                 Add-Step -Rows $summary.steps -Name "configure-llm" -Ok $false -Detail "llm-set-default failed: $(First-Line -Text $setRun.output)"
