@@ -229,7 +229,7 @@ _LLM_PRESETS: dict[str, tuple[str, str, str]] = {
     ),
     "qwen30": (
         "llama_cpp_local",
-        "../../0_Models/Qwen3-30B-A3B-UD-Q4_K_XL.gguf",
+        "../../0_Models/Qwen3-30B-A3B-GGUF/Qwen3-30B-A3B-UD-Q4_K_XL.gguf",
         "本機 Qwen3-30B-A3B (Q4_K_XL)",
     ),
     # Google Gemini / Gemma API

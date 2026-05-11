@@ -79,7 +79,7 @@ $models = @(
         size = "~17 GB"
         repo = "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF"
         file = "Qwen3-30B-A3B-UD-Q4_K_XL.gguf"
-        subdir = ""
+        subdir = "Qwen3-30B-A3B-GGUF"
         notes = "Sparse MoE 大模型,推理 / 工程角色 (24GB+ VRAM 較順)"
     }
 )
