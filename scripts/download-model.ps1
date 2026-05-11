@@ -75,11 +75,11 @@ $models = @(
     },
     [ordered]@{
         key = "qwen30"
-        display = "Qwen3-30B-A3B Instruct UD-Q4_K_XL"
+        display = "Qwen3-30B-A3B UD-Q4_K_XL"
         size = "~17 GB"
-        repo = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
-        file = "Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf"
-        subdir = "Qwen3-30B-A3B-GGUF"
+        repo = "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF"
+        file = "Qwen3-30B-A3B-UD-Q4_K_XL.gguf"
+        subdir = ""
         notes = "Sparse MoE 大模型,推理 / 工程角色 (24GB+ VRAM 較順)"
     }
 )

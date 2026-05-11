@@ -71,7 +71,7 @@ $providers = @(
         recommended_models = @(
             "../../0_Models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q8_0.gguf",
             "../../0_Models/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q8_0.gguf",
-            "../../0_Models/Qwen3-30B-A3B-GGUF/Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf"
+            "../../0_Models/Qwen3-30B-A3B-UD-Q4_K_XL.gguf"
         )
         notes = "需要 GGUF 已下載 + llama-cpp-python 已裝。沒有的可用 download-model.ps1 抓。"
     },
