@@ -20,9 +20,14 @@ def _normalize_model_ref(raw: str | None, fallback: str = "") -> str:
 
 
 def _default_router_config() -> dict[str, Any]:
+    """V1 範圍：只支援『本機 GGUF (llama_cpp_local)』+『Google Gemini / Gemma API (gemini)』。
+
+    其他 provider (openai/openrouter/anthropic/ollama/opencode) 已從 V1 預設移除。
+    使用者要的話可手動編輯 yaml 補回。
+    """
     return {
         "schema_version": 1,
-        "description": "全域預設 LLM + 人格覆蓋 + fallback 鏈。改這裡即可影響所有入口。",
+        "description": "V1：本機 GGUF + Google Gemini API。改 global_default / persona_overrides 切角色用哪顆。",
         "resolution_order": [
             "request_override",
             "persona_override",
@@ -30,32 +35,21 @@ def _default_router_config() -> dict[str, Any]:
             "fallback_chain",
         ],
         "global_default": {
-            "profile": "ollama_local",
-            "model": "qwen3:14b",
+            "profile": "llama_cpp_local",
+            "model": "../../0_Models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q8_0.gguf",
         },
         "fallback_chain": [
-            {"profile": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
-            {"profile": "openai", "model": "gpt-4.1-mini"},
+            {"profile": "gemini", "model": "gemma-4-31b-it"},
         ],
-        "persona_overrides": {
-            # "coder": {"profile": "opencode_go", "model": "opencode/kimi-k2.6"},
-            # "writer": {"profile": "gemini", "model": "gemini-2.5-pro"},
-        },
+        "persona_overrides": {},
         "providers": {
-            "ollama_local": {
-                "kind": "ollama",
-                "zh_label": "本地免費模型（Ollama）",
-                "base_url": "http://127.0.0.1:11434",
-                "api_key_env": "OLLAMA_API_KEY",
-                "requires_api_key": False,
-            },
             "llama_cpp_local": {
                 "kind": "llama_cpp_python",
                 "zh_label": "本機 GGUF 直連（llama-cpp-python）",
                 "base_url": "local://llama-cpp-python",
                 "api_key_env": "",
                 "requires_api_key": False,
-                "model_path": "../../0_Models/Qwen3-30B-A3B-Q4_K_M.gguf",
+                "model_path": "../../0_Models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q8_0.gguf",
                 "n_ctx": 4096,
                 "n_gpu_layers": 999,
                 "n_batch": 512,
@@ -64,46 +58,11 @@ def _default_router_config() -> dict[str, Any]:
                 "max_tokens": 1024,
                 "strip_think_tags": True,
             },
-            "openai": {
-                "kind": "openai_compatible",
-                "zh_label": "OpenAI 商用 API",
-                "base_url": "https://api.openai.com/v1",
-                "api_key_env": "OPENAI_API_KEY",
-                "requires_api_key": True,
-            },
-            "anthropic": {
-                "kind": "anthropic",
-                "zh_label": "Anthropic 商用 API",
-                "base_url": "https://api.anthropic.com/v1",
-                "api_key_env": "ANTHROPIC_API_KEY",
-                "requires_api_key": True,
-            },
             "gemini": {
                 "kind": "openai_compatible",
-                "zh_label": "Google Gemini API",
+                "zh_label": "Google Gemini / Gemma API",
                 "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
                 "api_key_env": "GOOGLE_API_KEY",
-                "requires_api_key": True,
-            },
-            "openrouter": {
-                "kind": "openai_compatible",
-                "zh_label": "OpenRouter 聚合 API",
-                "base_url": "https://openrouter.ai/api/v1",
-                "api_key_env": "OPENROUTER_API_KEY",
-                "requires_api_key": True,
-            },
-            "opencode_zen": {
-                "kind": "openai_compatible",
-                "zh_label": "OpenCode Zen 商用聚合",
-                "base_url": "https://opencode.ai/zen/v1",
-                "api_key_env": "OPENCODE_ZEN_API_KEY",
-                "requires_api_key": True,
-            },
-            "opencode_go": {
-                "kind": "openai_compatible",
-                "zh_label": "OpenCode Go（偏開源模型池）",
-                "base_url": "https://opencode.ai/zen/go/v1",
-                "api_key_env": "OPENCODE_GO_API_KEY",
                 "requires_api_key": True,
             },
         },

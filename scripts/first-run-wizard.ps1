@@ -769,19 +769,66 @@ try {
         }
     }
 
-    # Step: optional Discord setup (writes scripts/discord-relay-stack.local.json with one steward relay)
-    if ($SetupDiscord -and $resolvedVaultRoot) {
+    # Step: Discord setup — 互動模式預設會問,要用 -SetupDiscord 強制開,要 NonInteractive 才完全跳過
+    $shouldRunDiscordSetup = $false
+    if ($SetupDiscord) {
+        $shouldRunDiscordSetup = $true
+    }
+    elseif (-not $NonInteractive -and $resolvedVaultRoot) {
+        # 偵測既有 relay config — 已配置過就 skip
+        $existingRelayCfg = Join-Path $projectRoot "scripts/discord-relay-stack.local.json"
+        if (-not (Test-Path -LiteralPath $existingRelayCfg)) {
+            Write-Host ""
+            Write-Host "  Discord 整合: 把管家上線到 Discord 頻道?" -ForegroundColor Cyan
+            Write-Host "    需要先準備好: (a) 頻道 ID  (b) Discord Bot Token" -ForegroundColor DarkGray
+            $shouldRunDiscordSetup = Ask-YesNo -Prompt "  現在設?" -Default $false
+        }
+    }
+
+    if ($shouldRunDiscordSetup -and $resolvedVaultRoot) {
         $discordOk = $true
         $discordDetail = "ready"
         $effectiveChannelId = $DiscordChannelId
         if (-not $effectiveChannelId -and -not $NonInteractive) {
-            $effectiveChannelId = (Read-Host "Discord channel id for $DiscordPersona (Enter to skip)").Trim()
+            Write-Host ""
+            $effectiveChannelId = (Read-Host "  Discord 頻道 ID (Enter 跳過)").Trim()
         }
         if ([string]::IsNullOrWhiteSpace($effectiveChannelId)) {
             $discordOk = $true
-            $discordDetail = "skipped (no channel id provided)"
+            $discordDetail = "skipped (no channel id)"
         }
         else {
+            # 也問 Bot Token (SecureString)
+            $tokenAlreadySet = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($DiscordTokenEnv, "Process"))
+            if (-not $tokenAlreadySet) {
+                $userToken = [Environment]::GetEnvironmentVariable($DiscordTokenEnv, "User")
+                if ($userToken) {
+                    Set-Item -LiteralPath "Env:$DiscordTokenEnv" -Value $userToken
+                    Write-Host "  [OK] 從使用者環境變數載入 $DiscordTokenEnv" -ForegroundColor Green
+                    $tokenAlreadySet = $true
+                }
+            }
+            if (-not $tokenAlreadySet -and -not $NonInteractive) {
+                Write-Host "  Bot Token 從 Discord Developer Portal 取得 (輸入時不顯示):" -ForegroundColor DarkGray
+                $sec = Read-Host -Prompt "  $DiscordTokenEnv" -AsSecureString
+                if ($sec -and $sec.Length -gt 0) {
+                    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+                    try {
+                        $tokenVal = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+                    }
+                    finally {
+                        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+                    }
+                    Set-Item -LiteralPath "Env:$DiscordTokenEnv" -Value $tokenVal
+                    $persist = Ask-YesNo -Prompt "  記住 token 到 Windows 使用者環境變數,下次自動載入?" -Default $true
+                    if ($persist) {
+                        [Environment]::SetEnvironmentVariable($DiscordTokenEnv, $tokenVal, "User")
+                        Write-Host "  [OK] $DiscordTokenEnv 已寫入使用者環境變數" -ForegroundColor Green
+                    }
+                    $tokenAlreadySet = $true
+                }
+            }
+
             $relayConfig = [ordered]@{
                 bridge_url = "http://127.0.0.1:16000"
                 python_exe = "python"
@@ -812,17 +859,14 @@ try {
                 $discordDetail = "channel-bind failed: $(First-Line -Text $bindRun.output)"
             }
             else {
-                $discordDetail = "relay config + channel-bind ready (channel=$effectiveChannelId persona=$DiscordPersona)"
-                $tokenSet = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($DiscordTokenEnv, "Process"))
-                if (-not $tokenSet) {
-                    $summary.notes.Add("Discord token env var '$DiscordTokenEnv' not set. Set it before starting relay: `$env:$DiscordTokenEnv = 'YOUR_BOT_TOKEN'") | Out-Null
-                }
+                $tokenStatus = if ($tokenAlreadySet) { "token=ok" } else { "token=missing" }
+                $discordDetail = "channel=$effectiveChannelId persona=$DiscordPersona $tokenStatus"
             }
         }
         Add-Step -Rows $summary.steps -Name "discord-setup" -Ok $discordOk -Detail $discordDetail
     }
     else {
-        Add-Step -Rows $summary.steps -Name "discord-setup" -Ok $true -Detail "skipped (use -SetupDiscord to enable)"
+        Add-Step -Rows $summary.steps -Name "discord-setup" -Ok $true -Detail "skipped (user declined or NonInteractive)"
     }
 }
 catch {
@@ -952,57 +996,7 @@ if ($summary.overall_ok) {
         Write-Host "         ✗ smoke exit=$($smokeRun.exit_code)" -ForegroundColor Red
     }
 
-    # ========== 跟進步驟 2：問要不要現在設 Discord ==========
-    # 偵測既有設定，避免對「重跑」的使用者重複問。
-    if ((-not $hasDiscordStep) -and (-not $hasExistingRelay) -and (-not $NonInteractive)) {
-        Write-Host ""
-        $wantDiscord = Ask-YesNo -Prompt "現在要設定 Discord steward 頻道嗎？(會寫 discord-relay-stack.local.json + 綁定 channel)" -Default $false
-        if ($wantDiscord) {
-            $cid = (Read-Host "  Discord channel id (留空跳過)").Trim()
-            if (-not [string]::IsNullOrWhiteSpace($cid)) {
-                $resolvedVaultRoot = ""
-                if ($summary.bootstrap -and $summary.bootstrap.second_brain_root) {
-                    $resolvedVaultRoot = [string]$summary.bootstrap.second_brain_root
-                }
-                $relayConfigInline = [ordered]@{
-                    bridge_url = "http://127.0.0.1:16000"
-                    python_exe = "python"
-                    allow_llm_degraded = $true
-                    disable_message_content_intent = $false
-                    timeout_sec = 120
-                    notes = [ordered]@{
-                        generated_by = "first-run-wizard-followup"
-                        credentials_must_be_env_var_only = $true
-                    }
-                    relays = @(
-                        [ordered]@{
-                            name = "$DiscordPersona-relay"
-                            token_env = $DiscordTokenEnv
-                            mode = "executor"
-                            persona = $DiscordPersona
-                            channel_ids = @($cid)
-                        }
-                    )
-                }
-                $relayPathInline = Join-Path $projectRoot "scripts/discord-relay-stack.local.json"
-                ($relayConfigInline | ConvertTo-Json -Depth 8) | Set-Content -LiteralPath $relayPathInline -Encoding UTF8
-                $bindRunInline = Invoke-Python -Python $python -ArgList @("-X", "utf8", "-m", "agent_memory.cli", "--vault-root", $resolvedVaultRoot, "channel-bind", "--transport", "discord", "--channel-id", $cid, "--persona", $DiscordPersona, "--operator", "first-run-wizard-followup", "--json")
-                if ($bindRunInline.exit_code -eq 0) {
-                    Write-Host ""
-                    Write-Host "  [OK] Discord 綁定完成 (channel=$cid persona=$DiscordPersona)" -ForegroundColor Green
-                    Write-Host "  [TODO] 一鍵上線管家：" -ForegroundColor Yellow
-                    Write-Host "         .\scripts\start-steward.ps1 -PersistToken"
-                    Write-Host "         (第一次會 SecureString prompt 你貼 token；-PersistToken 會記住，下次免再貼)"
-                }
-                else {
-                    Write-Host "  [ERR] channel-bind 失敗：$(First-Line -Text $bindRunInline.output)" -ForegroundColor Red
-                }
-            }
-            else {
-                Write-Host "  [INFO] Discord 已跳過。" -ForegroundColor DarkGray
-            }
-        }
-    }
+    # Discord 已在主流程中完成,這裡不再重複問。
 
     Write-Host ""
     Write-Host "===============================================================" -ForegroundColor Cyan

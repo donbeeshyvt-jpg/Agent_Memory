@@ -57,7 +57,7 @@ $LocalDirRoot = (Resolve-Path -LiteralPath $LocalDirRoot).Path
 $models = @(
     [ordered]@{
         key = "gemma4"
-        display = "gemma-4 E4B Instruct Q8_0"
+        display = "gemma-4-E4B-it Q8_0"
         size = "~4 GB"
         repo = "ggml-org/gemma-4-E4B-it-GGUF"
         file = "gemma-4-E4B-it-Q8_0.gguf"

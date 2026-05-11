@@ -43,6 +43,7 @@ param(
     [string]$VaultRoot = "",
     [switch]$PersistKey,
     [switch]$NonInteractive,
+    [switch]$RemoveKey,
     [int]$Provider = 0,
     [string]$Model = "",
     [string]$PythonExe = "python"
@@ -94,8 +95,17 @@ function Show-CurrentDefault {
     $cliArgs = @("-X", "utf8", "-m", "agent_memory.cli")
     if ($VaultRoot) { $cliArgs += @("--vault-root", $VaultRoot) }
     $cliArgs += "llm-show"
-    & $PythonExe @cliArgs 2>&1 | Select-Object -First 6 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
+    # 只顯示前 2 行（selected 那條）,不秀完整 fallback chain
+    & $PythonExe @cliArgs 2>&1 | Select-Object -First 2 | ForEach-Object { Write-Host "  $_" -ForegroundColor DarkGray }
     Write-Host ""
+}
+
+function Remove-StoredApiKey {
+    param([string]$EnvVarName)
+    if (-not $EnvVarName) { return }
+    [Environment]::SetEnvironmentVariable($EnvVarName, $null, "User")
+    Remove-Item -LiteralPath "Env:$EnvVarName" -ErrorAction SilentlyContinue
+    Write-Host "  [OK] 已移除 $EnvVarName (User 環境變數 + 此 process)" -ForegroundColor Yellow
 }
 
 function Read-Choice {
@@ -163,6 +173,42 @@ Write-Host "===============================================================" -Fo
 Write-Host ""
 
 Show-CurrentDefault
+
+# 早期分支：-RemoveKey 跳出互動,先讓使用者選要清哪個 provider 的 key
+if ($RemoveKey) {
+    Write-Host "[移除 API key 模式]" -ForegroundColor Yellow
+    Write-Host ""
+    $apiProviders = New-Object System.Collections.ArrayList
+    foreach ($p in $providers) {
+        $envName = [string]$p["api_key_env"]
+        if (-not [string]::IsNullOrWhiteSpace($envName)) {
+            [void]$apiProviders.Add($p)
+        }
+    }
+    for ($i = 0; $i -lt $apiProviders.Count; $i++) {
+        $p = $apiProviders[$i]
+        $envName = [string]$p["api_key_env"]
+        $hasKey = (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($envName, "Process"))) `
+              -or (-not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($envName, "User")))
+        $state = if ($hasKey) { "[key:ok]" } else { "[key:missing]" }
+        Write-Host ("  [{0}] 移除 {1} ({2}) {3}" -f ($i + 1), $p["display"], $envName, $state) -ForegroundColor Yellow
+    }
+    Write-Host "  [Q] 取消"
+    Write-Host ""
+    $rc = (Read-Host "  選號碼").Trim()
+    if ($rc -in @("Q", "q") -or -not ($rc -match '^\d+$')) {
+        Write-Host "[INFO] 已取消。" -ForegroundColor DarkGray
+        exit 0
+    }
+    $rci = [int]$rc - 1
+    if ($rci -lt 0 -or $rci -ge $apiProviders.Count) {
+        Write-Host "[ERR] 號碼無效" -ForegroundColor Red
+        exit 1
+    }
+    Remove-StoredApiKey -EnvVarName $apiProviders[$rci]["api_key_env"]
+    Write-Host "[OK] 完成。" -ForegroundColor Green
+    exit 0
+}
 
 Write-Host "[INFO] 可選 provider：" -ForegroundColor Cyan
 for ($i = 0; $i -lt $providers.Count; $i++) {
@@ -244,13 +290,11 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host "[OK] 預設已更新" -ForegroundColor Green
 Write-Host ""
 
-# Smoke 驗證
-Write-Host "[VERIFY] 跑一次管家對話 smoke..." -ForegroundColor Cyan
+# 真實 chat 驗證
+Write-Host "[檢查] 跑一次小對話驗證 ($($chosen.id))..." -ForegroundColor Cyan
 $smokeArgs = @("-X", "utf8", "-m", "agent_memory.cli")
 if ($VaultRoot) { $smokeArgs += @("--vault-root", $VaultRoot) }
-$smokeArgs += @("chat", "請只回 OK 兩個字，不要其他內容。", "--persona", "steward", "--context", "switch-llm", "--session", "switch-llm-smoke", "--allow-llm-degraded", "--json")
-# PS5.1 的 2>&1 對 native command 會把 stderr 當 error 處理（NativeCommandError），
-# 需要先把 EAP 設成 Continue 才能順利合併輸出。
+$smokeArgs += @("chat", "請只回 OK", "--persona", "steward", "--context", "switch-llm", "--session", "switch-llm-smoke", "--allow-llm-degraded", "--json")
 $prevEap = $ErrorActionPreference
 $ErrorActionPreference = "Continue"
 try {
@@ -261,30 +305,43 @@ finally {
 }
 $jsonStart = $smokeRaw.IndexOf('{')
 $jsonEnd = $smokeRaw.LastIndexOf('}')
+$isDegraded = $true
+$resp = ""
 if ($jsonStart -ge 0 -and $jsonEnd -gt $jsonStart) {
     try {
         $j = $smokeRaw.Substring($jsonStart, $jsonEnd - $jsonStart + 1) | ConvertFrom-Json
         $isDegraded = [bool]$j.degraded
         $resp = [string]$j.response
         if ($resp.Length -gt 80) { $resp = $resp.Substring(0, 80) + "..." }
-        if ($isDegraded) {
-            Write-Host "  [WARN] degraded — LLM 沒有實際回應（可能 key 無效或網路）" -ForegroundColor Yellow
-            Write-Host "         response 預覽：$resp" -ForegroundColor DarkGray
-        }
-        else {
-            Write-Host "  [OK] 切換成功，模型可正常對話" -ForegroundColor Green
-            Write-Host "       response：$resp" -ForegroundColor DarkGray
-        }
     }
-    catch {
-        Write-Host "  [WARN] smoke 回應 JSON parse 失敗" -ForegroundColor Yellow
-    }
-}
-else {
-    Write-Host "  [WARN] smoke 沒拿到 JSON" -ForegroundColor Yellow
+    catch { }
 }
 
 Write-Host ""
 Write-Host "===============================================================" -ForegroundColor Cyan
-Write-Host " 完成。下次 chat 會用：$($chosen.id) / $model" -ForegroundColor Green
+if (-not $isDegraded) {
+    Write-Host "  ✓ 切換 + 驗證成功" -ForegroundColor Green
+    Write-Host "    provider: $($chosen.id)" -ForegroundColor DarkGray
+    Write-Host "    model:    $model" -ForegroundColor DarkGray
+    Write-Host "    回應:     $resp" -ForegroundColor DarkGray
+}
+else {
+    Write-Host "  ⚠ 設定已存,但實際呼叫沒回應" -ForegroundColor Yellow
+    if ($chosen.api_key_env) {
+        Write-Host ""
+        Write-Host "  可能原因:" -ForegroundColor Yellow
+        Write-Host "    1. $($chosen.api_key_env) 無效或過期" -ForegroundColor DarkGray
+        Write-Host "    2. model id `"$model`" 帳號不支援" -ForegroundColor DarkGray
+        Write-Host "    3. 網路 / 配額" -ForegroundColor DarkGray
+        Write-Host ""
+        Write-Host "  下一步建議:" -ForegroundColor Yellow
+        Write-Host "    .\scripts\switch-llm.ps1                重選 model 或重貼 key" -ForegroundColor DarkGray
+        Write-Host "    .\scripts\switch-llm.ps1 -RemoveKey      移除 $($chosen.api_key_env)" -ForegroundColor DarkGray
+        Write-Host "    或直接切回本機: /llm gemma4 (在對話中)" -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host "  可能是本機模型載入失敗 (檔案路徑 / llama-cpp-python / CUDA)。" -ForegroundColor Yellow
+        Write-Host "  下一步: 檢查 ../0_Models/ 路徑,或 .\scripts\switch-llm.ps1 -Provider 2 切到 Google API。" -ForegroundColor DarkGray
+    }
+}
 Write-Host "===============================================================" -ForegroundColor Cyan
