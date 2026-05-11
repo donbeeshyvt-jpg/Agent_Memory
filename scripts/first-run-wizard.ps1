@@ -636,39 +636,39 @@ try {
         $qwen8bState = if ($hasQwen8b) { "ok" } else { "missing" }
         Add-Step -Rows $summary.steps -Name "model-check" -Ok $true -Detail "gemma4=$gemmaState qwen8b=$qwen8bState"
 
-        # Step: offer to download gemma-4 E4B (steward default) if missing
+        # Step: 提供下載選單（不再寫死 gemma-4，呼叫 download-model.ps1）
         if (-not $hasGemma) {
-            $shouldDownload = $false
             if ($SkipModelDownload) {
-                Add-Step -Rows $summary.steps -Name "model-download-gemma4" -Ok $true -Detail "skipped (-SkipModelDownload)"
+                Add-Step -Rows $summary.steps -Name "model-download" -Ok $true -Detail "skipped (-SkipModelDownload)"
             }
             elseif ($NonInteractive) {
-                Add-Step -Rows $summary.steps -Name "model-download-gemma4" -Ok $true -Detail "skipped (NonInteractive; pass -InstallEditable + interactive run to download)"
-                $summary.notes.Add("gemma-4 E4B 未下載；無本地模型對話會 degraded。手動下載命令：huggingface-cli download ggml-org/gemma-4-E4B-it-GGUF gemma-4-E4B-it-Q8_0.gguf --local-dir `"$gemmaDir`"") | Out-Null
+                Add-Step -Rows $summary.steps -Name "model-download" -Ok $true -Detail "skipped (NonInteractive)"
+                $summary.notes.Add("無本地模型；NonInteractive 模式跳過。互動跑時會跳模型下載選單。手動：.\scripts\download-model.ps1") | Out-Null
             }
             else {
-                $shouldDownload = Ask-YesNo -Prompt "管家預設模型 gemma-4 E4B 不存在。要現在下載嗎？(~10GB 到 $gemmaDir)" -Default $true
+                $shouldDownload = Ask-YesNo -Prompt "未偵測到本地模型。要現在下載嗎？(會跳模型選單，可選 7 種大小)" -Default $true
                 if ($shouldDownload) {
-                    Write-Host "[INFO] 安裝 huggingface_hub[cli] (若未安裝)..." -ForegroundColor Cyan
-                    $hubInstall = Invoke-Python -Python $python -ArgList @("-m", "pip", "install", "-q", "-U", "huggingface_hub[cli]")
-                    if ($hubInstall.exit_code -ne 0) {
-                        Add-Step -Rows $summary.steps -Name "model-download-gemma4" -Ok $false -Detail "huggingface_hub install failed"
+                    $downloader = Join-Path $projectRoot "scripts/download-model.ps1"
+                    # 串流下載 — 直接讓 hf cli 印進度條到 host
+                    $prevEap = $ErrorActionPreference
+                    $ErrorActionPreference = "Continue"
+                    try {
+                        & powershell -NoProfile -ExecutionPolicy Bypass -File $downloader -LocalDirRoot $modelsRoot
+                        $dlExit = $LASTEXITCODE
+                    }
+                    finally {
+                        $ErrorActionPreference = $prevEap
+                    }
+                    $hasGemma = Test-Path -LiteralPath $gemmaModel
+                    if ($dlExit -eq 0) {
+                        Add-Step -Rows $summary.steps -Name "model-download" -Ok $true -Detail "ok"
                     }
                     else {
-                        Write-Host "[INFO] 下載 gemma-4 E4B Q8_0 (~10GB; 視網速 5~30 分鐘)..." -ForegroundColor Cyan
-                        $hfCli = "huggingface-cli"
-                        $dlRun = Invoke-External -Exe $hfCli -ArgList @("download", "ggml-org/gemma-4-E4B-it-GGUF", "gemma-4-E4B-it-Q8_0.gguf", "--local-dir", $gemmaDir)
-                        $hasGemma = Test-Path -LiteralPath $gemmaModel
-                        if ($dlRun.exit_code -eq 0 -and $hasGemma) {
-                            Add-Step -Rows $summary.steps -Name "model-download-gemma4" -Ok $true -Detail "downloaded to $gemmaDir"
-                        }
-                        else {
-                            Add-Step -Rows $summary.steps -Name "model-download-gemma4" -Ok $false -Detail "download failed: $(First-Line -Text $dlRun.output)"
-                        }
+                        Add-Step -Rows $summary.steps -Name "model-download" -Ok $false -Detail "download script exit=$dlExit"
                     }
                 }
                 else {
-                    Add-Step -Rows $summary.steps -Name "model-download-gemma4" -Ok $true -Detail "user declined"
+                    Add-Step -Rows $summary.steps -Name "model-download" -Ok $true -Detail "user declined"
                 }
             }
         }
@@ -853,8 +853,7 @@ if ($summary.overall_ok) {
 
     # ========== 跟進步驟 1：自動跑一次管家對話 smoke ==========
     Write-Host ""
-    Write-Host "[VERIFY] 自動跑一次管家對話確認核心可用..." -ForegroundColor Cyan
-    Write-Host "         (本地模型第一次載入會吃 30 秒~2 分鐘，請耐心等候)" -ForegroundColor DarkGray
+    Write-Host "  [檢查] 管家對話 smoke..." -ForegroundColor Cyan
     $smokeArgs = @("-X", "utf8", "-m", "agent_memory.cli")
     if ($VaultRoot -and $resolvedVaultRoot) {
         $smokeArgs += @("--vault-root", $resolvedVaultRoot)
@@ -862,8 +861,7 @@ if ($summary.overall_ok) {
     $smokeArgs += @("chat", "請只回 OK 兩個字，不要其他內容。", "--persona", "steward", "--context", "first-run", "--session", "first-run-smoke", "--allow-llm-degraded", "--json")
     $smokeRun = Invoke-Python -Python $python -ArgList $smokeArgs
     if ($smokeRun.exit_code -eq 0) {
-        # llama-cpp-python 把載入訊息寫到 stderr，跟 stdout JSON 混在一起。
-        # 抽出第一個 '{' 到最後一個 '}' 之間的內容當作 JSON。
+        # 抽 JSON（llama-cpp 載入訊息可能混進 stderr）。
         $rawSmoke = [string]$smokeRun.output
         $jsonStart = $rawSmoke.IndexOf('{')
         $jsonEnd = $rawSmoke.LastIndexOf('}')
@@ -873,33 +871,19 @@ if ($summary.overall_ok) {
         try {
             $smokeData = $rawSmoke | ConvertFrom-Json
             $isDegraded = [bool]$smokeData.degraded
-            $respText = [string]$smokeData.response
-            $respShort = $respText
-            if ($respShort.Length -gt 90) {
-                $respShort = $respShort.Substring(0, 90) + "..."
-            }
-            $sessionPath = ""
-            if ($smokeData.memory_paths -and $smokeData.memory_paths.session) {
-                $sessionPath = [string]$smokeData.memory_paths.session
-            }
             if ($isDegraded) {
-                Write-Host "  [WARN] 管家已建立，但目前對話 degraded（沒有可用 LLM）：" -ForegroundColor Yellow
-                Write-Host "         response: $respShort" -ForegroundColor DarkGray
-                Write-Host "         session 已落盤: $sessionPath" -ForegroundColor DarkGray
-                Write-Host "         要本地對話：先安裝 llama-cpp-python + 下載模型；要雲端：設 OPENAI_API_KEY 或 OPENROUTER_API_KEY。" -ForegroundColor Yellow
+                Write-Host "         ⚠ 管家暫無可用 LLM。設 token 或下載模型即可上線。" -ForegroundColor Yellow
             }
             else {
-                Write-Host "  [OK] 管家可正常對話：" -ForegroundColor Green
-                Write-Host "       response: $respShort"
-                Write-Host "       session 已落盤: $sessionPath"
+                Write-Host "         ✓ 管家可正常對話" -ForegroundColor Green
             }
         }
         catch {
-            Write-Host "  [WARN] smoke 跑了但 JSON 解析失敗：$($_.Exception.Message)" -ForegroundColor Yellow
+            Write-Host "         ⚠ smoke output parse 失敗" -ForegroundColor Yellow
         }
     }
     else {
-        Write-Host "  [ERR] smoke 失敗 (exit=$($smokeRun.exit_code))" -ForegroundColor Red
+        Write-Host "         ✗ smoke exit=$($smokeRun.exit_code)" -ForegroundColor Red
     }
 
     # ========== 跟進步驟 2：問要不要現在設 Discord ==========

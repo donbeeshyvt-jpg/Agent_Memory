@@ -277,16 +277,17 @@ function Show-Menu {
         Write-Host $Desc -ForegroundColor $MutedColor
     }
 
-    Write-Option "1" "快速設定" "自動建大腦 + 配本機 gemma-4 + 跑 chat 驗證"
+    Write-Option "1" "快速設定" "自動建大腦 + 配本機模型 + 跑 chat 驗證"
     Write-Option "2" "自訂設定" "逐步互動：選 LLM、要不要 Discord、要不要下載"
     Write-Host ""
     Write-Option "3" "上線管家到 Discord" "啟 bridge + relay，貼 token 即上線"
     Write-Option "4" "切換 LLM 模型" "本機 ↔ Gemini / OpenAI / OpenRouter / Claude"
+    Write-Option "5" "下載本地模型" "Gemma / Qwen3 8B/14B/30B / Llama / Phi 等"
     Write-Host ""
-    Write-Option "5" "CLI 試聊管家" "直接在這視窗對話（不用 Discord）"
-    Write-Option "6" "跑工具能力 smoke" "驗證 /tool 寫檔 + 角色權限治理"
+    Write-Option "6" "CLI 試聊管家" "直接在這視窗對話（不用 Discord）"
+    Write-Option "7" "跑工具能力 smoke" "驗證 /tool 寫檔 + 角色權限治理"
     Write-Host ""
-    Write-Option "7" "重新掃描狀態" "刷新上面的環境檢查"
+    Write-Option "8" "重新掃描狀態" "刷新上面的環境檢查"
     Write-Host ""
     Write-Host "    [Q] " -NoNewline -ForegroundColor $MutedColor
     Write-Host "離開" -ForegroundColor $MutedColor
@@ -296,10 +297,10 @@ function Show-Menu {
 function Read-MenuChoice {
     while ($true) {
         Write-Host -NoNewline "  請輸入 " -ForegroundColor $BorderColor
-        Write-Host -NoNewline "[1-7/Q]" -ForegroundColor $AccentColor
+        Write-Host -NoNewline "[1-8/Q]" -ForegroundColor $AccentColor
         Write-Host -NoNewline ": " -ForegroundColor $BorderColor
         $raw = (Read-Host).Trim().ToUpper()
-        if ($raw -in @("1", "2", "3", "4", "5", "6", "7", "Q")) {
+        if ($raw -in @("1", "2", "3", "4", "5", "6", "7", "8", "Q")) {
             return $raw
         }
         Write-Host "  無效輸入。" -ForegroundColor $ErrColor
@@ -355,6 +356,16 @@ function Invoke-SwitchLlm {
     Write-Host ""
     $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "switch-llm.ps1"), "-PersistKey")
     if ($VaultRoot) { $args += @("-VaultRoot", $VaultRoot) }
+    & powershell @args
+}
+
+function Invoke-DownloadModel {
+    Write-Host ""
+    Write-Border "─"
+    Write-Host "  [下載本地模型]" -ForegroundColor $TitleColor
+    Write-Border "─"
+    Write-Host ""
+    $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "download-model.ps1"))
     & powershell @args
 }
 
@@ -417,9 +428,10 @@ while ($true) {
         "2" { Invoke-Custom; Pause-MainMenu }
         "3" { Invoke-StartSteward; Pause-MainMenu }
         "4" { Invoke-SwitchLlm; Pause-MainMenu }
-        "5" { Invoke-CliChat; Pause-MainMenu }
-        "6" { Invoke-ToolingSmoke; Pause-MainMenu }
-        "7" {
+        "5" { Invoke-DownloadModel; Pause-MainMenu }
+        "6" { Invoke-CliChat; Pause-MainMenu }
+        "7" { Invoke-ToolingSmoke; Pause-MainMenu }
+        "8" {
             # 純 status refresh — 主迴圈下一輪會重新顯示
         }
         "Q" {
