@@ -127,24 +127,53 @@ function Get-OrPromptApiKey {
         $key = [Environment]::GetEnvironmentVariable($EnvVarName, "User")
         if ($key) {
             Set-Item -LiteralPath "Env:$EnvVarName" -Value $key
-            Write-Host "  [OK] 從使用者環境變數載入 $EnvVarName" -ForegroundColor Green
+        }
+    }
+
+    # 已有 key — 一定顯示遮蔽片段 + 問使用者三選一 (不能默默用)
+    if ($key) {
+        $masked = if ($key.Length -ge 8) { $key.Substring(0, 4) + "..." + $key.Substring($key.Length - 4) } else { "***" }
+        Write-Host ""
+        Write-Host "  [偵測到] 已有 $EnvVarName ($masked)" -ForegroundColor Green
+        if (-not $NonInteractive) {
+            Write-Host "    [1] 沿用此 key" -ForegroundColor Yellow
+            Write-Host "    [2] 重貼新 key" -ForegroundColor Yellow
+            Write-Host "    [3] 移除 key 並改用本機 / 不設" -ForegroundColor Yellow
+            while ($true) {
+                $sub = (Read-Host "  選 [1-3]").Trim()
+                if ($sub -in @("1", "2", "3")) { break }
+                Write-Host "  請輸入 1 / 2 / 3" -ForegroundColor Red
+            }
+            if ($sub -eq "1") { return $key }
+            if ($sub -eq "3") {
+                [Environment]::SetEnvironmentVariable($EnvVarName, $null, "User")
+                Remove-Item -LiteralPath "Env:$EnvVarName" -ErrorAction SilentlyContinue
+                Write-Host "  [OK] $EnvVarName 已移除" -ForegroundColor Yellow
+                return ""
+            }
+            # sub == "2" 落入下面 prompt 新 key 流程
+            Write-Host "  [INFO] 請貼新的 $ProviderDisplay API key" -ForegroundColor Cyan
+        }
+        else {
+            # NonInteractive 沿用
             return $key
         }
     }
-    if ($key) {
-        Write-Host "  [OK] $EnvVarName 已就緒" -ForegroundColor Green
-        return $key
-    }
 
     if ($NonInteractive) {
-        Write-Host "  [WARN] $EnvVarName 未設且 -NonInteractive 模式不 prompt；設預設後 LLM 會 degraded 直到你手動 setx $EnvVarName" -ForegroundColor Yellow
+        Write-Host "  [WARN] $EnvVarName 未設且 -NonInteractive 模式不 prompt" -ForegroundColor Yellow
         return ""
     }
 
-    Write-Host "  [INFO] $EnvVarName 未設，需要你貼 $ProviderDisplay 的 API key (輸入時不顯示)" -ForegroundColor Yellow
-    $sec = Read-Host -Prompt "  $ProviderDisplay API key" -AsSecureString
+    if (-not $key) {
+        Write-Host ""
+        Write-Host "  $ProviderDisplay 需要 API key" -ForegroundColor Yellow
+        Write-Host "  Google AI Studio 申請 (有免費層): https://aistudio.google.com/apikey" -ForegroundColor DarkGray
+        Write-Host "  (輸入時不會顯示,Enter 確認)" -ForegroundColor DarkGray
+    }
+    $sec = Read-Host -Prompt "  $EnvVarName" -AsSecureString
     if (-not $sec -or $sec.Length -eq 0) {
-        Write-Host "  [WARN] 沒貼 key，繼續但 LLM 呼叫會失敗" -ForegroundColor Yellow
+        Write-Host "  [WARN] 沒貼 key,繼續但 LLM 呼叫會失敗" -ForegroundColor Yellow
         return ""
     }
     $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)

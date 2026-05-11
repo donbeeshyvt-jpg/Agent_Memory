@@ -284,7 +284,7 @@ function Show-Menu {
     Write-Option "4" "切換 LLM 模型" "本機 (gemma-4/Qwen) ↔ Google API (Gemini/Gemma)"
     Write-Option "5" "下載本地模型" "gemma-4 / Qwen3.5-9B / Qwen3-30B 三選一"
     Write-Host ""
-    Write-Option "6" "CLI 試聊管家" "直接在這視窗對話（不用 Discord）"
+    Write-Option "6" "CLI 對話模式" "直接連續和管家對話 (不用 Discord,REPL)"
     Write-Option "7" "跑工具能力 smoke" "驗證 /tool 寫檔 + 角色權限治理"
     Write-Host ""
     Write-Option "8" "重新掃描狀態" "刷新上面的環境檢查"
@@ -319,10 +319,11 @@ function Pause-MainMenu {
 function Invoke-Quick {
     Write-Host ""
     Write-Border "─"
-    Write-Host "  [快速設定] 跑 first-run-wizard.ps1 -NonInteractive" -ForegroundColor $TitleColor
+    Write-Host "  [快速設定] 引導式設定 (自動建大腦 + 選 LLM + Discord)" -ForegroundColor $TitleColor
     Write-Border "─"
     Write-Host ""
-    $wizardArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "first-run-wizard.ps1"), "-NonInteractive")
+    # 不再用 -NonInteractive — 互動引導使用者一路設完
+    $wizardArgs = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "first-run-wizard.ps1"))
     if ($VaultRoot) { $wizardArgs += @("-VaultRoot", $VaultRoot) }
     & powershell @wizardArgs
 }
@@ -372,36 +373,64 @@ function Invoke-DownloadModel {
 function Invoke-CliChat {
     Write-Host ""
     Write-Border "─"
-    Write-Host "  [CLI 試聊管家]" -ForegroundColor $TitleColor
+    Write-Host "  [CLI 對話模式 — 直接和管家連續對話]" -ForegroundColor $TitleColor
     Write-Border "─"
     Write-Host ""
-    $msg = (Read-Host "  輸入訊息（Enter 取消）").Trim()
-    if (-not $msg) {
-        Write-Host "  已取消。" -ForegroundColor $MutedColor
-        return
-    }
-    $sessionId = "menu-chat-" + (Get-Date -Format "HHmmss")
+    Write-Host "  指令：/exit /quit :q 離開回主選單" -ForegroundColor $MutedColor
+    Write-Host "        /llm <key>     對話中切模型 (gemma4/qwen9/qwen30/gemini/gemini-pro/gemma-31b/gemma-26b)" -ForegroundColor $MutedColor
+    Write-Host "        同 session 連續累積對話記憶" -ForegroundColor $MutedColor
     Write-Host ""
-    Write-Host "  [INFO] 載入模型可能 30 秒~2 分鐘..." -ForegroundColor $MutedColor
+
+    $sessionId = "cli-repl-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+    Write-Host "  session: $sessionId" -ForegroundColor $MutedColor
     Write-Host ""
-    $cliArgs = @("-X", "utf8", "-m", "agent_memory.cli")
-    if ($VaultRoot) { $cliArgs += @("--vault-root", $VaultRoot) }
-    $cliArgs += @("chat", $msg, "--persona", "steward", "--context", "menu", "--session", $sessionId, "--allow-llm-degraded")
-    $prevEap = $ErrorActionPreference
-    $ErrorActionPreference = "Continue"
-    try {
-        & $PythonExe @cliArgs 2>&1 | ForEach-Object {
-            $line = [string]$_
-            if ($line -match "llama_context|llama_kv_cache|^load_") {
-                Write-Host "    $line" -ForegroundColor $MutedColor
-            }
-            else {
-                Write-Host "    $line"
-            }
+
+    while ($true) {
+        Write-Host -NoNewline "  你 > " -ForegroundColor $AccentColor
+        $msg = (Read-Host).Trim()
+        if (-not $msg) { continue }
+        if ($msg -in @("/exit", "/quit", ":q", "exit", "quit")) {
+            Write-Host "  [離開對話模式]" -ForegroundColor $MutedColor
+            return
         }
-    }
-    finally {
-        $ErrorActionPreference = $prevEap
+
+        # 跑 chat
+        $cliArgs = @("-X", "utf8", "-m", "agent_memory.cli")
+        if ($VaultRoot) { $cliArgs += @("--vault-root", $VaultRoot) }
+        $cliArgs += @("chat", $msg, "--persona", "steward", "--context", "cli-repl", "--session", $sessionId, "--allow-llm-degraded", "--json")
+
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        try {
+            $raw = (& $PythonExe @cliArgs 2>&1 | Out-String)
+        }
+        finally {
+            $ErrorActionPreference = $prevEap
+        }
+
+        $jsStart = $raw.IndexOf('{')
+        $jsEnd = $raw.LastIndexOf('}')
+        $printed = $false
+        if ($jsStart -ge 0 -and $jsEnd -gt $jsStart) {
+            try {
+                $j = $raw.Substring($jsStart, $jsEnd - $jsStart + 1) | ConvertFrom-Json
+                $isDegraded = [bool]$j.degraded
+                $response = [string]$j.response
+                Write-Host -NoNewline "  管家 > " -ForegroundColor Green
+                Write-Host $response
+                if ($isDegraded) {
+                    Write-Host "    [⚠ degraded — LLM 沒實際回應,可能 key/模型/網路問題]" -ForegroundColor Yellow
+                    Write-Host "    試 /llm gemma4 切本機,或回主選單 [4] 切換 LLM" -ForegroundColor $MutedColor
+                }
+                $printed = $true
+            }
+            catch { }
+        }
+        if (-not $printed) {
+            Write-Host "  管家 > [no JSON response]" -ForegroundColor Red
+            Write-Host "    raw: $($raw.Substring(0, [Math]::Min(200, $raw.Length)))" -ForegroundColor $MutedColor
+        }
+        Write-Host ""
     }
 }
 

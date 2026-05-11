@@ -864,6 +864,7 @@ try {
 
     # Step: Discord setup — 互動模式預設會問,要用 -SetupDiscord 強制開,要 NonInteractive 才完全跳過
     $shouldRunDiscordSetup = $false
+    $discordSkipReason = ""
     if ($SetupDiscord) {
         $shouldRunDiscordSetup = $true
     }
@@ -881,47 +882,86 @@ try {
     if ($shouldRunDiscordSetup -and $resolvedVaultRoot) {
         $discordOk = $true
         $discordDetail = "ready"
+
+        # ===== 先問 Token (Discord 要先有 bot 才知道往哪個 channel 講話) =====
+        $tokenVal = [Environment]::GetEnvironmentVariable($DiscordTokenEnv, "Process")
+        if (-not $tokenVal) {
+            $tokenVal = [Environment]::GetEnvironmentVariable($DiscordTokenEnv, "User")
+            if ($tokenVal) { Set-Item -LiteralPath "Env:$DiscordTokenEnv" -Value $tokenVal }
+        }
+
+        $tokenOk = $false
+        if ($tokenVal) {
+            # 已有 token — 顯示遮蔽 + 三選一
+            $maskedT = if ($tokenVal.Length -ge 12) { $tokenVal.Substring(0, 6) + "..." + $tokenVal.Substring($tokenVal.Length - 4) } else { "***" }
+            Write-Host ""
+            Write-Host "  [偵測到] 已有 $DiscordTokenEnv ($maskedT)" -ForegroundColor Green
+            if (-not $NonInteractive) {
+                Write-Host "    [1] 沿用此 token" -ForegroundColor Yellow
+                Write-Host "    [2] 重貼新 token" -ForegroundColor Yellow
+                Write-Host "    [3] 移除 token 並跳過 Discord" -ForegroundColor Yellow
+                while ($true) {
+                    $tsub = (Read-Host "  選 [1-3]").Trim()
+                    if ($tsub -in @("1", "2", "3")) { break }
+                    Write-Host "  請輸入 1 / 2 / 3" -ForegroundColor Red
+                }
+                if ($tsub -eq "1") { $tokenOk = $true }
+                elseif ($tsub -eq "3") {
+                    [Environment]::SetEnvironmentVariable($DiscordTokenEnv, $null, "User")
+                    Remove-Item -LiteralPath "Env:$DiscordTokenEnv" -ErrorAction SilentlyContinue
+                    $tokenVal = ""
+                    $tokenOk = $false
+                    $shouldRunDiscordSetup = $false
+                    $discordSkipReason = "removed token by user choice"
+                }
+                # tsub == "2" 落入下面 prompt
+            }
+            else {
+                $tokenOk = $true
+            }
+        }
+
+        if ($shouldRunDiscordSetup -and -not $tokenOk -and -not $NonInteractive) {
+            Write-Host ""
+            Write-Host "  Discord Bot Token (從 Discord Developer Portal → Bot → Token 取得)" -ForegroundColor Yellow
+            Write-Host "  (輸入時不會顯示, Enter 確認, 留空跳過 Discord)" -ForegroundColor DarkGray
+            $sec = Read-Host -Prompt "  $DiscordTokenEnv" -AsSecureString
+            if ($sec -and $sec.Length -gt 0) {
+                $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+                try {
+                    $tokenVal = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+                }
+                finally {
+                    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+                }
+                Set-Item -LiteralPath "Env:$DiscordTokenEnv" -Value $tokenVal
+                $persist = Ask-YesNo -Prompt "  記住 token 到 Windows 使用者環境變數,下次自動載入?" -Default $true
+                if ($persist) {
+                    [Environment]::SetEnvironmentVariable($DiscordTokenEnv, $tokenVal, "User")
+                    Write-Host "  [OK] $DiscordTokenEnv 已寫入使用者環境變數" -ForegroundColor Green
+                }
+                $tokenOk = $true
+            }
+            else {
+                # 留空 → 跳過 Discord
+                $shouldRunDiscordSetup = $false
+                $discordSkipReason = "no token provided"
+            }
+        }
+    }
+
+    # ===== 再問 Channel ID (token 完成才有意義) =====
+    if ($shouldRunDiscordSetup -and $resolvedVaultRoot) {
         $effectiveChannelId = $DiscordChannelId
         if (-not $effectiveChannelId -and -not $NonInteractive) {
             Write-Host ""
-            $effectiveChannelId = (Read-Host "  Discord 頻道 ID (Enter 跳過)").Trim()
+            Write-Host "  Discord 頻道 ID (在 Discord 啟用開發者模式後對頻道右鍵→複製 ID)" -ForegroundColor Yellow
+            $effectiveChannelId = (Read-Host "  channel_id").Trim()
         }
         if ([string]::IsNullOrWhiteSpace($effectiveChannelId)) {
-            $discordOk = $true
-            $discordDetail = "skipped (no channel id)"
+            Add-Step -Rows $summary.steps -Name "discord-setup" -Ok $true -Detail "skipped (no channel id)"
         }
         else {
-            # 也問 Bot Token (SecureString)
-            $tokenAlreadySet = -not [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($DiscordTokenEnv, "Process"))
-            if (-not $tokenAlreadySet) {
-                $userToken = [Environment]::GetEnvironmentVariable($DiscordTokenEnv, "User")
-                if ($userToken) {
-                    Set-Item -LiteralPath "Env:$DiscordTokenEnv" -Value $userToken
-                    Write-Host "  [OK] 從使用者環境變數載入 $DiscordTokenEnv" -ForegroundColor Green
-                    $tokenAlreadySet = $true
-                }
-            }
-            if (-not $tokenAlreadySet -and -not $NonInteractive) {
-                Write-Host "  Bot Token 從 Discord Developer Portal 取得 (輸入時不顯示):" -ForegroundColor DarkGray
-                $sec = Read-Host -Prompt "  $DiscordTokenEnv" -AsSecureString
-                if ($sec -and $sec.Length -gt 0) {
-                    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
-                    try {
-                        $tokenVal = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
-                    }
-                    finally {
-                        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
-                    }
-                    Set-Item -LiteralPath "Env:$DiscordTokenEnv" -Value $tokenVal
-                    $persist = Ask-YesNo -Prompt "  記住 token 到 Windows 使用者環境變數,下次自動載入?" -Default $true
-                    if ($persist) {
-                        [Environment]::SetEnvironmentVariable($DiscordTokenEnv, $tokenVal, "User")
-                        Write-Host "  [OK] $DiscordTokenEnv 已寫入使用者環境變數" -ForegroundColor Green
-                    }
-                    $tokenAlreadySet = $true
-                }
-            }
-
             $relayConfig = [ordered]@{
                 bridge_url = "http://127.0.0.1:16000"
                 python_exe = "python"
@@ -948,18 +988,17 @@ try {
             $bindRun = Invoke-Python -Python $python -ArgList @("-X", "utf8", "-m", "agent_memory.cli", "--vault-root", $resolvedVaultRoot, "channel-bind", "--transport", "discord", "--channel-id", $effectiveChannelId, "--persona", $DiscordPersona, "--operator", "first-run-wizard", "--json")
             $bindOk = ($bindRun.exit_code -eq 0)
             if (-not $bindOk) {
-                $discordOk = $false
-                $discordDetail = "channel-bind failed: $(First-Line -Text $bindRun.output)"
+                Add-Step -Rows $summary.steps -Name "discord-setup" -Ok $false -Detail "channel-bind failed: $(First-Line -Text $bindRun.output)"
             }
             else {
-                $tokenStatus = if ($tokenAlreadySet) { "token=ok" } else { "token=missing" }
-                $discordDetail = "channel=$effectiveChannelId persona=$DiscordPersona $tokenStatus"
+                $tokenStatus = if ($tokenOk) { "token=ok" } else { "token=missing" }
+                Add-Step -Rows $summary.steps -Name "discord-setup" -Ok $true -Detail "channel=$effectiveChannelId persona=$DiscordPersona $tokenStatus"
             }
         }
-        Add-Step -Rows $summary.steps -Name "discord-setup" -Ok $discordOk -Detail $discordDetail
     }
     else {
-        Add-Step -Rows $summary.steps -Name "discord-setup" -Ok $true -Detail "skipped (user declined or NonInteractive)"
+        $reason = if ($discordSkipReason) { $discordSkipReason } else { "user declined or NonInteractive" }
+        Add-Step -Rows $summary.steps -Name "discord-setup" -Ok $true -Detail "skipped ($reason)"
     }
 }
 catch {
