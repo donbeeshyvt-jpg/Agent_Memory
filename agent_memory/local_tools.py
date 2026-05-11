@@ -207,3 +207,206 @@ def render_tool_result(result: dict[str, Any]) -> str:
     if action == "mkdir":
         return f"[tool:mkdir] target={target} path={path} exists={result.get('exists', False)}"
     return json.dumps(result, ensure_ascii=False)
+
+
+# ============================================================
+# /llm slash command — 對話中切換 LLM 模型
+# ============================================================
+_LLM_PREFIX = "/llm"
+
+# key → (profile, model, human-readable label)
+_LLM_PRESETS: dict[str, tuple[str, str, str]] = {
+    # 本地 GGUF
+    "gemma4": (
+        "llama_cpp_local",
+        "../../0_Models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q8_0.gguf",
+        "本機 gemma-4 E4B (Q8)",
+    ),
+    "qwen9": (
+        "llama_cpp_local",
+        "../../0_Models/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q8_0.gguf",
+        "本機 Qwen3.5-9B (Q8)",
+    ),
+    "qwen30": (
+        "llama_cpp_local",
+        "../../0_Models/Qwen3-30B-A3B-GGUF/Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf",
+        "本機 Qwen3-30B-A3B (Q4_K_XL)",
+    ),
+    # Google Gemini / Gemma API
+    "gemini": (
+        "gemini",
+        "gemini-2.5-flash",
+        "Google Gemini 2.5 Flash",
+    ),
+    "gemini-flash": (
+        "gemini",
+        "gemini-2.5-flash",
+        "Google Gemini 2.5 Flash",
+    ),
+    "gemini-pro": (
+        "gemini",
+        "gemini-2.5-pro",
+        "Google Gemini 2.5 Pro",
+    ),
+    "gemma-31b": (
+        "gemini",
+        "gemma-4-31b-it",
+        "Google Gemma 4 31B",
+    ),
+    "gemma-26b": (
+        "gemini",
+        "gemma-4-26b-a4b-it",
+        "Google Gemma 4 26B-A4B",
+    ),
+}
+
+
+def maybe_parse_llm_switch_request(message: str) -> dict[str, Any] | None:
+    """Parse /llm <key> | /llm persona <id> <key> | /llm list | /llm show | /llm help.
+
+    Returns None if message is not a /llm command. Raises ValueError on malformed input.
+    """
+    text = str(message or "").strip()
+    if not text.lower().startswith(_LLM_PREFIX):
+        return None
+    rest = text[len(_LLM_PREFIX):].strip()
+    if not rest:
+        return {"action": "help"}
+    parts = rest.split(None, 2)
+    cmd = parts[0].lower()
+    if cmd in ("help", "?"):
+        return {"action": "help"}
+    if cmd == "list":
+        return {"action": "list"}
+    if cmd == "show":
+        return {"action": "show"}
+    if cmd == "persona":
+        if len(parts) < 3:
+            raise ValueError("用法：/llm persona <persona_id> <key>")
+        return {
+            "action": "switch_persona",
+            "persona": parts[1].strip(),
+            "key": parts[2].strip().lower(),
+        }
+    # 一般情況：/llm <key>
+    return {
+        "action": "switch_default",
+        "key": cmd,
+    }
+
+
+def execute_llm_switch(vault_root: Path, request: dict[str, Any]) -> dict[str, Any]:
+    """Execute /llm switch request. Returns result dict."""
+    # 延遲 import 避免 circular dependency
+    from agent_memory.llm_routing import load_llm_router_config, save_llm_router_config
+
+    action = request.get("action")
+    if action == "help":
+        return {
+            "ok": True,
+            "action": "help",
+            "presets": list(_LLM_PRESETS.keys()),
+        }
+    if action == "list":
+        return {
+            "ok": True,
+            "action": "list",
+            "presets": [
+                {"key": k, "profile": v[0], "model": v[1], "label": v[2]}
+                for k, v in _LLM_PRESETS.items()
+            ],
+        }
+    if action == "show":
+        cfg = load_llm_router_config(vault_root)
+        return {
+            "ok": True,
+            "action": "show",
+            "global_default": cfg.get("global_default", {}),
+            "persona_overrides": cfg.get("persona_overrides", {}),
+        }
+    if action in ("switch_default", "switch_persona"):
+        key = str(request.get("key", "")).strip().lower()
+        preset = _LLM_PRESETS.get(key)
+        if not preset:
+            return {
+                "ok": False,
+                "error": f"unknown_llm_key: {key}",
+                "available": list(_LLM_PRESETS.keys()),
+            }
+        profile, model, label = preset
+        cfg = load_llm_router_config(vault_root)
+        if action == "switch_default":
+            if not isinstance(cfg.get("global_default"), dict):
+                cfg["global_default"] = {}
+            cfg["global_default"]["profile"] = profile
+            cfg["global_default"]["model"] = model
+        else:
+            persona = str(request.get("persona", "")).strip()
+            if not persona:
+                return {"ok": False, "error": "persona required"}
+            if not isinstance(cfg.get("persona_overrides"), dict):
+                cfg["persona_overrides"] = {}
+            cfg["persona_overrides"][persona] = {"profile": profile, "model": model}
+        save_llm_router_config(vault_root, cfg)
+        return {
+            "ok": True,
+            "action": action,
+            "profile": profile,
+            "model": model,
+            "label": label,
+            "persona": request.get("persona"),
+        }
+    return {"ok": False, "error": f"unknown_action: {action}"}
+
+
+def render_llm_switch_result(result: dict[str, Any]) -> str:
+    """Convert result dict to user-friendly message."""
+    if not result.get("ok"):
+        err = result.get("error", "unknown")
+        avail = result.get("available")
+        if avail:
+            return f"[llm:err] {err}\n可用 key: {', '.join(avail)}"
+        return f"[llm:err] {err}"
+    action = result.get("action")
+    if action == "help":
+        presets = result.get("presets", [])
+        return (
+            "[llm:help] 對話中切模型：\n"
+            "  /llm <key>                   切全域預設\n"
+            "  /llm persona <id> <key>      切某 persona 專屬\n"
+            "  /llm list                    列出全部 preset\n"
+            "  /llm show                    看目前設定\n"
+            f"  可用 key: {', '.join(presets)}"
+        )
+    if action == "list":
+        presets = result.get("presets", [])
+        lines = ["[llm:list] 可用 preset:"]
+        for p in presets:
+            key = str(p.get("key", "")).ljust(14)
+            label = p.get("label", "")
+            lines.append(f"  {key}{label}")
+        return "\n".join(lines)
+    if action == "show":
+        gd = result.get("global_default", {})
+        po = result.get("persona_overrides", {})
+        lines = [f"[llm:show] global_default: {gd.get('profile')} / {gd.get('model')}"]
+        if po:
+            lines.append("persona_overrides:")
+            for k, v in po.items():
+                if isinstance(v, dict):
+                    lines.append(f"  {k}: {v.get('profile')} / {v.get('model')}")
+        else:
+            lines.append("persona_overrides: (無)")
+        return "\n".join(lines)
+    if action == "switch_default":
+        label = result.get("label", "")
+        profile = result.get("profile", "")
+        model = result.get("model", "")
+        return f"[llm:switched] 預設模型已切到 {label}\n  ({profile} / {model})\n下一條訊息會用新模型。"
+    if action == "switch_persona":
+        persona = result.get("persona", "")
+        label = result.get("label", "")
+        profile = result.get("profile", "")
+        model = result.get("model", "")
+        return f"[llm:switched-persona] {persona} 已切到 {label}\n  ({profile} / {model})\n下一條訊息會用新模型。"
+    return json.dumps(result, ensure_ascii=False)

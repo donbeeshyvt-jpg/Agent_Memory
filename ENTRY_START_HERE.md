@@ -51,18 +51,19 @@
 
 ---
 
-## 模型選擇（基礎三套）
+## 模型選擇（基礎四套）
 
-預設只提供 **2 個本地模型 + Google API**，三選一夠用。要更多進階選項見最下方「進階」段落。
+預設提供 **3 個本地模型 + Google API**，按需選擇。要更多進階選項見最下方「進階」段落。
 
-### A. 本地推理（推薦給有 GPU/8GB+ RAM 的）
+### A. 本地推理（推薦給有 GPU 的）
 
 按 `[5] 下載本地模型`：
 
 | 號 | 模型 | 大小 | 適合 |
 |---|---|---|---|
-| 1 | **gemma-4 E4B Instruct Q8** | ~4 GB | 快速啟動，4-6GB RAM 也能跑，預設首選 |
+| 1 | **gemma-4 E4B Instruct Q8** | ~4 GB | 輕量首選，4-6GB RAM 也能跑 |
 | 2 | **Qwen3.5-9B Q8** | ~10 GB | 中文流暢，主要對話角色用 |
+| 3 | **Qwen3-30B-A3B UD-Q4_K_XL** | ~17 GB | Sparse MoE 大模型 (24GB+ VRAM 較順) |
 
 下載完按 `[4] 切換 LLM 模型 → [1] 本機 llama-cpp-python` 選對應路徑即可。
 
@@ -97,6 +98,28 @@
 ```
 
 ---
+
+## 對話中切換模型（`/llm` 指令）
+
+在 CLI / Discord / 任何入口的對話中，直接打 `/llm <key>` 即可切換 — 管家會切自己的模型，下一條訊息就用新模型回。
+
+```
+/llm gemma4              切到本機 gemma-4 E4B
+/llm qwen9               切到本機 Qwen3.5-9B
+/llm qwen30              切到本機 Qwen3-30B-A3B
+/llm gemini              切到 Google Gemini 2.5 Flash
+/llm gemini-pro          切到 Google Gemini 2.5 Pro
+/llm gemma-31b           切到 Google Gemma 4 31B
+/llm gemma-26b           切到 Google Gemma 4 26B-A4B
+
+/llm persona <id> <key>  只切某個角色（如 /llm persona steward qwen30）
+/llm list                列出所有可用 key
+/llm show                看目前全域與 persona 設定
+/llm help                看用法
+```
+
+**權限**：寫入動作（切換）只有 `tools_enabled=true` 的角色（如 steward）能執行；read 動作（list/show/help）任何角色都行。
+**API key**：切到雲端 provider 前要先設 env var（`GOOGLE_API_KEY` 等），否則切完對話會 degraded。
 
 ## 角色 / 模型搭配
 

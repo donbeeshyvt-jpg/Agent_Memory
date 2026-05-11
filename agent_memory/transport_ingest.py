@@ -20,7 +20,14 @@ from agent_memory.chat_session import (
 from agent_memory.dialogue_modes import load_dialogue_modes, resolve_dialogue_mode
 from agent_memory.llm_client import LLMClient, LLMClientError
 from agent_memory.llm_ledger import record_llm_route_event
-from agent_memory.local_tools import execute_tool_request, maybe_parse_tool_request, render_tool_result
+from agent_memory.local_tools import (
+    execute_llm_switch,
+    execute_tool_request,
+    maybe_parse_llm_switch_request,
+    maybe_parse_tool_request,
+    render_llm_switch_result,
+    render_tool_result,
+)
 from agent_memory.persona_governance import load_persona_governance, resolve_persona_governance
 from agent_memory.profile_scope import runtime_profile_for_persona
 from agent_memory.runtime import MemoryRuntime
@@ -344,6 +351,110 @@ def run_transport_event(
                     shared_channel_history = text[-2400:] if len(text) > 2400 else text
         except Exception:  # noqa: BLE001
             shared_channel_history = ""
+
+    # ===== /llm 對話中切模型短路 =====
+    llm_switch_response: str | None = None
+    llm_switch_payload: dict[str, Any] | None = None
+    parsed_llm_switch: dict[str, Any] | None = None
+    try:
+        parsed_llm_switch = maybe_parse_llm_switch_request(turn.message)
+    except Exception as exc:  # noqa: BLE001
+        parsed_llm_switch = {"action": "_parse_error", "error": str(exc)}
+
+    if parsed_llm_switch is not None:
+        # Gating: write 動作（switch_default / switch_persona）需要 tools_enabled；
+        # read 動作（list / show / help）任何 persona 都可用。
+        action = parsed_llm_switch.get("action")
+        write_actions = {"switch_default", "switch_persona"}
+        if action == "_parse_error":
+            llm_switch_payload = {"ok": False, "error": parsed_llm_switch.get("error")}
+            llm_switch_response = f"[llm:err] {parsed_llm_switch.get('error')}"
+        elif action in write_actions:
+            governance_for_llm = resolve_persona_governance(load_persona_governance(root), persona_id=persona)
+            caps_for_llm = governance_for_llm.get("capabilities", {})
+            if not isinstance(caps_for_llm, dict):
+                caps_for_llm = {}
+            if not bool(caps_for_llm.get("tools_enabled", False)):
+                llm_switch_payload = {"ok": False, "error": "tools_disabled_for_persona", "persona": persona}
+                llm_switch_response = "[llm:denied] 此角色未啟用工具能力,無法切換模型。請改用 tooling 角色（如 steward）。"
+            else:
+                try:
+                    llm_switch_payload = execute_llm_switch(adapter.vault_root, parsed_llm_switch)
+                    llm_switch_response = render_llm_switch_result(llm_switch_payload)
+                except Exception as exc:  # noqa: BLE001
+                    llm_switch_payload = {"ok": False, "error": str(exc)}
+                    llm_switch_response = f"[llm:err] {exc}"
+        else:
+            # read action — 不需要 tools_enabled
+            try:
+                llm_switch_payload = execute_llm_switch(adapter.vault_root, parsed_llm_switch)
+                llm_switch_response = render_llm_switch_result(llm_switch_payload)
+            except Exception as exc:  # noqa: BLE001
+                llm_switch_payload = {"ok": False, "error": str(exc)}
+                llm_switch_response = f"[llm:err] {exc}"
+
+        memory_paths_llm = _persist_local_response(
+            adapter=adapter,
+            runtime=runtime,
+            persona=persona,
+            context_id=context_value,
+            session_id=session_value,
+            user_message=turn.message,
+            assistant_message=str(llm_switch_response or ""),
+            memory_mode=memory_mode,
+        )
+        llm_meta = {
+            "profile": "llm_switch",
+            "model": "llm_switch",
+            "kind": "system_command",
+            "base_url": "local://llm-switch",
+            "fallback_failures": [],
+        }
+        route_event_llm = None
+        try:
+            route_event_llm = record_llm_route_event(
+                adapter.vault_root,
+                persona_id=persona,
+                context_id=context_value,
+                session_id=session_value,
+                llm=llm_meta,
+                memory_paths=memory_paths_llm,
+                message=turn.message,
+                response=str(llm_switch_response or ""),
+                transport=turn.transport,
+                channel_id=turn.channel_id,
+                user_id=turn.user_id,
+            )
+        except Exception:  # noqa: BLE001
+            route_event_llm = None
+
+        result_llm = {
+            "persona": persona,
+            "context": context_value,
+            "session": session_value,
+            "dialogue_mode": {
+                "mode": mode_resolved["mode"],
+                "label": mode_resolved.get("label", mode_resolved["mode"]),
+                "source": mode_resolved.get("source", "global_default"),
+            },
+            "response": str(llm_switch_response or ""),
+            "skills_context": [],
+            "llm": llm_meta,
+            "llm_route_event": route_event_llm,
+            "memory_paths": memory_paths_llm,
+            "degraded": False,
+            "llm_switch_payload": llm_switch_payload or {},
+            "transport": turn.transport,
+            "channel_id": turn.channel_id,
+            "user_id": turn.user_id,
+            "inbound": {
+                "context": context_value,
+                "session": session_value,
+                "message": turn.message,
+            },
+            "resolved_by_binding": not bool(explicit_persona and explicit_persona.strip()),
+        }
+        return result_llm
 
     tool_response: str | None = None
     tool_payload: dict[str, Any] | None = None

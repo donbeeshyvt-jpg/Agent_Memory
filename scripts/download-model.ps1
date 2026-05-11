@@ -8,14 +8,7 @@
   - 預設 7 種 GGUF 模型，可選號碼或自訂
 
 .PARAMETER ModelKey
-  指定模型 key 跳過互動：gemma4 / qwen3-8b / qwen3-14b / qwen3-30b /
-                         qwen35-9b / llama32-3b / phi35-mini / custom
-
-.PARAMETER Repo
-  -ModelKey custom 時的 HF repo id
-
-.PARAMETER File
-  -ModelKey custom 時的 GGUF 檔名
+  指定模型 key 跳過互動：gemma4 / qwen35-9b / qwen30
 
 .PARAMETER LocalDirRoot
   下載目標的母目錄。預設 <project_root>\..\0_Models
@@ -33,11 +26,11 @@
 #>
 param(
     [string]$ModelKey = "",
-    [string]$Repo = "",
-    [string]$File = "",
     [string]$LocalDirRoot = "",
     [switch]$NonInteractive
 )
+$Repo = ""
+$File = ""
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -79,6 +72,15 @@ $models = @(
         file = "Qwen3.5-9B-Q8_0.gguf"
         subdir = "Qwen3.5-9B-GGUF"
         notes = "中文流暢,適合主要對話角色"
+    },
+    [ordered]@{
+        key = "qwen30"
+        display = "Qwen3-30B-A3B Instruct UD-Q4_K_XL"
+        size = "~17 GB"
+        repo = "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"
+        file = "Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf"
+        subdir = "Qwen3-30B-A3B-GGUF"
+        notes = "Sparse MoE 大模型,推理 / 工程角色 (24GB+ VRAM 較順)"
     }
 )
 
@@ -135,37 +137,23 @@ if (-not $ModelKey) {
         Write-Host ("        " + $m.notes) -ForegroundColor DarkGray
     }
     Write-Host ""
-    Write-Host -NoNewline ("    [{0}] 自訂 (HF repo + GGUF 檔名)" -f ($models.Count + 1)) -ForegroundColor Yellow
-    Write-Host ""
     Write-Host "    [Q] 取消"
     Write-Host ""
 
     while ($true) {
-        $raw = (Read-Host "  輸入 [1-$($models.Count + 1)/Q]").Trim()
+        $raw = (Read-Host "  輸入 [1-$($models.Count)/Q]").Trim()
         if ($raw -in @("Q", "q")) {
             Write-Host "  [INFO] 已取消。" -ForegroundColor DarkGray
             exit 0
         }
         if ($raw -match '^\d+$') {
             $n = [int]$raw
-            if ($n -ge 1 -and $n -le ($models.Count + 1)) {
-                if ($n -le $models.Count) {
-                    $chosen = $models[$n - 1]
-                    $Repo = $chosen.repo
-                    $File = $chosen.file
-                    $subdir = $chosen.subdir
-                    $display = $chosen.display
-                }
-                else {
-                    $Repo = (Read-Host "  HF repo id (e.g. Qwen/Qwen3-8B-Instruct-GGUF)").Trim()
-                    $File = (Read-Host "  GGUF 檔名").Trim()
-                    if (-not $Repo -or -not $File) {
-                        Write-Host "  [ERR] repo / file 不能空" -ForegroundColor Red
-                        exit 1
-                    }
-                    $subdir = ($Repo -split '/')[-1]
-                    $display = "$Repo / $File"
-                }
+            if ($n -ge 1 -and $n -le $models.Count) {
+                $chosen = $models[$n - 1]
+                $Repo = $chosen.repo
+                $File = $chosen.file
+                $subdir = $chosen.subdir
+                $display = $chosen.display
                 break
             }
         }
@@ -180,17 +168,9 @@ else {
         $subdir = $matched.subdir
         $display = $matched.display
     }
-    elseif ($ModelKey -eq "custom") {
-        if (-not $Repo -or -not $File) {
-            Write-Host "[ERR] -ModelKey custom 需要 -Repo 和 -File" -ForegroundColor Red
-            exit 1
-        }
-        $subdir = ($Repo -split '/')[-1]
-        $display = "$Repo / $File"
-    }
     else {
         Write-Host "[ERR] 未知的 ModelKey: $ModelKey" -ForegroundColor Red
-        Write-Host "      可用: $((@($models | ForEach-Object { $_.key })) -join ', '), custom" -ForegroundColor Yellow
+        Write-Host "      可用: $((@($models | ForEach-Object { $_.key })) -join ', ')" -ForegroundColor Yellow
         exit 1
     }
 }
