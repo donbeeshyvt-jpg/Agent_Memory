@@ -67,18 +67,21 @@
 
 下載完按 `[4] 切換 LLM 模型 → [1] 本機 llama-cpp-python` 選對應路徑即可。
 
-### B. 雲端 API（推薦給沒 GPU / 想試最新模型的）
+### B. Google Gemini API（推薦給沒 GPU / 想直接用 / 第一次先試的）
+
+**不用下載任何模型,有 API key 就能用。** 申請：<https://aistudio.google.com/apikey>(有免費層)
 
 按 `[4] 切換 LLM 模型 → [2] Google Gemini / Gemma API`：
 
-| API key env | 推薦 model | 備註 |
-|---|---|---|
-| `GOOGLE_API_KEY` | `gemini-2.5-flash` | 最快，免費層大，預設首選 |
-| `GOOGLE_API_KEY` | `gemini-2.5-pro` | 推理強，較慢 |
-| `GOOGLE_API_KEY` | `gemma-4-31b-it` | Gemma 系列大模型 |
-| `GOOGLE_API_KEY` | `gemma-4-26b-a4b-it` | Gemma sparse MoE |
+| 推薦 model | 備註 |
+|---|---|
+| `gemini-2.5-flash` | 最快、免費層大、預設首選 |
+| `gemini-2.5-pro` | 推理強、較慢 |
+| `gemma-4-31b-it` | Gemma 系列大模型 |
+| `gemma-4-26b-a4b-it` | Gemma sparse MoE |
 
-加 `-PersistKey` 旗標把 API key 寫入 Windows 使用者環境變數（registry，不寫檔，不推 git）。
+第一次選 Google API 時會 **SecureString prompt** 你貼 `GOOGLE_API_KEY`（輸入不顯示）;
+回 y 「記住 key」會用 `setx` 寫進 Windows 使用者環境變數 (registry,**不寫檔案、不推 git**),下次自動載入。
 
 ---
 
@@ -135,19 +138,6 @@ python -X utf8 -m agent_memory.cli llm-set-persona --persona writer-curator --pr
 python -X utf8 -m agent_memory.cli llm-set-default --profile gemini --model gemini-2.5-flash
 ```
 
-## 進階：其他 cloud provider（非預設）
-
-`switch-llm.ps1` 選單還有以下 provider，預設不主推但可選：
-- `[3] OpenAI 商用 API` — `OPENAI_API_KEY` / `gpt-4.1-mini`
-- `[4] OpenRouter` — `OPENROUTER_API_KEY` / `anthropic/claude-sonnet-4.6` (一個 key 用各家)
-- `[5] Anthropic Claude 直連` — `ANTHROPIC_API_KEY` / `claude-sonnet-4-6`
-- `[6] 本機 Ollama` — 需先 `ollama serve`
-
-要直接用 CLI 不開選單：
-```powershell
-$env:OPENAI_API_KEY = "sk-..."
-python -X utf8 -m agent_memory.cli llm-set-default --profile openai --model gpt-4.1-mini
-```
 
 ---
 

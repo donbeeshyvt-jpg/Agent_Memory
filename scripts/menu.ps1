@@ -281,7 +281,7 @@ function Show-Menu {
     Write-Option "2" "自訂設定" "逐步互動：選 LLM、要不要 Discord、要不要下載"
     Write-Host ""
     Write-Option "3" "上線管家到 Discord" "啟 bridge + relay，貼 token 即上線"
-    Write-Option "4" "切換 LLM 模型" "本機 ↔ Google API（含 OpenAI/Claude 等進階）"
+    Write-Option "4" "切換 LLM 模型" "本機 (gemma-4/Qwen) ↔ Google API (Gemini/Gemma)"
     Write-Option "5" "下載本地模型" "gemma-4 / Qwen3.5-9B / Qwen3-30B 三選一"
     Write-Host ""
     Write-Option "6" "CLI 試聊管家" "直接在這視窗對話（不用 Discord）"

@@ -232,13 +232,8 @@ _LLM_PRESETS: dict[str, tuple[str, str, str]] = {
         "../../0_Models/Qwen3-30B-A3B-GGUF/Qwen3-30B-A3B-UD-Q4_K_XL.gguf",
         "本機 Qwen3-30B-A3B (Q4_K_XL)",
     ),
-    # Google Gemini / Gemma API
+    # Google Gemini / Gemma API（4 個）
     "gemini": (
-        "gemini",
-        "gemini-2.5-flash",
-        "Google Gemini 2.5 Flash",
-    ),
-    "gemini-flash": (
         "gemini",
         "gemini-2.5-flash",
         "Google Gemini 2.5 Flash",

@@ -636,20 +636,35 @@ try {
         $qwen8bState = if ($hasQwen8b) { "ok" } else { "missing" }
         Add-Step -Rows $summary.steps -Name "model-check" -Ok $true -Detail "gemma4=$gemmaState qwen8b=$qwen8bState"
 
-        # Step: 提供下載選單（不再寫死 gemma-4，呼叫 download-model.ps1）
+        # Step: 模型缺失時提供 3-way choice — 下載本機 / 用 Google API / 跳過
+        $useGoogleApiAsDefault = $false
         if (-not $hasGemma) {
             if ($SkipModelDownload) {
-                Add-Step -Rows $summary.steps -Name "model-download" -Ok $true -Detail "skipped (-SkipModelDownload)"
+                Add-Step -Rows $summary.steps -Name "model-or-api" -Ok $true -Detail "skipped (-SkipModelDownload)"
             }
             elseif ($NonInteractive) {
-                Add-Step -Rows $summary.steps -Name "model-download" -Ok $true -Detail "skipped (NonInteractive)"
-                $summary.notes.Add("無本地模型；NonInteractive 模式跳過。互動跑時會跳模型下載選單。手動：.\scripts\download-model.ps1") | Out-Null
+                Add-Step -Rows $summary.steps -Name "model-or-api" -Ok $true -Detail "skipped (NonInteractive)"
+                $summary.notes.Add("無本地模型；NonInteractive 模式跳過。互動跑時會問你下載 vs Google API vs 跳過。") | Out-Null
             }
             else {
-                $shouldDownload = Ask-YesNo -Prompt "未偵測到本地模型。要現在下載嗎？(會跳模型選單，可選 7 種大小)" -Default $true
-                if ($shouldDownload) {
+                Write-Host ""
+                Write-Host "  未偵測到本地模型。選擇要怎麼用核心：" -ForegroundColor Yellow
+                Write-Host "    [1] 下載本地模型 (gemma-4 / Qwen3.5-9B / Qwen3-30B)" -ForegroundColor White
+                Write-Host "    [2] 直接用 Google Gemini API (不下載任何東西,需 GOOGLE_API_KEY)" -ForegroundColor White
+                Write-Host "    [3] 都先跳過 (之後用 menu [5] 下載或 [4] 切換)" -ForegroundColor DarkGray
+                Write-Host ""
+                $choice = ""
+                while ($true) {
+                    $raw = (Read-Host "  選 [1-3]").Trim()
+                    if ($raw -in @("1", "2", "3")) {
+                        $choice = $raw
+                        break
+                    }
+                    Write-Host "  請輸入 1 / 2 / 3" -ForegroundColor Red
+                }
+
+                if ($choice -eq "1") {
                     $downloader = Join-Path $projectRoot "scripts/download-model.ps1"
-                    # 串流下載 — 直接讓 hf cli 印進度條到 host
                     $prevEap = $ErrorActionPreference
                     $ErrorActionPreference = "Continue"
                     try {
@@ -661,21 +676,72 @@ try {
                     }
                     $hasGemma = Test-Path -LiteralPath $gemmaModel
                     if ($dlExit -eq 0) {
-                        Add-Step -Rows $summary.steps -Name "model-download" -Ok $true -Detail "ok"
+                        Add-Step -Rows $summary.steps -Name "model-or-api" -Ok $true -Detail "downloaded local model"
                     }
                     else {
-                        Add-Step -Rows $summary.steps -Name "model-download" -Ok $false -Detail "download script exit=$dlExit"
+                        Add-Step -Rows $summary.steps -Name "model-or-api" -Ok $false -Detail "download script exit=$dlExit"
+                    }
+                }
+                elseif ($choice -eq "2") {
+                    # Google API path — 取得 key + 設 global_default
+                    $useGoogleApiAsDefault = $true
+                    $envName = "GOOGLE_API_KEY"
+                    $existingKey = [Environment]::GetEnvironmentVariable($envName, "Process")
+                    if (-not $existingKey) {
+                        $existingKey = [Environment]::GetEnvironmentVariable($envName, "User")
+                        if ($existingKey) {
+                            Set-Item -LiteralPath "Env:$envName" -Value $existingKey
+                            Write-Host "  [OK] 從使用者環境變數載入 $envName" -ForegroundColor Green
+                        }
+                    }
+                    if (-not $existingKey) {
+                        Write-Host ""
+                        Write-Host "  需要 Google AI Studio API key (https://aistudio.google.com/apikey 申請,有免費層)" -ForegroundColor Yellow
+                        Write-Host "  輸入時不會顯示,Enter 確認" -ForegroundColor DarkGray
+                        $sec = Read-Host -Prompt "  GOOGLE_API_KEY" -AsSecureString
+                        if ($sec -and $sec.Length -gt 0) {
+                            $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+                            try {
+                                $existingKey = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+                            }
+                            finally {
+                                [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+                            }
+                            Set-Item -LiteralPath "Env:$envName" -Value $existingKey
+                            $persist = Ask-YesNo -Prompt "要記住 key 到 Windows 使用者環境變數,下次自動載入?" -Default $true
+                            if ($persist) {
+                                [Environment]::SetEnvironmentVariable($envName, $existingKey, "User")
+                                Write-Host "  [OK] $envName 已寫入使用者環境變數" -ForegroundColor Green
+                            }
+                        }
+                    }
+                    if ($existingKey) {
+                        Add-Step -Rows $summary.steps -Name "model-or-api" -Ok $true -Detail "Google API key configured"
+                    }
+                    else {
+                        Add-Step -Rows $summary.steps -Name "model-or-api" -Ok $true -Detail "Google API chosen but no key set (chat will be degraded)"
+                        $summary.notes.Add("選了 Google API 但 GOOGLE_API_KEY 沒設,對話會 degraded。用 menu [4] 重設,或 setx GOOGLE_API_KEY <key>") | Out-Null
                     }
                 }
                 else {
-                    Add-Step -Rows $summary.steps -Name "model-download" -Ok $true -Detail "user declined"
+                    Add-Step -Rows $summary.steps -Name "model-or-api" -Ok $true -Detail "user skipped"
                 }
             }
         }
 
-        # Step: configure llama_cpp_local + steward to use gemma-4 E4B
+        # Step: 配 LLM 預設 — 優先 Google API（如果使用者選 [2]）；否則本機 gemma-4
         if ($SkipConfigureLLM) {
-            Add-Step -Rows $summary.steps -Name "configure-local-llm" -Ok $true -Detail "skipped (-SkipConfigureLLM)"
+            Add-Step -Rows $summary.steps -Name "configure-llm" -Ok $true -Detail "skipped (-SkipConfigureLLM)"
+        }
+        elseif ($useGoogleApiAsDefault -and $resolvedVaultRoot) {
+            # 設 global_default 為 gemini-2.5-flash
+            $setRun = Invoke-Python -Python $python -ArgList @("-X", "utf8", "-m", "agent_memory.cli", "--vault-root", $resolvedVaultRoot, "llm-set-default", "--profile", "gemini", "--model", "gemini-2.5-flash", "--json")
+            if ($setRun.exit_code -eq 0) {
+                Add-Step -Rows $summary.steps -Name "configure-llm" -Ok $true -Detail "global_default=gemini/gemini-2.5-flash"
+            }
+            else {
+                Add-Step -Rows $summary.steps -Name "configure-llm" -Ok $false -Detail "llm-set-default failed: $(First-Line -Text $setRun.output)"
+            }
         }
         elseif ($hasGemma -and $resolvedVaultRoot) {
             $routerYaml = Join-Path $resolvedVaultRoot "00_System\08_Runtime_Profiles\llm_router.yaml"
@@ -692,14 +758,14 @@ try {
             $configRun = Invoke-Python -Python $python -ArgList $configArgs
             if ($configRun.exit_code -eq 0) {
                 $cudaDetail = if ($cudaPath) { "cuda=$cudaPath" } else { "cuda=none (依賴系統 PATH)" }
-                Add-Step -Rows $summary.steps -Name "configure-local-llm" -Ok $true -Detail "model=gemma-4-E4B-Q8_0 $cudaDetail"
+                Add-Step -Rows $summary.steps -Name "configure-llm" -Ok $true -Detail "model=gemma-4-E4B-Q8_0 $cudaDetail"
             }
             else {
-                Add-Step -Rows $summary.steps -Name "configure-local-llm" -Ok $false -Detail "yaml patch failed: $(First-Line -Text $configRun.output)"
+                Add-Step -Rows $summary.steps -Name "configure-llm" -Ok $false -Detail "yaml patch failed: $(First-Line -Text $configRun.output)"
             }
         }
         else {
-            Add-Step -Rows $summary.steps -Name "configure-local-llm" -Ok $true -Detail "skipped (no gemma-4 model)"
+            Add-Step -Rows $summary.steps -Name "configure-llm" -Ok $true -Detail "skipped (no model, no API selected)"
         }
     }
 

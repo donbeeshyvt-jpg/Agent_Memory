@@ -82,61 +82,10 @@ $providers = @(
         recommended_models = @(
             "gemini-2.5-flash",
             "gemini-2.5-pro",
-            "gemini-2.5-flash-lite",
-            "gemini-2.0-flash",
             "gemma-4-31b-it",
-            "gemma-4-26b-a4b-it",
-            "gemma-4-9b-it",
-            "gemma-4-4b-it"
+            "gemma-4-26b-a4b-it"
         )
-        notes = "OpenAI-compatible 端點。Gemini 系列穩定可用；Gemma 系列視 AI Studio 是否開放對應名稱。"
-    },
-    [ordered]@{
-        id = "openai"
-        display = "OpenAI 商用 API"
-        api_key_env = "OPENAI_API_KEY"
-        recommended_models = @(
-            "gpt-4.1-mini",
-            "gpt-4.1",
-            "gpt-4o",
-            "gpt-4o-mini"
-        )
-        notes = "需付費 API key。"
-    },
-    [ordered]@{
-        id = "openrouter"
-        display = "OpenRouter 聚合（可叫各家模型）"
-        api_key_env = "OPENROUTER_API_KEY"
-        recommended_models = @(
-            "anthropic/claude-sonnet-4.6",
-            "anthropic/claude-opus-4-7",
-            "openai/gpt-4.1-mini",
-            "google/gemini-2.5-flash",
-            "deepseek/deepseek-r1"
-        )
-        notes = "一個 key 用各家模型，含部分免費 model。"
-    },
-    [ordered]@{
-        id = "anthropic"
-        display = "Anthropic Claude API（直連）"
-        api_key_env = "ANTHROPIC_API_KEY"
-        recommended_models = @(
-            "claude-sonnet-4-6",
-            "claude-opus-4-7",
-            "claude-haiku-4-5"
-        )
-        notes = "Anthropic 直連 API。"
-    },
-    [ordered]@{
-        id = "ollama_local"
-        display = "本機 Ollama (需先 ollama serve)"
-        api_key_env = ""
-        recommended_models = @(
-            "qwen2.5:14b",
-            "qwen2.5:7b",
-            "llama3.2:3b"
-        )
-        notes = "需先跑 ollama serve；模型用 ollama pull 拉。"
+        notes = "OpenAI-compatible 端點。沒設過 GOOGLE_API_KEY 會 SecureString prompt 你貼。"
     }
 )
 
