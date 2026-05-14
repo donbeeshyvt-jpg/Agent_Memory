@@ -15,24 +15,60 @@
     Save-EntryToDotEnv -Key "GOOGLE_API_KEY" -Value "AIza..."
 #>
 
-function Get-DotEnvPath {
-    # 自動推 repo root = scripts/.. = agent-memory-core/
+function Resolve-VaultRoot {
+    <#
+    順序找 vault root:
+      1. -VaultRoot 顯式傳入
+      2. ~/.agent_memory/config.toml 的 [vault].root
+      3. <core>/../SecondBrains/default_second_brain (預設 fallback)
+    #>
+    param([string]$VaultRoot = "")
+
+    if ($VaultRoot) {
+        return $VaultRoot
+    }
+
+    $cfg = Join-Path $env:USERPROFILE ".agent_memory\config.toml"
+    if (Test-Path -LiteralPath $cfg) {
+        try {
+            $text = Get-Content -LiteralPath $cfg -Raw -Encoding UTF8
+            $m = [regex]::Match($text, 'root\s*=\s*"([^"]+)"')
+            if ($m.Success) {
+                # toml 用 \\ 轉義 backslash
+                return ($m.Groups[1].Value -replace '\\\\', '\')
+            }
+        }
+        catch { }
+    }
+
+    # 預設 fallback
     $scriptsDir = $PSScriptRoot
     if (-not $scriptsDir) {
         $scriptsDir = Split-Path -Parent $MyInvocation.MyCommand.Path
     }
-    return (Join-Path (Split-Path -Parent $scriptsDir) ".env")
+    $coreRoot = Split-Path -Parent $scriptsDir
+    return (Join-Path (Split-Path -Parent $coreRoot) "SecondBrains\default_second_brain")
+}
+
+function Get-DotEnvPath {
+    <#
+    .env 統一放在 vault root (<vault>/.env), 不在 core repo 裡.
+    這樣每個 brain 有自己的 keys, 切換 brain 也切換 keys.
+    #>
+    param([string]$VaultRoot = "")
+    $vault = Resolve-VaultRoot -VaultRoot $VaultRoot
+    return (Join-Path $vault ".env")
 }
 
 function Import-DotEnvIntoProcess {
     <#
-    將 agent-memory-core/.env 載入此 PS process 的 $env:。
+    將 <vault>/.env 載入此 PS process 的 $env:。
     語意跟 python-dotenv 的 override=False 一致:
     已存在的 process env 不會被 .env 蓋掉 (使用者 setx 優先)。
     #>
-    param([string]$EnvPath = "")
+    param([string]$EnvPath = "", [string]$VaultRoot = "")
     if (-not $EnvPath) {
-        $EnvPath = Get-DotEnvPath
+        $EnvPath = Get-DotEnvPath -VaultRoot $VaultRoot
     }
     if (-not (Test-Path -LiteralPath $EnvPath)) {
         return $false
@@ -73,14 +109,21 @@ function Save-EntryToDotEnv {
     <#
     把單一 KEY=VALUE 寫入 .env 檔 (存在就 update,沒有就 append)。
     自動建檔含 header 註解。同時更新此 process 的 $env:。
+    .env 放在 <vault>/.env (跟著 brain 走)。
     #>
     param(
         [Parameter(Mandatory=$true)] [string]$Key,
         [Parameter(Mandatory=$true)] [string]$Value,
-        [string]$EnvPath = ""
+        [string]$EnvPath = "",
+        [string]$VaultRoot = ""
     )
     if (-not $EnvPath) {
-        $EnvPath = Get-DotEnvPath
+        $EnvPath = Get-DotEnvPath -VaultRoot $VaultRoot
+    }
+    # 確保 vault 目錄存在 (新 brain 第一次寫 .env)
+    $envDir = Split-Path -Parent $EnvPath
+    if (-not (Test-Path -LiteralPath $envDir)) {
+        New-Item -ItemType Directory -Path $envDir -Force | Out-Null
     }
 
     $lines = @()
@@ -123,10 +166,11 @@ function Remove-EntryFromDotEnv {
     #>
     param(
         [Parameter(Mandatory=$true)] [string]$Key,
-        [string]$EnvPath = ""
+        [string]$EnvPath = "",
+        [string]$VaultRoot = ""
     )
     if (-not $EnvPath) {
-        $EnvPath = Get-DotEnvPath
+        $EnvPath = Get-DotEnvPath -VaultRoot $VaultRoot
     }
     if (-not (Test-Path -LiteralPath $EnvPath)) {
         # 也清掉 process env 以免殘留
@@ -141,9 +185,9 @@ function Remove-EntryFromDotEnv {
 }
 
 function Test-KeyInDotEnv {
-    param([string]$Key, [string]$EnvPath = "")
+    param([string]$Key, [string]$EnvPath = "", [string]$VaultRoot = "")
     if (-not $EnvPath) {
-        $EnvPath = Get-DotEnvPath
+        $EnvPath = Get-DotEnvPath -VaultRoot $VaultRoot
     }
     if (-not (Test-Path -LiteralPath $EnvPath)) {
         return $false

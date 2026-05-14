@@ -62,9 +62,9 @@ catch { }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 
-# 載入 .env helper + 從 .env 把 key/token 灌進此 process env
+# 載入 .env helper + 從 .env 把 key/token 灌進此 process env (.env 在 <vault>/.env)
 . (Join-Path $PSScriptRoot "_dotenv-helper.ps1")
-Import-DotEnvIntoProcess | Out-Null
+Import-DotEnvIntoProcess -VaultRoot $VaultRoot | Out-Null
 
 # ===== Provider 選單定義 =====
 # recommended_models 第一個是預設；其餘列出讓使用者選或輸入自訂。
@@ -109,7 +109,7 @@ function Remove-StoredApiKey {
     if (-not $EnvVarName) { return }
     [Environment]::SetEnvironmentVariable($EnvVarName, $null, "User")
     Remove-Item -LiteralPath "Env:$EnvVarName" -ErrorAction SilentlyContinue
-    $removedFromEnvFile = Remove-EntryFromDotEnv -Key $EnvVarName
+    $removedFromEnvFile = Remove-EntryFromDotEnv -Key $EnvVarName -VaultRoot $VaultRoot
     $detail = "process + User 環境變數"
     if ($removedFromEnvFile) { $detail += " + .env 檔" }
     Write-Host "  [OK] 已移除 $EnvVarName ($detail)" -ForegroundColor Yellow
@@ -203,7 +203,7 @@ function Get-OrPromptApiKey {
         Write-Host "  請輸入 1 / 2 / 3" -ForegroundColor Red
     }
     if ($persistChoice -eq "1") {
-        $envPath = Save-EntryToDotEnv -Key $EnvVarName -Value $keyVal
+        $envPath = Save-EntryToDotEnv -Key $EnvVarName -Value $keyVal -VaultRoot $VaultRoot
         Write-Host "  [OK] $EnvVarName 寫入 $envPath (下次自動載入)" -ForegroundColor Green
     }
     elseif ($persistChoice -eq "2") {

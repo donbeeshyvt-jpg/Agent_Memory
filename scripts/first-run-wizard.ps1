@@ -32,9 +32,9 @@ catch { }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 
-# 自動載入 .env (API key / Discord token 等)
+# 自動載入 .env (API key / Discord token 等), .env 放 <vault>/.env
 . (Join-Path $PSScriptRoot "_dotenv-helper.ps1")
-Import-DotEnvIntoProcess | Out-Null
+Import-DotEnvIntoProcess -VaultRoot $VaultRoot | Out-Null
 
 function Add-Step {
     param(
@@ -758,7 +758,7 @@ try {
                                 Write-Host "  請輸入 1 / 2 / 3" -ForegroundColor Red
                             }
                             if ($persistChoice -eq "1") {
-                                $envPath = Save-EntryToDotEnv -Key $envName -Value $existingKey
+                                $envPath = Save-EntryToDotEnv -Key $envName -Value $existingKey -VaultRoot $resolvedVaultRoot
                                 Write-Host "  [OK] $envName 寫入 $envPath" -ForegroundColor Green
                             }
                             elseif ($persistChoice -eq "2") {
@@ -965,7 +965,7 @@ try {
                     Write-Host "  請輸入 1 / 2 / 3" -ForegroundColor Red
                 }
                 if ($tokenPersist -eq "1") {
-                    $envPath = Save-EntryToDotEnv -Key $DiscordTokenEnv -Value $tokenVal
+                    $envPath = Save-EntryToDotEnv -Key $DiscordTokenEnv -Value $tokenVal -VaultRoot $resolvedVaultRoot
                     Write-Host "  [OK] $DiscordTokenEnv 寫入 $envPath" -ForegroundColor Green
                 }
                 elseif ($tokenPersist -eq "2") {

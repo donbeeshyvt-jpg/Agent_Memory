@@ -38,8 +38,9 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 
 # 自動載入 .env 把 GOOGLE_API_KEY / DISCORD_BOT_TOKEN_* 等灌進此 process
+# .env 放 <vault>/.env (跟著 brain 走)
 . (Join-Path $PSScriptRoot "_dotenv-helper.ps1")
-Import-DotEnvIntoProcess | Out-Null
+Import-DotEnvIntoProcess -VaultRoot $VaultRoot | Out-Null
 
 # ============== 視覺常數 ==============
 $BorderColor = [ConsoleColor]::Cyan
@@ -292,6 +293,7 @@ function Show-Menu {
     Write-Option "7" "跑工具能力 smoke" "驗證 /tool 寫檔 + 角色權限治理"
     Write-Host ""
     Write-Option "8" "重新掃描狀態" "刷新上面的環境檢查"
+    Write-Option "9" "清除使用者資料" "刪 .env (含所有 key/token) + 驗證真的斷線"
     Write-Host ""
     Write-Host "    [Q] " -NoNewline -ForegroundColor $MutedColor
     Write-Host "離開" -ForegroundColor $MutedColor
@@ -301,10 +303,10 @@ function Show-Menu {
 function Read-MenuChoice {
     while ($true) {
         Write-Host -NoNewline "  請輸入 " -ForegroundColor $BorderColor
-        Write-Host -NoNewline "[1-8/Q]" -ForegroundColor $AccentColor
+        Write-Host -NoNewline "[1-9/Q]" -ForegroundColor $AccentColor
         Write-Host -NoNewline ": " -ForegroundColor $BorderColor
         $raw = (Read-Host).Trim().ToUpper()
-        if ($raw -in @("1", "2", "3", "4", "5", "6", "7", "8", "Q")) {
+        if ($raw -in @("1", "2", "3", "4", "5", "6", "7", "8", "9", "Q")) {
             return $raw
         }
         Write-Host "  無效輸入。" -ForegroundColor $ErrColor
@@ -362,6 +364,107 @@ function Invoke-SwitchLlm {
     $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "switch-llm.ps1"), "-PersistKey")
     if ($VaultRoot) { $args += @("-VaultRoot", $VaultRoot) }
     & powershell @args
+}
+
+function Invoke-ClearUserData {
+    Write-Host ""
+    Write-Border "─"
+    Write-Host "  [清除使用者資料]" -ForegroundColor $TitleColor
+    Write-Border "─"
+    Write-Host ""
+
+    $envPath = Get-DotEnvPath -VaultRoot $VaultRoot
+    Write-Host "  .env 位置: $envPath" -ForegroundColor $MutedColor
+
+    if (-not (Test-Path -LiteralPath $envPath)) {
+        Write-Host "  [INFO] .env 不存在,無資料可清。" -ForegroundColor $MutedColor
+        return
+    }
+
+    # 列出含的 key (mask value)
+    $lines = @(Get-Content -LiteralPath $envPath -Encoding UTF8)
+    $entries = New-Object System.Collections.ArrayList
+    foreach ($l in $lines) {
+        $t = [string]$l
+        $t = $t.Trim()
+        if (-not $t) { continue }
+        if ($t.StartsWith("#")) { continue }
+        $eq = $t.IndexOf("=")
+        if ($eq -le 0) { continue }
+        $k = $t.Substring(0, $eq).Trim()
+        $v = $t.Substring($eq + 1).Trim()
+        $masked = if ($v.Length -ge 8) { $v.Substring(0, 4) + "..." + $v.Substring($v.Length - 4) } else { "***" }
+        [void]$entries.Add(@{ key = $k; masked = $masked })
+    }
+
+    if ($entries.Count -eq 0) {
+        Write-Host "  [INFO] .env 沒有 key entries。" -ForegroundColor $MutedColor
+    }
+    else {
+        Write-Host ""
+        Write-Host "  .env 目前含這些 key (value 已遮蔽):" -ForegroundColor Yellow
+        foreach ($e in $entries) {
+            Write-Host ("    {0} = {1}" -f $e.key, $e.masked) -ForegroundColor $MutedColor
+        }
+    }
+
+    Write-Host ""
+    Write-Host "  確定要刪除 .env 並清掉這些 key?" -ForegroundColor $WarnColor
+    Write-Host "  (Windows registry / setx 設過的 key 不會動,要 switch-llm.ps1 -RemoveKey 額外清)" -ForegroundColor $MutedColor
+    $confirm = (Read-Host "  打 yes 確認").Trim()
+    if ($confirm -ne "yes") {
+        Write-Host "  [INFO] 已取消,沒刪東西。" -ForegroundColor $MutedColor
+        return
+    }
+
+    # 刪檔
+    Remove-Item -LiteralPath $envPath -Force
+    Write-Host "  [OK] $envPath 已刪除" -ForegroundColor Green
+
+    # 清 process env (僅針對 .env 裡的 key)
+    foreach ($e in $entries) {
+        Remove-Item -LiteralPath "Env:$($e.key)" -ErrorAction SilentlyContinue
+    }
+
+    # 驗證: 跑 chat → 應該 degraded (API key 沒了)
+    Write-Host ""
+    Write-Host "  [驗證] 跑 chat 確認 API key 真的斷..." -ForegroundColor Cyan
+    $smokeArgs = @("-X", "utf8", "-m", "agent_memory.cli")
+    if ($VaultRoot) { $smokeArgs += @("--vault-root", $VaultRoot) }
+    $smokeArgs += @("chat", "ping", "--persona", "steward", "--context", "clear-verify", "--session", "clr-verify", "--allow-llm-degraded", "--json")
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $raw = (& $PythonExe @smokeArgs 2>&1 | Out-String)
+    }
+    finally {
+        $ErrorActionPreference = $prevEap
+    }
+    $jsStart = $raw.IndexOf('{')
+    $jsEnd = $raw.LastIndexOf('}')
+    if ($jsStart -ge 0 -and $jsEnd -gt $jsStart) {
+        try {
+            $j = $raw.Substring($jsStart, $jsEnd - $jsStart + 1) | ConvertFrom-Json
+            $isDeg = [bool]$j.degraded
+            $modelUsed = [string]$j.llm.model
+            Write-Host ""
+            if ($isDeg) {
+                Write-Host "  ✓ 對話已 degraded,key 確實被清乾淨。" -ForegroundColor Green
+            }
+            else {
+                Write-Host "  ⚠ 對話仍能回應 — 表示還有其他 key 來源 (用的 model: $modelUsed)" -ForegroundColor Yellow
+                Write-Host "    可能來自:" -ForegroundColor $MutedColor
+                Write-Host "      - Windows User 環境變數 (setx 過的): 用 .\scripts\switch-llm.ps1 -RemoveKey 清" -ForegroundColor $MutedColor
+                Write-Host "      - 本機 GGUF (llama_cpp_local 不需要 key): 換到 Google API 即可看出差別" -ForegroundColor $MutedColor
+            }
+        }
+        catch {
+            Write-Host "  [WARN] 驗證 chat 跑了但 JSON parse 失敗" -ForegroundColor Yellow
+        }
+    }
+    else {
+        Write-Host "  [WARN] 驗證 chat 沒拿到 JSON" -ForegroundColor Yellow
+    }
 }
 
 function Invoke-DownloadModel {
@@ -467,6 +570,7 @@ while ($true) {
         "8" {
             # 純 status refresh — 主迴圈下一輪會重新顯示
         }
+        "9" { Invoke-ClearUserData; Pause-MainMenu }
         "Q" {
             Write-Host ""
             Write-Host "  bye." -ForegroundColor $TitleColor
