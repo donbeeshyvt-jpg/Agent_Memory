@@ -37,6 +37,10 @@ catch { }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 
+# 自動載入 .env 把 GOOGLE_API_KEY / DISCORD_BOT_TOKEN_* 等灌進此 process
+. (Join-Path $PSScriptRoot "_dotenv-helper.ps1")
+Import-DotEnvIntoProcess | Out-Null
+
 # ============== 視覺常數 ==============
 $BorderColor = [ConsoleColor]::Cyan
 $TitleColor = [ConsoleColor]::Green

@@ -62,6 +62,10 @@ catch { }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 
+# 載入 .env helper + 從 .env 把 key/token 灌進此 process env
+. (Join-Path $PSScriptRoot "_dotenv-helper.ps1")
+Import-DotEnvIntoProcess | Out-Null
+
 # ===== Provider 選單定義 =====
 # recommended_models 第一個是預設；其餘列出讓使用者選或輸入自訂。
 $providers = @(
@@ -105,7 +109,10 @@ function Remove-StoredApiKey {
     if (-not $EnvVarName) { return }
     [Environment]::SetEnvironmentVariable($EnvVarName, $null, "User")
     Remove-Item -LiteralPath "Env:$EnvVarName" -ErrorAction SilentlyContinue
-    Write-Host "  [OK] 已移除 $EnvVarName (User 環境變數 + 此 process)" -ForegroundColor Yellow
+    $removedFromEnvFile = Remove-EntryFromDotEnv -Key $EnvVarName
+    $detail = "process + User 環境變數"
+    if ($removedFromEnvFile) { $detail += " + .env 檔" }
+    Write-Host "  [OK] 已移除 $EnvVarName ($detail)" -ForegroundColor Yellow
 }
 
 function Read-Choice {
@@ -176,23 +183,34 @@ function Get-OrPromptApiKey {
         Write-Host "  [WARN] 沒貼 key,繼續但 LLM 呼叫會失敗" -ForegroundColor Yellow
         return ""
     }
-    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+    # 3-way 存放選擇:.env 檔 (推薦) / Windows 環境變數 / 只此次
+    $bstr0 = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
     try {
-        $key = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+        $keyVal = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr0)
     }
     finally {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr0)
     }
-    Set-Item -LiteralPath "Env:$EnvVarName" -Value $key
-
-    if ($PersistKey) {
-        [Environment]::SetEnvironmentVariable($EnvVarName, $key, "User")
-        Write-Host "  [OK] $EnvVarName 已寫入 Windows 使用者環境變數（registry，下次新開 PowerShell 自動載入）" -ForegroundColor Green
+    Set-Item -LiteralPath "Env:$EnvVarName" -Value $keyVal
+    Write-Host ""
+    Write-Host "  要把這個 key 記住到哪裡?" -ForegroundColor Yellow
+    Write-Host "    [1] .env 檔 (推薦,放專案 repo 根目錄,純檔案,gitignored,好刪除)" -ForegroundColor White
+    Write-Host "    [2] Windows 使用者環境變數 (registry,全域,難刪)" -ForegroundColor White
+    Write-Host "    [3] 只此次有效 (關掉視窗就忘記)" -ForegroundColor DarkGray
+    while ($true) {
+        $persistChoice = (Read-Host "  選 [1-3]").Trim()
+        if ($persistChoice -in @("1", "2", "3")) { break }
+        Write-Host "  請輸入 1 / 2 / 3" -ForegroundColor Red
     }
-    else {
-        Write-Host "  [INFO] $EnvVarName 只在此視窗有效。要持久化：加 -PersistKey 重跑。" -ForegroundColor DarkGray
+    if ($persistChoice -eq "1") {
+        $envPath = Save-EntryToDotEnv -Key $EnvVarName -Value $keyVal
+        Write-Host "  [OK] $EnvVarName 寫入 $envPath (下次自動載入)" -ForegroundColor Green
     }
-    return $key
+    elseif ($persistChoice -eq "2") {
+        [Environment]::SetEnvironmentVariable($EnvVarName, $keyVal, "User")
+        Write-Host "  [OK] $EnvVarName 寫入 Windows 使用者環境變數 (registry)" -ForegroundColor Green
+    }
+    return $keyVal
 }
 
 # ===== 主流程 =====

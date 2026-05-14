@@ -32,6 +32,10 @@ catch { }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 
+# 自動載入 .env (API key / Discord token 等)
+. (Join-Path $PSScriptRoot "_dotenv-helper.ps1")
+Import-DotEnvIntoProcess | Out-Null
+
 function Add-Step {
     param(
         [System.Collections.IList]$Rows,
@@ -742,10 +746,24 @@ try {
                                 [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
                             }
                             Set-Item -LiteralPath "Env:$envName" -Value $existingKey
-                            $persist = Ask-YesNo -Prompt "  記住 key 到 Windows 使用者環境變數,下次自動載入?" -Default $true
-                            if ($persist) {
+                            # 3-way: .env / setx / 只此次
+                            Write-Host ""
+                            Write-Host "  記住 key 到哪裡?" -ForegroundColor Yellow
+                            Write-Host "    [1] .env 檔 (推薦,純檔案,gitignored,好刪除)" -ForegroundColor White
+                            Write-Host "    [2] Windows 使用者環境變數 (registry,全域)" -ForegroundColor White
+                            Write-Host "    [3] 只此次有效" -ForegroundColor DarkGray
+                            while ($true) {
+                                $persistChoice = (Read-Host "  選 [1-3]").Trim()
+                                if ($persistChoice -in @("1", "2", "3")) { break }
+                                Write-Host "  請輸入 1 / 2 / 3" -ForegroundColor Red
+                            }
+                            if ($persistChoice -eq "1") {
+                                $envPath = Save-EntryToDotEnv -Key $envName -Value $existingKey
+                                Write-Host "  [OK] $envName 寫入 $envPath" -ForegroundColor Green
+                            }
+                            elseif ($persistChoice -eq "2") {
                                 [Environment]::SetEnvironmentVariable($envName, $existingKey, "User")
-                                Write-Host "  [OK] $envName 已寫入使用者環境變數" -ForegroundColor Green
+                                Write-Host "  [OK] $envName 寫入 Windows 使用者環境變數" -ForegroundColor Green
                             }
                         }
                     }
@@ -935,10 +953,24 @@ try {
                     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
                 }
                 Set-Item -LiteralPath "Env:$DiscordTokenEnv" -Value $tokenVal
-                $persist = Ask-YesNo -Prompt "  記住 token 到 Windows 使用者環境變數,下次自動載入?" -Default $true
-                if ($persist) {
+                # 3-way: .env / setx / 只此次
+                Write-Host ""
+                Write-Host "  記住 token 到哪裡?" -ForegroundColor Yellow
+                Write-Host "    [1] .env 檔 (推薦,純檔案,gitignored,好刪除)" -ForegroundColor White
+                Write-Host "    [2] Windows 使用者環境變數 (registry,全域)" -ForegroundColor White
+                Write-Host "    [3] 只此次有效" -ForegroundColor DarkGray
+                while ($true) {
+                    $tokenPersist = (Read-Host "  選 [1-3]").Trim()
+                    if ($tokenPersist -in @("1", "2", "3")) { break }
+                    Write-Host "  請輸入 1 / 2 / 3" -ForegroundColor Red
+                }
+                if ($tokenPersist -eq "1") {
+                    $envPath = Save-EntryToDotEnv -Key $DiscordTokenEnv -Value $tokenVal
+                    Write-Host "  [OK] $DiscordTokenEnv 寫入 $envPath" -ForegroundColor Green
+                }
+                elseif ($tokenPersist -eq "2") {
                     [Environment]::SetEnvironmentVariable($DiscordTokenEnv, $tokenVal, "User")
-                    Write-Host "  [OK] $DiscordTokenEnv 已寫入使用者環境變數" -ForegroundColor Green
+                    Write-Host "  [OK] $DiscordTokenEnv 寫入 Windows 使用者環境變數" -ForegroundColor Green
                 }
                 $tokenOk = $true
             }

@@ -54,6 +54,10 @@ catch { }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 
+# 自動載入 .env (DISCORD_BOT_TOKEN_* 等)
+. (Join-Path $PSScriptRoot "_dotenv-helper.ps1")
+Import-DotEnvIntoProcess | Out-Null
+
 if (-not $ConfigFile) {
     $ConfigFile = Join-Path $projectRoot "scripts/discord-relay-stack.local.json"
 }
