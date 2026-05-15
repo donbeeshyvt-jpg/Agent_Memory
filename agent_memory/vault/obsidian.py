@@ -156,9 +156,9 @@ class ObsidianVaultAdapter(VaultAdapter):
             atomic_write(
                 alloc,
                 "# Folder Allocation Ledger\n\n"
-                "- ?桃?嚗???AI ?芸???鞈?憭曇?摨?瘙箇??n"
-                "- 閬?嚗?閮撣喋?撖急?獢頂蝯晞n"
-                "- 閬?嚗??冗憿舐內?澆??箏???`NN_EnglishSlug / 蝜葉?券牧??n",
+                "- 用途：紀錄 AI 為各分類資料夾分配的英文 slug 與繁中用途。\n"
+                "- 規則一：每個資料夾都要有 `_DIR_INFO.md` 標註用途與命名規則。\n"
+                "- 規則二：新增分類請使用 `NN_EnglishSlug / 繁中用途` 雙語命名。\n",
             )
 
         if self.read_note("10_Permanent/Profiles/USER.md") is None:
@@ -169,7 +169,20 @@ class ObsidianVaultAdapter(VaultAdapter):
                     source=MemorySource.USER,
                     tags=["profile", "baseline"],
                 ),
-                body="# USER\n\n## ?末\n\n- 嚗?鋆?\n",
+                body=(
+                    "# USER\n\n"
+                    "> 使用者個人檔。管家會在每次對話前讀取此檔作為「凍結快照」之一。\n"
+                    "> 請填入希望管家長期記住的個人基本資訊。\n\n"
+                    "## 個人簡介\n\n"
+                    "- 偏好稱呼：（請填寫）\n"
+                    "- 主要身份／角色：（請填寫）\n"
+                    "- 使用語言：繁體中文\n\n"
+                    "## 偏好設定\n\n"
+                    "- 回覆語氣：（例如：精簡、技術導向、可執行）\n"
+                    "- 偏好工具：（例如：CLI / Discord）\n\n"
+                    "## 注意事項\n\n"
+                    "- （管家在回應前需要遵守的個人原則，請補充）\n"
+                ),
             )
             self.write_note(note)
 
@@ -181,7 +194,20 @@ class ObsidianVaultAdapter(VaultAdapter):
                     source=MemorySource.AGENT,
                     tags=["memory", "baseline"],
                 ),
-                body="# MEMORY\n\n## 蝛拙?閮\n\n- 嚗?鋆?\n",
+                body=(
+                    "# MEMORY\n\n"
+                    "> 第二大腦的長期記憶 anchor。管家會在每次對話前讀取此檔作為「凍結快照」之一。\n"
+                    "> 此處為摘要層；細項概念寫入 `10_Permanent/Concepts/`，細項事實寫入 `10_Permanent/Facts/`。\n\n"
+                    "## 長期記憶摘要\n\n"
+                    "- 尚未累積記憶。後續會由下列來源逐步寫入：\n"
+                    "  - CLI / Discord 對話累積至 `70_Active_Plans/Session_Logs/`\n"
+                    "  - 管家從 Session_Logs 蒸餾進 `10_Permanent/Concepts/` 與 `10_Permanent/Facts/`\n"
+                    "  - 此檔摘要全局重點，可手動補強\n\n"
+                    "## 重要事實\n\n"
+                    "- （手動加入或由管家自動補充）\n\n"
+                    "## 待追蹤事項\n\n"
+                    "- （未解決議題；由管家或使用者補充）\n"
+                ),
             )
             self.write_note(note)
 
@@ -189,14 +215,14 @@ class ObsidianVaultAdapter(VaultAdapter):
         if not system_readme.exists():
             atomic_write(
                 system_readme,
-                "# 00_System\n\n甇文?靽?蝟餌絞閬??untime 閮剖??kills ?犖?潸楝?晞n",
+                "# 00_System\n\n存放第二大腦的系統設定：Runtime profiles、Skills、persona 路由、索引設定等。\n",
             )
 
         index_readme = self._root / "00_System" / "09_Index" / "README.md"
         if not index_readme.exists():
             atomic_write(
                 index_readme,
-                "# 09_Index\n\n甇文???AI ?芸??Ｙ??犖憿霈蝝Ｗ?閬?嚗??? FTS ??嚗n",
+                "# 09_Index\n\nAI 代理使用的索引層：依資料夾分類、依標籤、最近更新、主要關聯、FTS 全文索引等。\n",
             )
 
         ensure_llm_router_file(self._root, overwrite=False)
@@ -261,16 +287,16 @@ class ObsidianVaultAdapter(VaultAdapter):
             "type: system\n"
             "persona_id: core\n"
             "display_name: Core\n"
-            "mission: 蝬剜?蝚砌?憭扯銝?湔扯?摰??\n"
+            "mission: 維護第二大腦的核心人格，協調日常運作與長期記憶。\n"
             "style: concise\n"
             "language: zh-Hant\n"
             "schema_version: 1\n"
             "status: active\n"
             "---\n\n"
             "# Persona: Core\n\n"
-            "- ?芸?蝬剜? 00~99 蝚砌?憭扯?賢???瑽??氬n"
-            "- 銝?乩耨??20/80/90 ????n"
-            "- ???∪??撣喟雁?餈賣滲?批?瘚??n"
+            "- 主責守護 00~99 第二大腦命名空間的整體一致性。\n"
+            "- 不直接修改 20/80/90 等唯讀來源區。\n"
+            "- 透過 Skills 與其他人格分工協作，追溯重要決策。\n"
         )
         if overwrite or not persona_abs.exists():
             atomic_write(persona_abs, persona_md)
@@ -485,7 +511,7 @@ class ObsidianVaultAdapter(VaultAdapter):
                     tags=["daily_flush"],
                     extras={"date": date},
                 ),
-                body=f"# {date} ?剜?閮\n\n{block}",
+                body=f"# {date} 每日彙整\n\n{block}",
             )
         else:
             note = MemoryNote(

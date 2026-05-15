@@ -1,4 +1,4 @@
-param(
+﻿param(
     [ValidateSet("start", "stop", "restart", "status", "stop-stray")]
     [string]$Action = "status",
     [string]$ConfigFile = "",
@@ -204,12 +204,15 @@ function Build-SpecsFromConfig {
     param(
         [object]$Config
     )
-    $relayNodes = Get-OptionalValue -Source $Config -Name "relays" -Default @()
-    if ($relayNodes -isnot [System.Collections.IEnumerable]) {
-        throw "config.relays must be an array."
+    # PS5.1 從 PSCustomObject property 抓單元素陣列時會解包成單一物件
+    # 用 @(...) 強制當成陣列，避免 [System.Collections.IEnumerable] 判斷誤觸發
+    $relayNodes = @(Get-OptionalValue -Source $Config -Name "relays" -Default @())
+    if ($relayNodes.Count -eq 0) {
+        throw "config.relays must contain at least one relay (got empty array)."
     }
     $specs = New-Object System.Collections.ArrayList
     foreach ($relayNode in $relayNodes) {
+        if ($null -eq $relayNode) { continue }
         $spec = Build-RelaySpec -Relay $relayNode -Global $Config
         $specs.Add($spec) | Out-Null
     }
