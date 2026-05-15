@@ -15,6 +15,7 @@ from agent_memory.local_tools import (
     render_agent_tool_summary,
     strip_agent_tool_blocks,
 )
+from agent_memory.persona_governance import load_persona_governance, resolve_persona_governance
 from agent_memory.runtime import MemoryRuntime
 from agent_memory.skill_library import build_skill_prompt_context, record_skill_usage
 from agent_memory.types import MemoryType
@@ -139,9 +140,19 @@ def run_chat_turn(
         memory_context_block = ""
         memory_context_hits = []
 
-    # Phase A C3 (A.5): 注入 agent tool calling prompt.
-    # 給 LLM 看可用的 memory tool + 沙盒邊界. tools_enabled=False 的 persona 拿不到此 prompt.
-    tools_enabled = True  # TODO C4: 從 persona_governance.yaml 讀
+    # Phase A C3 (A.5) + C7: 注入 agent tool calling prompt — 受 persona_governance 控制.
+    # 給 LLM 看可用的 memory tool + 沙盒邊界. tools_enabled=False 的 persona 拿不到此 prompt
+    # 也不會 execute parsed tool calls (defense in depth — 即使 LLM 偷塞 [TOOL] block 也不執行).
+    try:
+        _gov = load_persona_governance(adapter.vault_root)
+        _resolved = resolve_persona_governance(_gov, persona_id=persona)
+        _caps = _resolved.get("capabilities", {})
+        if not isinstance(_caps, dict):
+            _caps = {}
+        tools_enabled = bool(_caps.get("tools_enabled", False))
+    except Exception:  # noqa: BLE001
+        # governance 讀取失敗 → 安全預設 False (deny 為主)
+        tools_enabled = False
     tools_prompt = build_agent_tools_prompt(
         write_allow=list(runtime.profile.write_allow),
         write_deny=list(runtime.profile.write_deny),
