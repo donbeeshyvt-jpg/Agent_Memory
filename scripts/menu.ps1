@@ -294,6 +294,7 @@ function Show-Menu {
     Write-Host ""
     Write-Option "M" "補充記憶" "投餵新筆記給管家 (寫進 Manual_Inputs/, 下次對話自動讀取)"
     Write-Option "P" "Persona 管理" "建立分身 / 改名 / 設模型 / 停用 (多角色協作)"
+    Write-Option "D" "自動進化排程" "ETL daemon — 短期記憶自動升長期 + 技能維護 (背景跑)"
     Write-Host ""
     Write-Option "8" "重新掃描狀態" "刷新上面的環境檢查"
     Write-Option "9" "清除使用者資料" "刪 .env (含所有 key/token) + 驗證真的斷線"
@@ -306,10 +307,10 @@ function Show-Menu {
 function Read-MenuChoice {
     while ($true) {
         Write-Host -NoNewline "  請輸入 " -ForegroundColor $BorderColor
-        Write-Host -NoNewline "[1-9/M/P/Q]" -ForegroundColor $AccentColor
+        Write-Host -NoNewline "[1-9/M/P/D/Q]" -ForegroundColor $AccentColor
         Write-Host -NoNewline ": " -ForegroundColor $BorderColor
         $raw = (Read-Host).Trim().ToUpper()
-        if ($raw -in @("1", "2", "3", "4", "5", "6", "7", "8", "9", "M", "P", "Q")) {
+        if ($raw -in @("1", "2", "3", "4", "5", "6", "7", "8", "9", "M", "P", "D", "Q")) {
             return $raw
         }
         Write-Host "  無效輸入。" -ForegroundColor $ErrColor
@@ -626,6 +627,52 @@ function Invoke-PersonaManager {
     & powershell @args
 }
 
+function Invoke-DaemonManager {
+    Write-Host ""
+    Write-Border "─"
+    Write-Host "  [自動進化排程] ETL daemon" -ForegroundColor $TitleColor
+    Write-Border "─"
+    Write-Host ""
+    Write-Host "  daemon 會自動跑:" -ForegroundColor DarkGray
+    Write-Host "    - promote-cycle (短期記憶 -> 長期升格)" -ForegroundColor DarkGray
+    Write-Host "    - skill-maintain (技能 lifecycle 維護)" -ForegroundColor DarkGray
+    Write-Host "  log 寫到 <vault>/11_AI_Mirror/ingestion_logs/daemon_runs.jsonl" -ForegroundColor DarkGray
+    Write-Host ""
+    Write-Host "    [1] 立刻跑一次 (測試 daemon)" -ForegroundColor White
+    Write-Host "    [2] 顯示排程命令 (你複製去 cmd / PowerShell 跑來設定每日 3am 自動跑)" -ForegroundColor White
+    Write-Host "    [3] 看最近一次 daemon log" -ForegroundColor White
+    Write-Host "    [B] 回主選單" -ForegroundColor DarkGray
+    Write-Host ""
+    $sub = (Read-Host "  選 [1-3/B]").Trim().ToUpper()
+    switch ($sub) {
+        "1" {
+            $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "agent-memory-daemon.ps1"), "-Once")
+            if ($VaultRoot) { $args += @("-VaultRoot", $VaultRoot) }
+            & powershell @args
+        }
+        "2" {
+            $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "agent-memory-daemon.ps1"), "-ShowSchedule")
+            if ($VaultRoot) { $args += @("-VaultRoot", $VaultRoot) }
+            & powershell @args
+        }
+        "3" {
+            if (-not $VaultRoot) { Write-Host "  [ERR] 沒指定 VaultRoot" -ForegroundColor Red; return }
+            $logFile = Join-Path $VaultRoot "11_AI_Mirror\ingestion_logs\daemon_runs.jsonl"
+            if (Test-Path -LiteralPath $logFile) {
+                Write-Host ""
+                Write-Host "  最近 3 條 daemon run log:" -ForegroundColor Cyan
+                Get-Content -LiteralPath $logFile -Tail 3 | ForEach-Object {
+                    Write-Host "    $_" -ForegroundColor DarkGray
+                }
+            } else {
+                Write-Host "  [INFO] daemon 還沒跑過, log 不存在" -ForegroundColor Yellow
+                Write-Host "    路徑: $logFile" -ForegroundColor DarkGray
+            }
+        }
+        default { return }
+    }
+}
+
 # ============== Main loop ==============
 while ($true) {
     Show-Banner
@@ -643,6 +690,7 @@ while ($true) {
         "7" { Invoke-ToolingSmoke; Pause-MainMenu }
         "M" { Invoke-ManualInput; Pause-MainMenu }
         "P" { Invoke-PersonaManager; Pause-MainMenu }
+        "D" { Invoke-DaemonManager; Pause-MainMenu }
         "8" {
             # 純 status refresh — 主迴圈下一輪會重新顯示
         }
