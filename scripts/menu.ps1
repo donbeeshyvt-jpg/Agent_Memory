@@ -293,6 +293,7 @@ function Show-Menu {
     Write-Option "7" "跑工具能力 smoke" "驗證 /tool 寫檔 + 角色權限治理"
     Write-Host ""
     Write-Option "M" "補充記憶" "投餵新筆記給管家 (寫進 Manual_Inputs/, 下次對話自動讀取)"
+    Write-Option "P" "Persona 管理" "建立分身 / 改名 / 設模型 / 停用 (多角色協作)"
     Write-Host ""
     Write-Option "8" "重新掃描狀態" "刷新上面的環境檢查"
     Write-Option "9" "清除使用者資料" "刪 .env (含所有 key/token) + 驗證真的斷線"
@@ -305,10 +306,10 @@ function Show-Menu {
 function Read-MenuChoice {
     while ($true) {
         Write-Host -NoNewline "  請輸入 " -ForegroundColor $BorderColor
-        Write-Host -NoNewline "[1-9/M/Q]" -ForegroundColor $AccentColor
+        Write-Host -NoNewline "[1-9/M/P/Q]" -ForegroundColor $AccentColor
         Write-Host -NoNewline ": " -ForegroundColor $BorderColor
         $raw = (Read-Host).Trim().ToUpper()
-        if ($raw -in @("1", "2", "3", "4", "5", "6", "7", "8", "9", "M", "Q")) {
+        if ($raw -in @("1", "2", "3", "4", "5", "6", "7", "8", "9", "M", "P", "Q")) {
             return $raw
         }
         Write-Host "  無效輸入。" -ForegroundColor $ErrColor
@@ -565,6 +566,17 @@ function Invoke-ManualInput {
     & powershell @args
 }
 
+function Invoke-PersonaManager {
+    Write-Host ""
+    Write-Border "─"
+    Write-Host "  [Persona 管理] 多分身設定" -ForegroundColor $TitleColor
+    Write-Border "─"
+    Write-Host ""
+    $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "persona-wizard.ps1"))
+    if ($VaultRoot) { $args += @("-VaultRoot", $VaultRoot) }
+    & powershell @args
+}
+
 # ============== Main loop ==============
 while ($true) {
     Show-Banner
@@ -581,6 +593,7 @@ while ($true) {
         "6" { Invoke-CliChat; Pause-MainMenu }
         "7" { Invoke-ToolingSmoke; Pause-MainMenu }
         "M" { Invoke-ManualInput; Pause-MainMenu }
+        "P" { Invoke-PersonaManager; Pause-MainMenu }
         "8" {
             # 純 status refresh — 主迴圈下一輪會重新顯示
         }
