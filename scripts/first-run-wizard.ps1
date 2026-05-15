@@ -892,7 +892,8 @@ try {
         if (-not (Test-Path -LiteralPath $existingRelayCfg)) {
             Write-Host ""
             Write-Host "  Discord 整合: 把管家上線到 Discord 頻道?" -ForegroundColor Cyan
-            Write-Host "    需要先準備好: (a) 頻道 ID  (b) Discord Bot Token" -ForegroundColor DarkGray
+            Write-Host "    流程順序: 先貼 Bot Token, 再貼 頻道 ID" -ForegroundColor DarkGray
+            Write-Host "    需要先準備好: (a) Discord Bot Token  (b) 頻道 ID" -ForegroundColor DarkGray
             $shouldRunDiscordSetup = Ask-YesNo -Prompt "  現在設?" -Default $false
         }
     }
@@ -900,6 +901,11 @@ try {
     if ($shouldRunDiscordSetup -and $resolvedVaultRoot) {
         $discordOk = $true
         $discordDetail = "ready"
+
+        Write-Host ""
+        Write-Host "  ┌──────────────────────────────────────────────────┐" -ForegroundColor Cyan
+        Write-Host "  │ 步驟 1/2: Discord Bot Token                      │" -ForegroundColor Cyan
+        Write-Host "  └──────────────────────────────────────────────────┘" -ForegroundColor Cyan
 
         # ===== 先問 Token (Discord 要先有 bot 才知道往哪個 channel 講話) =====
         $tokenVal = [Environment]::GetEnvironmentVariable($DiscordTokenEnv, "Process")
@@ -941,9 +947,10 @@ try {
 
         if ($shouldRunDiscordSetup -and -not $tokenOk -and -not $NonInteractive) {
             Write-Host ""
-            Write-Host "  Discord Bot Token (從 Discord Developer Portal → Bot → Token 取得)" -ForegroundColor Yellow
-            Write-Host "  (輸入時不會顯示, Enter 確認, 留空跳過 Discord)" -ForegroundColor DarkGray
-            $sec = Read-Host -Prompt "  $DiscordTokenEnv" -AsSecureString
+            Write-Host "  ▶ 請貼上 Discord Bot Token" -ForegroundColor Yellow
+            Write-Host "    （從 Discord Developer Portal → Bot → Token 取得）" -ForegroundColor DarkGray
+            Write-Host "    ⚠ 接下來會跳出『隱形輸入框』, 貼上後按 Enter; 留空 = 跳過 Discord" -ForegroundColor Yellow
+            $sec = Read-Host -Prompt "  $DiscordTokenEnv (隱形輸入)" -AsSecureString
             if ($sec -and $sec.Length -gt 0) {
                 $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
                 try {
@@ -984,10 +991,15 @@ try {
 
     # ===== 再問 Channel ID (token 完成才有意義) =====
     if ($shouldRunDiscordSetup -and $resolvedVaultRoot) {
+        Write-Host ""
+        Write-Host "  ┌──────────────────────────────────────────────────┐" -ForegroundColor Cyan
+        Write-Host "  │ 步驟 2/2: Discord 頻道 ID                        │" -ForegroundColor Cyan
+        Write-Host "  └──────────────────────────────────────────────────┘" -ForegroundColor Cyan
         $effectiveChannelId = $DiscordChannelId
         if (-not $effectiveChannelId -and -not $NonInteractive) {
             Write-Host ""
-            Write-Host "  Discord 頻道 ID (在 Discord 啟用開發者模式後對頻道右鍵→複製 ID)" -ForegroundColor Yellow
+            Write-Host "  ▶ 請貼上頻道 ID" -ForegroundColor Yellow
+            Write-Host "    （在 Discord 啟用開發者模式後對頻道右鍵→複製 ID）" -ForegroundColor DarkGray
             $effectiveChannelId = (Read-Host "  channel_id").Trim()
         }
         if ([string]::IsNullOrWhiteSpace($effectiveChannelId)) {
