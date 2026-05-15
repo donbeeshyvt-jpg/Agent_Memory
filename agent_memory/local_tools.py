@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -405,3 +406,189 @@ def render_llm_switch_result(result: dict[str, Any]) -> str:
         model = result.get("model", "")
         return f"[llm:switched-persona] {persona} 已切到 {label}\n  ({profile} / {model})\n下一條訊息會用新模型。"
     return json.dumps(result, ensure_ascii=False)
+
+
+# ============================================================
+# Phase A C3 (A.5): Agent autonomous memory tool calling
+# ------------------------------------------------------------
+# 跟 /tool slash command 不同, 這是讓 LLM 在回應中自主呼叫 memory 工具.
+# LLM 輸出格式: [TOOL]memory{"action":"add","path":"...","content":"..."}[/TOOL]
+# 沙盒: 透過 MemoryRuntime.apply_memory_tool 走 profile.can_write 治理,
+#       禁止寫入 20/80/90 raw 區 + 限制在 vault 內.
+# ============================================================
+
+# Regex 抓 [TOOL]<name>{...json...}[/TOOL] block. multiline + non-greedy.
+_AGENT_TOOL_PATTERN = re.compile(
+    r"\[TOOL\]\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(\{.*?\})\s*\[/TOOL\]",
+    re.DOTALL,
+)
+
+
+def parse_agent_tool_calls(response_text: str) -> list[dict[str, Any]]:
+    """Parse `[TOOL]<name>{json}[/TOOL]` blocks from LLM response.
+
+    Returns list of `{"tool": str, "args": dict, "raw": str}`.
+    `raw` is the matched substring (used for stripping later).
+    Invalid JSON entries are skipped with `args={"_parse_error": "..."}`.
+    """
+    if not response_text:
+        return []
+    out: list[dict[str, Any]] = []
+    for m in _AGENT_TOOL_PATTERN.finditer(response_text):
+        tool_name = m.group(1).strip()
+        json_blob = m.group(2)
+        raw_block = m.group(0)
+        try:
+            args = json.loads(json_blob)
+            if not isinstance(args, dict):
+                args = {"_parse_error": "args must be JSON object"}
+        except json.JSONDecodeError as exc:
+            args = {"_parse_error": f"json decode: {exc.msg}"}
+        out.append({"tool": tool_name, "args": args, "raw": raw_block})
+    return out
+
+
+def strip_agent_tool_blocks(response_text: str) -> str:
+    """Remove `[TOOL]...[/TOOL]` blocks from response (for user-facing display)."""
+    if not response_text:
+        return ""
+    cleaned = _AGENT_TOOL_PATTERN.sub("", response_text)
+    # 清理因移除 tool block 留下的多餘空行
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def build_agent_tools_prompt(
+    *,
+    write_allow: list[str],
+    write_deny: list[str],
+    enabled: bool = True,
+) -> str:
+    """Build system prompt section describing available tools to the LLM.
+
+    Returns empty string if `enabled=False` (persona has tools_enabled=false).
+    """
+    if not enabled:
+        return ""
+    allow_lines = "\n".join(f"    - `{p}`" for p in write_allow) or "    (無)"
+    deny_lines = "\n".join(f"    - `{p}` (永遠唯讀)" for p in write_deny) or "    (無)"
+    return (
+        "\n\n=== AVAILABLE TOOLS (你可以在回應中自主呼叫) ===\n"
+        "你有「自主寫入第二大腦」的能力。當使用者:\n"
+        "  • 告訴你一個事實 / 偏好 / 重要資訊 (例如「我叫阿凱」「我偏好簡潔回覆」)\n"
+        "  • 請你記住某件事\n"
+        "  • 對話中產生值得留底的結論 / 決策\n"
+        "你可以在回應中**直接呼叫 memory 工具寫入**, 不用問使用者「要不要存」(他都已經告訴你了).\n\n"
+        "## 呼叫格式\n\n"
+        "```\n"
+        "[TOOL]memory{\"action\":\"add\",\"path\":\"10_Permanent/Manual_Inputs/<檔名>.md\",\"content\":\"<完整 markdown>\",\"reason\":\"<為何記住>\"}[/TOOL]\n"
+        "```\n\n"
+        "- `action`: `add` (新建) / `replace` (覆蓋) / `remove` (刪除) / `get` (讀)\n"
+        "- `path`: vault 相對路徑 (見下方允許區)\n"
+        "- `content`: markdown 內容 (add/replace 必要)。建議格式: 加 YAML frontmatter (參考既有 .md) + `<summary>` + `<context>` XML 標籤\n"
+        "- `reason`: 1-2 句話說明為何要寫 (台帳用)\n\n"
+        "## 沙盒邊界 (寫入允許區)\n\n"
+        f"{allow_lines}\n\n"
+        "## 禁區 (永遠不能寫)\n\n"
+        f"{deny_lines}\n\n"
+        "## 寫入規則\n\n"
+        "- **使用者偏好 / 個人事實** → 寫 `10_Permanent/Manual_Inputs/<topic>.md`\n"
+        "- **跨對話通用知識** → 寫 `10_Permanent/Facts/<topic>.md` 或 `10_Permanent/Concepts/<topic>.md`\n"
+        "- **本 session 工作上下文** → 自動寫到 session log, 不需手動 call tool\n"
+        "- **不要重複寫**: 先用 `get` 確認檔不存在再 `add`; 已存在用 `replace`\n"
+        "- **不要寫敏感資料** (token / API key / 私密對話) 到一般區, 必要時加 `security_level: confidential` frontmatter\n\n"
+        "## 範例\n\n"
+        "使用者: 我偏好簡潔技術回覆\n"
+        "你的回應:\n"
+        "```\n"
+        "好的, 已記住你偏好簡潔技術回覆。下次對話會用這風格。\n"
+        "[TOOL]memory{\"action\":\"add\",\"path\":\"10_Permanent/Manual_Inputs/style_concise_tech.md\",\"content\":\"---\\ntype: user_profile\\nsource: user\\ntags: [manual_input, style]\\nai_ready: true\\netl_status: internalised\\nsecurity_level: safe_data\\n---\\n\\n# 對話風格偏好\\n\\n<summary>\\n使用者偏好簡潔、技術導向的回覆, 不要過度禮貌或鋪陳。\\n</summary>\\n\\n<context>\\n- 直接給結論 + 步驟\\n- 跳過寒暄\\n- 程式碼 + 路徑優先於敘述\\n</context>\",\"reason\":\"user_stated_preference\"}[/TOOL]\n"
+        "```\n\n"
+        "## 重要原則\n\n"
+        "1. **正常回應在前, tool block 在後** — 不要只回 tool block, 使用者也要看得到你的回應\n"
+        "2. **tool block 會被自動移除不顯示給使用者** — 你不用解釋「我即將呼叫 tool」, 直接 call 即可\n"
+        "3. **執行結果會在下次對話告知你** — 第一次 call 是「fire and forget」, 不要假設你看得到結果\n"
+        "4. **錯誤時系統會把錯誤訊息加在你的回應末端** — 使用者看得到「[tool error: ...]」, 之後你可以對話中修正\n"
+        "=== END TOOLS ===\n"
+    )
+
+
+def execute_agent_tool_call(
+    runtime: Any,
+    call: dict[str, Any],
+    *,
+    operator: str = "agent",
+) -> dict[str, Any]:
+    """Execute a single parsed tool call via MemoryRuntime.apply_memory_tool.
+
+    Returns: `{"tool": str, "ok": bool, "path": str, "action": str, "message": str, "error": str}`.
+    Path treatment governance is enforced inside apply_memory_tool (raises PermissionError on raw zones).
+    """
+    tool_name = str(call.get("tool", "")).lower()
+    args = call.get("args", {})
+    result = {
+        "tool": tool_name,
+        "ok": False,
+        "path": str(args.get("path", "")),
+        "action": str(args.get("action", "")),
+        "message": "",
+        "error": "",
+    }
+    if "_parse_error" in args:
+        result["error"] = f"args parse failed: {args['_parse_error']}"
+        return result
+    if tool_name != "memory":
+        result["error"] = f"unsupported tool: {tool_name}"
+        return result
+
+    action = str(args.get("action", "")).strip().lower()
+    path = str(args.get("path", "")).strip()
+    content = args.get("content", "")
+    reason = str(args.get("reason", "")).strip()
+
+    if action not in ("add", "replace", "remove", "get"):
+        result["error"] = f"unsupported memory action: {action}"
+        return result
+    if not path:
+        result["error"] = "memory path is required"
+        return result
+
+    try:
+        op = runtime.apply_memory_tool(
+            action=action,
+            path=path,
+            content=content if isinstance(content, str) else json.dumps(content, ensure_ascii=False),
+            reason=reason,
+            agent=operator,
+        )
+        result["ok"] = bool(op.ok)
+        result["message"] = str(op.message)
+        if op.note is not None and not result["path"]:
+            result["path"] = str(op.note.path)
+    except PermissionError as exc:
+        result["error"] = f"permission denied: {exc}"
+    except ValueError as exc:
+        result["error"] = f"invalid: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+
+def render_agent_tool_summary(results: list[dict[str, Any]]) -> str:
+    """Build a human-readable footer summarizing tool execution.
+
+    Appended to user-facing response after tool blocks are stripped.
+    """
+    if not results:
+        return ""
+    lines = ["", "---", "[已執行 agent 工具]"]
+    for r in results:
+        tool = r.get("tool", "?")
+        action = r.get("action", "?")
+        path = r.get("path", "")
+        if r.get("ok"):
+            lines.append(f"  ✓ {tool}.{action} {path}  ({r.get('message', 'ok')})")
+        else:
+            err = r.get("error") or r.get("message", "failed")
+            lines.append(f"  ✗ {tool}.{action} {path}  [error: {err}]")
+    return "\n".join(lines)

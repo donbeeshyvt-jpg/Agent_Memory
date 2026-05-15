@@ -8,6 +8,13 @@ from typing import Any
 from agent_memory.chat_session import append_chat_turn, append_daily_chat_digest, session_note_path
 from agent_memory.llm_client import LLMClient
 from agent_memory.llm_ledger import record_llm_route_event
+from agent_memory.local_tools import (
+    build_agent_tools_prompt,
+    execute_agent_tool_call,
+    parse_agent_tool_calls,
+    render_agent_tool_summary,
+    strip_agent_tool_blocks,
+)
 from agent_memory.runtime import MemoryRuntime
 from agent_memory.skill_library import build_skill_prompt_context, record_skill_usage
 from agent_memory.types import MemoryType
@@ -91,6 +98,17 @@ def run_chat_turn(
     if shared_history:
         system_prompt += "\n以下是共通頻道近期摘錄（跨角色共享）：\n" + shared_history + "\n"
 
+    # Phase A C3 (A.5): 注入 agent tool calling prompt.
+    # 給 LLM 看可用的 memory tool + 沙盒邊界. tools_enabled=False 的 persona 拿不到此 prompt.
+    tools_enabled = True  # TODO C4: 從 persona_governance.yaml 讀
+    tools_prompt = build_agent_tools_prompt(
+        write_allow=list(runtime.profile.write_allow),
+        write_deny=list(runtime.profile.write_deny),
+        enabled=tools_enabled,
+    )
+    if tools_prompt:
+        system_prompt += tools_prompt
+
     llm_result = client.generate(
         messages=[
             {"role": "system", "content": system_prompt},
@@ -103,7 +121,24 @@ def run_chat_turn(
         timeout_s=float(timeout_s),
     )
 
-    response_text = llm_result.content.strip()
+    raw_response_text = llm_result.content.strip()
+
+    # Phase A C3 (A.5): parse + execute agent tool calls.
+    # LLM 若在回應中嵌入 [TOOL]memory{...}[/TOOL] -> 自動執行寫入第二大腦.
+    agent_tool_results: list[dict[str, Any]] = []
+    if tools_enabled:
+        tool_calls = parse_agent_tool_calls(raw_response_text)
+        for call in tool_calls:
+            res = execute_agent_tool_call(runtime, call, operator=persona)
+            agent_tool_results.append(res)
+        # 從顯示用 response 拿掉 [TOOL] block (避免使用者看到亂碼 JSON)
+        response_text = strip_agent_tool_blocks(raw_response_text)
+        # 附加執行摘要到 response 尾巴 (使用者要看到 agent 改了什麼)
+        if agent_tool_results:
+            response_text = response_text + render_agent_tool_summary(agent_tool_results)
+    else:
+        response_text = raw_response_text
+
     if not runtime.profile.can_write(hist_path):
         raise PermissionError(f"persona={persona} 無權寫入 session 路徑：{hist_path}")
 
@@ -190,4 +225,5 @@ def run_chat_turn(
             "session": session_path,
             "daily": daily_path,
         },
+        "agent_tool_calls": agent_tool_results,  # Phase A C3 (A.5)
     }
