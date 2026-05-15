@@ -142,6 +142,36 @@ if ($skillExists) {
     $results += Invoke-CliCmd -Args @("skill-maintain") -Label "skill-maintain (技能 lifecycle)"
 }
 
+# C13: wikilinks graph rebuild (給 chat 一跳擴展用)
+# 直接用 Python inline (還沒包成 CLI sub-command)
+Write-Host "[INFO] wikilinks-graph (Phase A C13)..." -ForegroundColor Yellow
+$wgScript = @"
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
+from pathlib import Path
+from agent_memory.wikilinks_graph import rebuild_and_save
+r = rebuild_and_save(Path(r'$resolvedVault'))
+import json
+print(json.dumps(r, ensure_ascii=False))
+"@
+Push-Location $projectRoot
+try {
+    $wgOut = & $pythonExe -X utf8 -c $wgScript 2>&1 | Out-String
+    $wgExit = $LASTEXITCODE
+}
+finally {
+    Pop-Location
+}
+$wgStatus = if ($wgExit -eq 0) { "OK" } else { "FAIL exit=$wgExit" }
+$wgColor = if ($wgExit -eq 0) { "Green" } else { "Red" }
+Write-Host "  [$wgStatus] wikilinks-graph" -ForegroundColor $wgColor
+if ($wgOut) {
+    $wgPreview = $wgOut.Trim()
+    if ($wgPreview.Length -gt 200) { $wgPreview = $wgPreview.Substring(0, 200) + "..." }
+    Write-Host "    $wgPreview" -ForegroundColor DarkGray
+}
+$results += @{ label = "wikilinks-graph"; exit_code = $wgExit; summary = $wgOut.Trim() }
+
 # 寫 jsonl log
 $entry = [ordered]@{
     timestamp = (Get-Date).ToUniversalTime().ToString("o")

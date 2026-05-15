@@ -99,21 +99,36 @@ def run_chat_turn(
     if shared_history:
         system_prompt += "\n以下是共通頻道近期摘錄（跨角色共享）：\n" + shared_history + "\n"
 
-    # Phase A C6: dynamic memory-context fence.
-    # 對應 V2 藍圖 §6.3 + 規格 03_agent_loop_integration.md 第 5 條.
-    # 跟 frozen_snapshot (固定不變, prefix cache 友善) 不同, 這一段是「每回合刷新」:
-    # 用當前使用者訊息 query 從 vault hybrid retrieve top 片段, 包 <memory-context> XML 注入.
-    # 解「跨 session 沒記憶」痛點: 上次寫進 Manual_Inputs/Concepts/Facts 的東西這次能被拉回來.
+    # Phase A C6: dynamic memory-context fence + C13: GraphRAG one-hop expansion.
+    # 對應 V2 藍圖 §6.3 + §8.2.
+    # C6 (hybrid BM25+Dense retrieval) + C13 (wikilinks 一跳擴展) 雙 source 並用:
+    # 跟 frozen_snapshot (固定不變) 不同, 這一段是「每回合刷新」.
     memory_context_block = ""
     memory_context_hits: list[dict[str, Any]] = []
     try:
         hits = runtime.memory_search(
             query=message,
             max_results=5,
-            auto_reindex=False,  # 寫入 path 已即時 index, 不必每 chat 全掃
+            auto_reindex=False,
             strategy="hybrid",
         )
-        if hits:
+        # C13: 載入 wikilinks graph, 對每個 hit 取 1 hop 鄰居 (有檔有 wikilink 才有效)
+        graph_neighbors: list[str] = []
+        try:
+            from agent_memory.wikilinks_graph import default_graph_path, load_graph_json, neighbors as _neighbors
+            graph = load_graph_json(default_graph_path(adapter.vault_root))
+            if graph and hits:
+                seen = {h.path for h in hits}
+                for h in hits[:3]:  # 只對 top 3 做擴展, 避免 prompt 爆炸
+                    for nb in _neighbors(graph, h.path, max_hops=1):
+                        if nb not in seen:
+                            graph_neighbors.append(nb)
+                            seen.add(nb)
+                graph_neighbors = graph_neighbors[:3]  # 最多取 3 個 hop 鄰居
+        except Exception:  # noqa: BLE001
+            graph_neighbors = []
+
+        if hits or graph_neighbors:
             lines = [
                 "",
                 "<memory-context>",
@@ -132,11 +147,27 @@ def run_chat_turn(
                     "source": hit.source,
                     "snippet_chars": len(hit.snippet or ""),
                 })
+            # GraphRAG 鄰居只列路徑 + 短摘錄 (避免 token 爆炸)
+            if graph_neighbors:
+                lines.append("")
+                lines.append("### 相關連結 (wikilinks 一跳擴展, GraphRAG):")
+                for nb in graph_neighbors:
+                    note = adapter.read_note(nb)
+                    if note and note.body:
+                        snippet = note.body.strip()[:200]
+                        lines.append(f"- [{nb}]: {snippet}…")
+                        memory_context_hits.append({
+                            "path": nb,
+                            "score": 0.0,
+                            "source": "graph_neighbor",
+                            "snippet_chars": len(snippet),
+                        })
+                    else:
+                        lines.append(f"- [{nb}]")
             lines.append("</memory-context>")
             memory_context_block = "\n".join(lines) + "\n"
             system_prompt += memory_context_block
     except Exception:  # noqa: BLE001
-        # 檢索失敗不阻擋對話 — 例如 sqlite-index 還沒建好
         memory_context_block = ""
         memory_context_hits = []
 
