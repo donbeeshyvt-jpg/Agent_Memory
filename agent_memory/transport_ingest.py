@@ -31,6 +31,7 @@ from agent_memory.local_tools import (
 from agent_memory.persona_governance import load_persona_governance, resolve_persona_governance
 from agent_memory.profile_scope import runtime_profile_for_persona
 from agent_memory.runtime import MemoryRuntime
+from agent_memory.security.scanner import scan_incoming_user_text
 from agent_memory.transport_profiles import load_transport_profiles, resolve_transport_profile
 from agent_memory.types import MemoryType
 from agent_memory.vault import ObsidianVaultAdapter
@@ -335,6 +336,10 @@ def run_transport_event(
 
     runtime = MemoryRuntime(adapter, profile=runtime_profile_for_persona(adapter, persona))
     client = LLMClient(adapter.vault_root)
+
+    # Phase A C5: 掃 incoming user text 找 indirect prompt injection.
+    # 不 block 對話, 只 log + 在 response footer 加警示 (避免假陽性影響使用者體驗).
+    injection_scan = scan_incoming_user_text(turn.message)
 
     # Phase A C4 (A.6): 下載 + extract Discord attachments, prepend 到 turn.message
     # 用 <attachment> XML 標籤防 prompt injection (對齊 C5 的 <context> 包裝設計)
@@ -647,6 +652,12 @@ def run_transport_event(
                 {k: v for k, v in r.items() if k != "text"}  # 不回 raw text, 只回 metadata
                 for r in attachment_ingest_results
             ]
+        # Phase A C5: 注入掃描結果回報
+        if injection_scan.get("detected"):
+            result["security_scan"] = injection_scan
+            warn = "\n\n---\n⚠ [security scan] 偵測到可疑輸入 pattern: " + "; ".join(injection_scan.get("reasons", []))
+            warn += "\n     管家照常回覆但已記錄. 若是無心使用語句可忽略此警示."
+            result["response"] = str(result.get("response", "")) + warn
     except LLMClientError as exc:
         if not allow_llm_degraded:
             raise
