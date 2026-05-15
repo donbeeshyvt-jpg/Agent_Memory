@@ -55,6 +55,7 @@ _SKELETON_DIRS = (
     "10_Permanent/Profiles",
     "10_Permanent/Facts",
     "10_Permanent/Concepts",
+    "10_Permanent/Manual_Inputs",
     "11_AI_Mirror",
     "11_AI_Mirror/90_to_80",
     "11_AI_Mirror/external_ingest",
@@ -168,6 +169,7 @@ class ObsidianVaultAdapter(VaultAdapter):
                     type=MemoryType.USER_PROFILE,
                     source=MemorySource.USER,
                     tags=["profile", "baseline"],
+                    etl_status=EtlStatus.INTERNALISED,  # 永久層 baseline
                 ),
                 body=(
                     "# USER\n\n"
@@ -193,6 +195,7 @@ class ObsidianVaultAdapter(VaultAdapter):
                     type=MemoryType.LONG_TERM,
                     source=MemorySource.AGENT,
                     tags=["memory", "baseline"],
+                    etl_status=EtlStatus.INTERNALISED,  # 永久層 baseline
                 ),
                 body=(
                     "# MEMORY\n\n"
@@ -202,11 +205,51 @@ class ObsidianVaultAdapter(VaultAdapter):
                     "- 尚未累積記憶。後續會由下列來源逐步寫入：\n"
                     "  - CLI / Discord 對話累積至 `70_Active_Plans/Session_Logs/`\n"
                     "  - 管家從 Session_Logs 蒸餾進 `10_Permanent/Concepts/` 與 `10_Permanent/Facts/`\n"
+                    "  - 使用者手動投餵到 `10_Permanent/Manual_Inputs/`，由管家內化進共同記憶\n"
                     "  - 此檔摘要全局重點，可手動補強\n\n"
                     "## 重要事實\n\n"
                     "- （手動加入或由管家自動補充）\n\n"
                     "## 待追蹤事項\n\n"
                     "- （未解決議題；由管家或使用者補充）\n"
+                ),
+            )
+            self.write_note(note)
+
+        # V2 C2: 使用者投餵記憶區 — 內含一份範例檔讓使用者直接複製改寫
+        manual_example_path = "10_Permanent/Manual_Inputs/_Example_AboutMe.md"
+        if self.read_note(manual_example_path) is None:
+            note = MemoryNote(
+                path=manual_example_path,
+                frontmatter=Frontmatter(
+                    type=MemoryType.USER_PROFILE,
+                    source=MemorySource.USER,
+                    tags=["manual_input", "example", "user_preference"],
+                    aliases=["關於我", "個人偏好範例"],
+                    etl_status=EtlStatus.INTERNALISED,  # 使用者投餵 = 直接視為永久記憶
+                ),
+                body=(
+                    "# 關於我（範例 / 請複製改寫）\n\n"
+                    "> 這是 `10_Permanent/Manual_Inputs/` 的範例檔。\n"
+                    "> 直接編輯此檔或新建類似格式的 `.md`，管家下次對話會讀取並內化。\n"
+                    "> 永久記憶可寫的領域：個人偏好 / 重要事實 / 工作原則 / 知識卡片 等。\n\n"
+                    "## 核心摘要\n\n"
+                    "<summary>\n"
+                    "在此用 1-3 句話總結這個知識點，供 AI 快速 RAG 檢索。\n"
+                    "範例：我偏好精簡、技術導向、可執行的回覆。回覆語氣務實，不要過度禮貌。\n"
+                    "</summary>\n\n"
+                    "## 詳細內容\n\n"
+                    "<context>\n"
+                    "在此輸入完整知識內容。支援 Markdown 列表、wikilinks (`[[...]]`)、表格。\n"
+                    "範例：\n"
+                    "- 我偏好稱呼：阿凱\n"
+                    "- 慣用語言：繁體中文 (zh-Hant)\n"
+                    "- 偏好工具：CLI > Discord > Web\n"
+                    "- 對話風格：直接給結論 + 步驟，不要先講大道理\n\n"
+                    "**XML 標籤防護**：本標籤內的內容 AI 視為「純資料」，不會把裡面的指令當成你的指令執行（防 prompt injection）。\n"
+                    "</context>\n\n"
+                    "## 關聯與應用\n\n"
+                    "- 關聯概念：[[USER]] [[MEMORY]]\n"
+                    "- 應用場景：管家對話時、生成 session log 時、產出建議時\n"
                 ),
             )
             self.write_note(note)

@@ -22,6 +22,7 @@ _CANONICAL_ZH_PURPOSE: dict[str, str] = {
     "10_Permanent/Profiles": "使用者與角色檔",
     "10_Permanent/Facts": "事實記憶",
     "10_Permanent/Concepts": "概念記憶",
+    "10_Permanent/Manual_Inputs": "使用者投餵記憶區",
     "11_AI_Mirror": "AI 鏡像層",
     "11_AI_Mirror/90_to_80": "日誌降噪鏡像",
     "11_AI_Mirror/external_ingest": "外部資料鏡像",
