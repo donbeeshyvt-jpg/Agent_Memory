@@ -487,16 +487,22 @@ function Invoke-CliChat {
     Write-Border "─"
     Write-Host ""
     Write-Host "  指令：/exit /quit :q 離開回主選單" -ForegroundColor $MutedColor
-    Write-Host "        /llm <key>     對話中切模型 (gemma4/qwen9/qwen30/gemini/gemini-pro/gemma-31b/gemma-26b)" -ForegroundColor $MutedColor
+    Write-Host "        /llm <key>           對話中切模型 (gemma4/qwen9/qwen30/gemini/gemini-pro/gemma-31b/gemma-26b)" -ForegroundColor $MutedColor
+    Write-Host "        /persona <name>      切換對話角色 (新 session)" -ForegroundColor $MutedColor
+    Write-Host "        /persona list        列出已啟用的 persona" -ForegroundColor $MutedColor
+    Write-Host "        /persona show        顯示目前 REPL 用的 persona" -ForegroundColor $MutedColor
     Write-Host "        同 session 連續累積對話記憶" -ForegroundColor $MutedColor
     Write-Host ""
 
+    # 起始 persona: 預設 steward, 之後可用 /persona switch
+    $currentPersona = "steward"
     $sessionId = "cli-repl-" + (Get-Date -Format "yyyyMMdd-HHmmss")
     Write-Host "  session: $sessionId" -ForegroundColor $MutedColor
+    Write-Host "  persona: $currentPersona  (用 /persona <name> 切換)" -ForegroundColor $MutedColor
     Write-Host ""
 
     while ($true) {
-        Write-Host -NoNewline "  你 > " -ForegroundColor $AccentColor
+        Write-Host -NoNewline "  你 [$currentPersona] > " -ForegroundColor $AccentColor
         $msg = (Read-Host).Trim()
         if (-not $msg) { continue }
         if ($msg -in @("/exit", "/quit", ":q", "exit", "quit")) {
@@ -504,10 +510,53 @@ function Invoke-CliChat {
             return
         }
 
+        # Phase A C9: REPL-side /persona 指令短路 (不送 LLM)
+        if ($msg -match '^/persona\s*(.*)$') {
+            $sub = $Matches[1].Trim()
+            if (-not $sub -or $sub -eq "show") {
+                Write-Host "  當前 persona: $currentPersona" -ForegroundColor $AccentColor
+            }
+            elseif ($sub -eq "list") {
+                $listArgs = @("-X", "utf8", "-m", "agent_memory.cli")
+                if ($VaultRoot) { $listArgs += @("--vault-root", $VaultRoot) }
+                $listArgs += @("persona-list", "--json")
+                try {
+                    $listOut = (& $PythonExe @listArgs 2>&1 | Out-String)
+                    $s = $listOut.IndexOf('{'); $e = $listOut.LastIndexOf('}')
+                    if ($s -ge 0 -and $e -gt $s) {
+                        $listJson = $listOut.Substring($s, $e - $s + 1) | ConvertFrom-Json
+                        Write-Host "  已啟用 persona:" -ForegroundColor Cyan
+                        foreach ($p in @($listJson.personas)) {
+                            $mark = if ($p.persona_id -eq $currentPersona) { "→" } else { " " }
+                            Write-Host ("    {0} {1,-12}  {2}  ({3})" -f $mark, $p.persona_id, $p.display_name, $p.status) -ForegroundColor White
+                        }
+                    } else {
+                        Write-Host "  [ERR] persona-list 沒回 JSON" -ForegroundColor Red
+                    }
+                }
+                catch {
+                    Write-Host "  [ERR] $_" -ForegroundColor Red
+                }
+            }
+            else {
+                # /persona <name> = 切換 (重啟 session id 以隔離 log)
+                $newPersona = ($sub -replace '^switch\s+', '').Trim()
+                if ($newPersona) {
+                    $currentPersona = $newPersona
+                    $sessionId = "cli-repl-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+                    Write-Host "  ✓ 切到 persona = $currentPersona, 新 session = $sessionId" -ForegroundColor Green
+                } else {
+                    Write-Host "  用法: /persona <name> | /persona list | /persona show" -ForegroundColor Yellow
+                }
+            }
+            Write-Host ""
+            continue
+        }
+
         # 跑 chat
         $cliArgs = @("-X", "utf8", "-m", "agent_memory.cli")
         if ($VaultRoot) { $cliArgs += @("--vault-root", $VaultRoot) }
-        $cliArgs += @("chat", $msg, "--persona", "steward", "--context", "cli-repl", "--session", $sessionId, "--allow-llm-degraded", "--json")
+        $cliArgs += @("chat", $msg, "--persona", $currentPersona, "--context", "cli-repl", "--session", $sessionId, "--allow-llm-degraded", "--json")
 
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = "Continue"
