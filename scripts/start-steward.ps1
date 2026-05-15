@@ -126,7 +126,18 @@ if (-not $token) {
     }
 }
 else {
-    Write-Host "[OK] token 已就緒 (從環境變數載入)" -ForegroundColor Green
+    # 健檢: Discord bot token 一般 >= 50 字元, 太短表示之前貼錯或被截斷
+    if ($token.Length -lt 30) {
+        Write-Host ""
+        Write-Host "[ERR] $tokenEnv 長度只有 $($token.Length) 字元 — Discord bot token 至少 50 字元 (通常 70+)" -ForegroundColor Red
+        Write-Host "      之前可能貼錯或寫入時被截斷。請重貼一次:" -ForegroundColor Yellow
+        Write-Host "        方法 A: menu [4] 切換 LLM 模型 -> 走 Discord token 重設流程" -ForegroundColor DarkGray
+        Write-Host "        方法 B: 直接編輯 <vault>/.env 把 $tokenEnv= 後面換成完整 token" -ForegroundColor DarkGray
+        Write-Host "        方法 C: 移除舊值再重跑 first-run-wizard.ps1" -ForegroundColor DarkGray
+        Write-Host ""
+        exit 1
+    }
+    Write-Host "[OK] token 已就緒 (從環境變數載入, len=$($token.Length))" -ForegroundColor Green
 }
 
 # ===== 3. 啟動 bridge 在背景 =====

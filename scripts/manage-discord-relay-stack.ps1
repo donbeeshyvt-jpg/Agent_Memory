@@ -444,11 +444,41 @@ switch ($Action) {
                 continue
             }
 
-            $proc = Start-Process -FilePath ([string]$spec.python_exe) -ArgumentList $spec.args -PassThru -WindowStyle Hidden -WorkingDirectory $projectRoot
-            Start-Sleep -Milliseconds 500
+            # Relay stdout/stderr 重導到 artifacts/discord-relay-stack/logs/<name>.log
+            # 否則 -WindowStyle Hidden 會把 Python crash 訊息全部吃掉, debug 不能
+            $relayLogDir = Join-Path $projectRoot "artifacts/discord-relay-stack/logs"
+            if (-not (Test-Path -LiteralPath $relayLogDir)) {
+                New-Item -ItemType Directory -Path $relayLogDir -Force | Out-Null
+            }
+            $stdoutLog = Join-Path $relayLogDir "$($spec.name).stdout.log"
+            $stderrLog = Join-Path $relayLogDir "$($spec.name).stderr.log"
+            # 開新 process 前先清空舊 log (避免越累積越大)
+            Set-Content -LiteralPath $stdoutLog -Value "" -Encoding UTF8 -ErrorAction SilentlyContinue
+            Set-Content -LiteralPath $stderrLog -Value "" -Encoding UTF8 -ErrorAction SilentlyContinue
+
+            $proc = Start-Process -FilePath ([string]$spec.python_exe) -ArgumentList $spec.args -PassThru -WindowStyle Hidden -WorkingDirectory $projectRoot -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
+            # 給 relay 2 秒嘗試連線; 真正連 Discord gateway 通常 1-3 秒
+            Start-Sleep -Milliseconds 2000
             $alive = Test-PidRunning -ProcessId $proc.Id
             if (-not $alive) {
                 $result.ok = $false
+                # 把 stderr 前 10 行塞回 result, 方便 caller 看
+                $errPreview = ""
+                try {
+                    if (Test-Path -LiteralPath $stderrLog) {
+                        $errLines = Get-Content -LiteralPath $stderrLog -Encoding UTF8 -ErrorAction SilentlyContinue | Select-Object -First 10
+                        if ($errLines) { $errPreview = ($errLines -join "`n") }
+                    }
+                }
+                catch { }
+                Write-Host "[ERR] relay '$($spec.name)' 啟動後 2 秒內 crashed. 看 log:" -ForegroundColor Red
+                Write-Host "      stdout: $stdoutLog" -ForegroundColor DarkGray
+                Write-Host "      stderr: $stderrLog" -ForegroundColor DarkGray
+                if ($errPreview) {
+                    Write-Host "      ─── stderr (前 10 行) ───" -ForegroundColor DarkGray
+                    Write-Host $errPreview -ForegroundColor Red
+                    Write-Host "      ───────────────────────" -ForegroundColor DarkGray
+                }
             }
 
             $row = [ordered]@{

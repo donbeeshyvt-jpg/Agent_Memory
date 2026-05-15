@@ -959,6 +959,20 @@ try {
                 finally {
                     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
                 }
+                # 健檢: Discord bot token 一般 50-72 字元 base64. 太短 = 貼錯或被截斷
+                $tokenLen = $tokenVal.Length
+                if ($tokenLen -lt 30) {
+                    Write-Host ""
+                    Write-Host "  ⚠ 你貼的 token 只有 $tokenLen 字元 — Discord bot token 至少 50 字元 (通常 70+)" -ForegroundColor Red
+                    Write-Host "    可能原因: 貼上時被截斷 / 不小心按到 Enter / 複製不完整" -ForegroundColor Yellow
+                    Write-Host "    這次跳過 Discord, 之後可從 menu [3] 或 start-steward.ps1 重設" -ForegroundColor DarkGray
+                    $tokenVal = ""
+                    $shouldRunDiscordSetup = $false
+                    $discordSkipReason = "token length too short ($tokenLen chars)"
+                    # 不寫入 .env / setx, 不 Set-Item 環境變數, 讓後續 channel block 因 shouldRun=false 自動跳過
+                    # 也不在這加 Add-Step, 讓檔尾的 else 分支 (line ~1031) 統一處理
+                }
+                else {
                 Set-Item -LiteralPath "Env:$DiscordTokenEnv" -Value $tokenVal
                 # 3-way: .env / setx / 只此次
                 Write-Host ""
@@ -980,6 +994,7 @@ try {
                     Write-Host "  [OK] $DiscordTokenEnv 寫入 Windows 使用者環境變數" -ForegroundColor Green
                 }
                 $tokenOk = $true
+                }   # close my "else" (token length 健檢 通過分支)
             }
             else {
                 # 留空 → 跳過 Discord
