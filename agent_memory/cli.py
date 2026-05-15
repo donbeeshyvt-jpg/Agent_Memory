@@ -448,6 +448,14 @@ def _build_parser() -> argparse.ArgumentParser:
     e2e.add_argument("--json", action="store_true", help="Print result as JSON.")
     e2e.set_defaults(func=_cmd_core_e2e)
 
+    # V2 Phase A C13: wikilinks_graph inspection CLI
+    wikilinks = sub.add_parser("wikilinks-graph", help="Wikilinks graph (GraphRAG) — rebuild / status / neighbors.")
+    wikilinks.add_argument("--action", choices=["rebuild", "status", "neighbors"], default="status", help="rebuild = scan vault and save; status = show stats; neighbors = show 1-hop neighbors of a path.")
+    wikilinks.add_argument("--path", default="", help="Required for --action neighbors. Vault-relative path.")
+    wikilinks.add_argument("--max-hops", type=int, default=1, help="For --action neighbors. Default 1.")
+    wikilinks.add_argument("--json", action="store_true", help="Print result as JSON.")
+    wikilinks.set_defaults(func=_cmd_wikilinks_graph)
+
     persona_create = sub.add_parser("persona-create", help="Create one persona proposal.")
     persona_create.add_argument("--display-name", required=True, help="Persona display name.")
     persona_create.add_argument("--persona-id", default=None, help="Optional explicit persona id.")
@@ -1675,6 +1683,89 @@ def _cmd_recall_show(args: argparse.Namespace) -> int:
             f"| target={item.get('promotion_target', '')}"
         )
     return 0
+
+
+def _cmd_wikilinks_graph(args: argparse.Namespace) -> int:
+    """V2 Phase A C13 — Wikilinks graph CLI: rebuild / status / neighbors."""
+    from agent_memory.wikilinks_graph import (
+        build_wikilinks_graph,
+        default_graph_path,
+        load_graph_json,
+        neighbors as _neighbors,
+        rebuild_and_save,
+    )
+
+    adapter = _build_adapter(args)
+    vault = adapter.vault_root
+    action = args.action
+
+    if action == "rebuild":
+        result = rebuild_and_save(vault)
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            print(f"[OK] wikilinks graph rebuilt")
+            print(f"  path:       {result['graph_path']}")
+            print(f"  nodes:      {result['nodes']}")
+            print(f"  edges:      {result['edges']}")
+            print(f"  unresolved: {result['unresolved']}")
+            print(f"  built_at:   {result['built_at']}")
+        return 0
+
+    if action == "status":
+        graph = load_graph_json(default_graph_path(vault))
+        if graph is None:
+            payload = {"ok": False, "reason": "no graph file — 用 --action rebuild 先建"}
+            if args.json:
+                print(json.dumps(payload, ensure_ascii=False, indent=2))
+            else:
+                print("[INFO] 還沒建 graph. 跑: memory-cli wikilinks-graph --action rebuild")
+            return 1
+        payload = {
+            "ok": True,
+            "schema_version": graph.get("schema_version"),
+            "built_at": graph.get("built_at"),
+            "nodes": graph.get("nodes"),
+            "edges": graph.get("edges"),
+            "unresolved": graph.get("unresolved"),
+            "adjacency_keys_sample": list(graph.get("adjacency", {}).keys())[:5],
+        }
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"[OK] graph status")
+            print(f"  schema:     {payload['schema_version']}")
+            print(f"  built_at:   {payload['built_at']}")
+            print(f"  nodes:      {payload['nodes']}")
+            print(f"  edges:      {payload['edges']}")
+            print(f"  unresolved: {payload['unresolved']}")
+            print(f"  sample 5 nodes:")
+            for n in payload["adjacency_keys_sample"]:
+                print(f"    - {n}")
+        return 0
+
+    if action == "neighbors":
+        if not args.path:
+            print("[ERR] --action neighbors 需要 --path")
+            return 1
+        graph = load_graph_json(default_graph_path(vault))
+        if graph is None:
+            print("[ERR] 沒 graph，先 --action rebuild")
+            return 1
+        nbs = _neighbors(graph, args.path, max_hops=max(1, int(args.max_hops)))
+        payload = {"ok": True, "path": args.path, "max_hops": args.max_hops, "neighbors": nbs}
+        if args.json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(f"[OK] neighbors of {args.path} (max_hops={args.max_hops}):")
+            for n in nbs:
+                print(f"  - {n}")
+            if not nbs:
+                print("  (無)")
+        return 0
+
+    print(f"[ERR] unknown action: {action}")
+    return 1
 
 
 def _cmd_promote_cycle(args: argparse.Namespace) -> int:
