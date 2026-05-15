@@ -138,6 +138,19 @@ class BridgeRelayClient(discord.Client):
         if self.enable_processing_reaction:
             processing_added = await self._try_add_reaction(message, self.processing_reaction)
 
+        # Phase A C4 (A.6): 把 Discord attachments 帶進 payload, 讓 bridge 端下載 + extract
+        attachments_payload: list[dict[str, Any]] = []
+        for att in (message.attachments or []):
+            try:
+                attachments_payload.append({
+                    "url": str(getattr(att, "url", "") or ""),
+                    "filename": str(getattr(att, "filename", "") or ""),
+                    "content_type": str(getattr(att, "content_type", "") or ""),
+                    "size": int(getattr(att, "size", 0) or 0),
+                })
+            except Exception:  # noqa: BLE001
+                continue
+
         payload = {
             "content": text,
             "channel_id": str(message.channel.id),
@@ -147,6 +160,8 @@ class BridgeRelayClient(discord.Client):
         }
         if self.persona:
             payload["persona"] = self.persona
+        if attachments_payload:
+            payload["attachments"] = attachments_payload
         url = f"{self.bridge_url}/webhook/discord"
 
         loop = asyncio.get_running_loop()

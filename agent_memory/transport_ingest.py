@@ -335,6 +335,38 @@ def run_transport_event(
 
     runtime = MemoryRuntime(adapter, profile=runtime_profile_for_persona(adapter, persona))
     client = LLMClient(adapter.vault_root)
+
+    # Phase A C4 (A.6): 下載 + extract Discord attachments, prepend 到 turn.message
+    # 用 <attachment> XML 標籤防 prompt injection (對齊 C5 的 <context> 包裝設計)
+    attachment_ingest_results: list[dict[str, Any]] = []
+    raw_attachments = payload.get("attachments") if isinstance(payload, dict) else None
+    if isinstance(raw_attachments, list) and raw_attachments:
+        try:
+            from agent_memory.attachment_ingest import ingest_attachments_for_turn
+            # 判斷當前模型是否 vision-capable (粗略: gemini-2.5* / 含 vision 字樣)
+            model_hint = (override_model or "").lower()
+            vision_capable = ("gemini" in model_hint) or ("vision" in model_hint)
+            xml_blocks, ingest_results = ingest_attachments_for_turn(
+                attachments=raw_attachments,
+                vault_root=root,
+                channel_id=turn.channel_id,
+                vision_capable=vision_capable,
+            )
+            attachment_ingest_results = ingest_results
+            if xml_blocks:
+                # 把附件 XML block prepend 到 user message
+                # 同時把使用者原文用 <user_message> 包起來 (防 prompt injection: 區分附件資料 vs 使用者指令)
+                augmented = (
+                    xml_blocks
+                    + "\n\n<user_message>\n"
+                    + turn.message
+                    + "\n</user_message>"
+                )
+                turn.message = augmented
+        except Exception:  # noqa: BLE001
+            # attachment 失敗不阻擋主流程, 只記錄
+            attachment_ingest_results = [{"ok": False, "note": "attachment pipeline exception", "kind": "error"}]
+
     shared_channel_history = ""
     if turn.channel_id:
         try:
@@ -610,6 +642,11 @@ def run_transport_event(
             "source": mode_resolved.get("source", "global_default"),
         }
         result["degraded"] = False
+        if attachment_ingest_results:
+            result["attachment_ingest"] = [
+                {k: v for k, v in r.items() if k != "text"}  # 不回 raw text, 只回 metadata
+                for r in attachment_ingest_results
+            ]
     except LLMClientError as exc:
         if not allow_llm_degraded:
             raise
