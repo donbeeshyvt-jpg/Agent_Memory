@@ -126,18 +126,24 @@ if (-not $token) {
     }
 }
 else {
-    # 健檢: Discord bot token 一般 >= 50 字元, 太短表示之前貼錯或被截斷
-    if ($token.Length -lt 30) {
+    # 健檢 1: 長度
+    $tokenPreview = Format-DiscordTokenPreview -Token $token
+    Write-Host "[INFO] token 預覽: $tokenPreview" -ForegroundColor DarkGray
+
+    # 健檢 2: 真實 ping Discord API
+    Write-Host "[INFO] 驗證 token (ping Discord API)..." -ForegroundColor Yellow
+    $vr = Test-DiscordToken -Token $token
+    if (-not $vr.ok) {
         Write-Host ""
-        Write-Host "[ERR] $tokenEnv 長度只有 $($token.Length) 字元 — Discord bot token 至少 50 字元 (通常 70+)" -ForegroundColor Red
-        Write-Host "      之前可能貼錯或寫入時被截斷。請重貼一次:" -ForegroundColor Yellow
-        Write-Host "        方法 A: menu [4] 切換 LLM 模型 -> 走 Discord token 重設流程" -ForegroundColor DarkGray
-        Write-Host "        方法 B: 直接編輯 <vault>/.env 把 $tokenEnv= 後面換成完整 token" -ForegroundColor DarkGray
-        Write-Host "        方法 C: 移除舊值再重跑 first-run-wizard.ps1" -ForegroundColor DarkGray
+        Write-Host "[ERR] Token 驗證失敗: $($vr.reason)" -ForegroundColor Red
+        Write-Host "      請重貼一次 (從 Discord Developer Portal → Bot → Reset Token):" -ForegroundColor Yellow
+        Write-Host "        方法 A: 編輯 <vault>/.env 把 $tokenEnv= 後面換成完整新 token" -ForegroundColor DarkGray
+        Write-Host "        方法 B: 重跑 first-run-wizard.ps1 走 Discord token 重設" -ForegroundColor DarkGray
+        Write-Host "        方法 C: [Environment]::SetEnvironmentVariable('$tokenEnv', '<完整 token>', 'User')" -ForegroundColor DarkGray
         Write-Host ""
         exit 1
     }
-    Write-Host "[OK] token 已就緒 (從環境變數載入, len=$($token.Length))" -ForegroundColor Green
+    Write-Host "[OK] token 已就緒 — bot: $($vr.bot_name) (id=$($vr.bot_id))" -ForegroundColor Green
 }
 
 # ===== 3. 啟動 bridge 在背景 =====

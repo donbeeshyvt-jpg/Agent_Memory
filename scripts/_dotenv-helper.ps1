@@ -184,6 +184,86 @@ function Remove-EntryFromDotEnv {
     return $true
 }
 
+function Test-DiscordToken {
+    <#
+    .SYNOPSIS
+      真實 ping Discord API 驗證 bot token. 回傳 hashtable: ok / bot_name / bot_id / reason.
+    .DESCRIPTION
+      呼叫 https://discord.com/api/v10/users/@me 帶 Authorization: Bot <token>.
+      - 200 → ok=$true + bot_name + bot_id
+      - 401 → ok=$false, reason="Discord 回 401 Unauthorized — token 無效"
+      - 其他 → ok=$false, reason=<具體訊息>
+      Timeout 10 秒. 強制 TLS 1.2 (PS5.1 預設可能 TLS 1.0).
+    #>
+    param(
+        [Parameter(Mandatory=$true)] [string]$Token,
+        [int]$TimeoutSec = 10
+    )
+    $result = [ordered]@{
+        ok = $false
+        bot_name = ""
+        bot_id = ""
+        reason = ""
+    }
+    if ([string]::IsNullOrWhiteSpace($Token)) {
+        $result.reason = "token 為空"
+        return $result
+    }
+    if ($Token.Length -lt 30) {
+        $result.reason = "token 長度只有 $($Token.Length) 字元 (Discord bot token 至少 50 字元)"
+        return $result
+    }
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+    try {
+        $headers = @{ Authorization = "Bot $Token" }
+        $resp = Invoke-RestMethod -Uri "https://discord.com/api/v10/users/@me" -Headers $headers -Method Get -TimeoutSec $TimeoutSec -ErrorAction Stop
+        $result.ok = $true
+        $result.bot_name = [string]$resp.username
+        $result.bot_id = [string]$resp.id
+        if ($resp.discriminator -and $resp.discriminator -ne "0") {
+            $result.bot_name = "$($resp.username)#$($resp.discriminator)"
+        }
+        $result.reason = "ok"
+    }
+    catch [System.Net.WebException] {
+        $statusCode = 0
+        try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { }
+        if ($statusCode -eq 401) {
+            $result.reason = "Discord 回 401 Unauthorized — token 無效 / 已 reset / 貼錯"
+        }
+        elseif ($statusCode -eq 403) {
+            $result.reason = "Discord 回 403 Forbidden — bot 被 ban / scope 不足"
+        }
+        elseif ($statusCode -eq 429) {
+            $result.reason = "Discord 回 429 Rate Limited — 等幾分鐘再試"
+        }
+        else {
+            $result.reason = "網路 / API 問題: $($_.Exception.Message)"
+        }
+    }
+    catch {
+        $msg = [string]$_.Exception.Message
+        if ($msg -match '401|Unauthorized') {
+            $result.reason = "Discord 回 401 Unauthorized — token 無效 / 已 reset / 貼錯"
+        }
+        else {
+            $result.reason = "驗證失敗: $msg"
+        }
+    }
+    return $result
+}
+
+function Format-DiscordTokenPreview {
+    <#
+    .SYNOPSIS
+      回傳 masked token 預覽 (前 6 + ... + 後 4) 供使用者目測核對.
+    #>
+    param([Parameter(Mandatory=$true)] [string]$Token)
+    if ([string]::IsNullOrWhiteSpace($Token)) { return "(空)" }
+    if ($Token.Length -lt 12) { return "(僅 $($Token.Length) 字元)" }
+    return $Token.Substring(0, 6) + "..." + $Token.Substring($Token.Length - 4) + " (長度 $($Token.Length))"
+}
+
 function Test-KeyInDotEnv {
     param([string]$Key, [string]$EnvPath = "", [string]$VaultRoot = "")
     if (-not $EnvPath) {

@@ -959,20 +959,30 @@ try {
                 finally {
                     [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
                 }
-                # 健檢: Discord bot token 一般 50-72 字元 base64. 太短 = 貼錯或被截斷
-                $tokenLen = $tokenVal.Length
-                if ($tokenLen -lt 30) {
+                # 健檢 1: 長度 (Discord bot token 一般 50-72 字元 base64. 太短 = 貼錯或被截斷)
+                $tokenPreview = Format-DiscordTokenPreview -Token $tokenVal
+                Write-Host ""
+                Write-Host "  收到 token: $tokenPreview" -ForegroundColor DarkGray
+                Write-Host "  → 目視確認前 6 / 後 4 字元跟你複製的對得起來" -ForegroundColor DarkGray
+
+                # 健檢 2: 真實 ping Discord API
+                Write-Host "  驗證 token (ping Discord API)..." -ForegroundColor Yellow
+                $vr = Test-DiscordToken -Token $tokenVal
+                if (-not $vr.ok) {
                     Write-Host ""
-                    Write-Host "  ⚠ 你貼的 token 只有 $tokenLen 字元 — Discord bot token 至少 50 字元 (通常 70+)" -ForegroundColor Red
-                    Write-Host "    可能原因: 貼上時被截斷 / 不小心按到 Enter / 複製不完整" -ForegroundColor Yellow
+                    Write-Host "  ✗ Token 驗證失敗: $($vr.reason)" -ForegroundColor Red
+                    Write-Host "    可能原因:" -ForegroundColor Yellow
+                    Write-Host "      • 貼上時被截斷 / 不小心按到 Enter / 複製不完整" -ForegroundColor DarkGray
+                    Write-Host "      • Discord Developer Portal 沒按 Reset Token 拿新值" -ForegroundColor DarkGray
+                    Write-Host "      • token 對應的 bot 已被刪除 / disabled" -ForegroundColor DarkGray
                     Write-Host "    這次跳過 Discord, 之後可從 menu [3] 或 start-steward.ps1 重設" -ForegroundColor DarkGray
                     $tokenVal = ""
                     $shouldRunDiscordSetup = $false
-                    $discordSkipReason = "token length too short ($tokenLen chars)"
+                    $discordSkipReason = "token validation failed: $($vr.reason)"
                     # 不寫入 .env / setx, 不 Set-Item 環境變數, 讓後續 channel block 因 shouldRun=false 自動跳過
-                    # 也不在這加 Add-Step, 讓檔尾的 else 分支 (line ~1031) 統一處理
                 }
                 else {
+                Write-Host "  ✓ Token 驗證通過 — bot: $($vr.bot_name) (id=$($vr.bot_id))" -ForegroundColor Green
                 Set-Item -LiteralPath "Env:$DiscordTokenEnv" -Value $tokenVal
                 # 3-way: .env / setx / 只此次
                 Write-Host ""
