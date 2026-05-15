@@ -474,41 +474,64 @@ def build_agent_tools_prompt(
     deny_lines = "\n".join(f"    - `{p}` (永遠唯讀)" for p in write_deny) or "    (無)"
     return (
         "\n\n=== AVAILABLE TOOLS (你可以在回應中自主呼叫) ===\n"
-        "你有「自主寫入第二大腦」的能力。當使用者:\n"
-        "  • 告訴你一個事實 / 偏好 / 重要資訊 (例如「我叫阿凱」「我偏好簡潔回覆」)\n"
-        "  • 請你記住某件事\n"
-        "  • 對話中產生值得留底的結論 / 決策\n"
-        "你可以在回應中**直接呼叫 memory 工具寫入**, 不用問使用者「要不要存」(他都已經告訴你了).\n\n"
-        "## 呼叫格式\n\n"
+        "你有「**自主操作第二大腦**」的能力 (像 hermes / 編程 AI 的本地沙盒模式).\n"
+        "兩個工具家族:\n"
+        "  - `memory`  → 結構化記憶 ops (add/replace/remove/get), 自動處理 frontmatter + 索引\n"
+        "  - `files`   → 原始檔案 ops (read_file/write_file/append_file/list_dir/mkdir)\n\n"
+        "## 呼叫格式 (兩個工具相同, 只是 tool name 不同)\n\n"
         "```\n"
-        "[TOOL]memory{\"action\":\"add\",\"path\":\"10_Permanent/Manual_Inputs/<檔名>.md\",\"content\":\"<完整 markdown>\",\"reason\":\"<為何記住>\"}[/TOOL]\n"
+        "[TOOL]<tool_name>{\"action\":\"<action>\",\"path\":\"<path>\",...}[/TOOL]\n"
         "```\n\n"
-        "- `action`: `add` (新建) / `replace` (覆蓋) / `remove` (刪除) / `get` (讀)\n"
-        "- `path`: vault 相對路徑 (見下方允許區)\n"
-        "- `content`: markdown 內容 (add/replace 必要)。建議格式: 加 YAML frontmatter (參考既有 .md) + `<summary>` + `<context>` XML 標籤\n"
-        "- `reason`: 1-2 句話說明為何要寫 (台帳用)\n\n"
+        "## tool=memory (結構化, 推薦)\n\n"
+        "- `action: add`    新建 memory note (自動寫 frontmatter, 路徑要不存在)\n"
+        "- `action: replace` 覆蓋既有 memory note (frontmatter 自動更新 updated 時間)\n"
+        "- `action: remove` 刪除 (歸檔到 99_Archive, 不真刪)\n"
+        "- `action: get`    讀取一筆 memory note 全文\n"
+        "- `path`:    vault 相對路徑 (例 `10_Permanent/Manual_Inputs/abc.md`)\n"
+        "- `content`: markdown 內容 (add/replace 必要)\n"
+        "- `reason`:  1-2 句話台帳註記\n\n"
+        "## tool=files (原始, 進階)\n\n"
+        "- `action: read_file`   讀任意 vault 內檔案 (text mode, 預設 utf-8, max 12000 字)\n"
+        "- `action: write_file`  寫檔 (覆蓋, 含 parent mkdir)\n"
+        "- `action: append_file` 追加 (不覆蓋)\n"
+        "- `action: list_dir`    列目錄 (回 items[].name)\n"
+        "- `action: mkdir`       建目錄\n"
+        "- `path`:    vault 相對路徑 (沙盒, 不能跳出 vault)\n"
+        "- 寫入動作受 RuntimeProfile.can_write 限制 (raw zone 永遠拒)\n\n"
+        "## 何時用哪個?\n\n"
+        "- **記憶/知識卡片** (有 frontmatter, 要被 RAG 檢索) → `memory.add/replace`\n"
+        "- **隨手筆記 / 程式碼 / 任意檔案** → `files.write_file`\n"
+        "- **要看既有檔內容** → `files.read_file` (含 frontmatter raw) 或 `memory.get` (parse 後)\n"
+        "- **探索 vault 結構** → `files.list_dir`\n\n"
         "## 沙盒邊界 (寫入允許區)\n\n"
         f"{allow_lines}\n\n"
         "## 禁區 (永遠不能寫)\n\n"
         f"{deny_lines}\n\n"
         "## 寫入規則\n\n"
-        "- **使用者偏好 / 個人事實** → 寫 `10_Permanent/Manual_Inputs/<topic>.md`\n"
-        "- **跨對話通用知識** → 寫 `10_Permanent/Facts/<topic>.md` 或 `10_Permanent/Concepts/<topic>.md`\n"
+        "- **使用者偏好 / 個人事實** → `memory.add` 到 `10_Permanent/Manual_Inputs/<topic>.md`\n"
+        "- **跨對話通用知識** → `memory.add` 到 `10_Permanent/Facts/` 或 `10_Permanent/Concepts/`\n"
         "- **本 session 工作上下文** → 自動寫到 session log, 不需手動 call tool\n"
-        "- **不要重複寫**: 先用 `get` 確認檔不存在再 `add`; 已存在用 `replace`\n"
-        "- **不要寫敏感資料** (token / API key / 私密對話) 到一般區, 必要時加 `security_level: confidential` frontmatter\n\n"
-        "## 範例\n\n"
+        "- **不要重複寫**: 先用 `memory.get` 確認 / `files.read_file` 看內容, 再決定 add 或 replace\n"
+        "- **不要寫敏感資料** (token / API key / 私密) 到一般區, 必要時加 `security_level: confidential` frontmatter\n\n"
+        "## 範例 1 — 記憶使用者偏好\n\n"
         "使用者: 我偏好簡潔技術回覆\n"
         "你的回應:\n"
         "```\n"
-        "好的, 已記住你偏好簡潔技術回覆。下次對話會用這風格。\n"
-        "[TOOL]memory{\"action\":\"add\",\"path\":\"10_Permanent/Manual_Inputs/style_concise_tech.md\",\"content\":\"---\\ntype: user_profile\\nsource: user\\ntags: [manual_input, style]\\nai_ready: true\\netl_status: internalised\\nsecurity_level: safe_data\\n---\\n\\n# 對話風格偏好\\n\\n<summary>\\n使用者偏好簡潔、技術導向的回覆, 不要過度禮貌或鋪陳。\\n</summary>\\n\\n<context>\\n- 直接給結論 + 步驟\\n- 跳過寒暄\\n- 程式碼 + 路徑優先於敘述\\n</context>\",\"reason\":\"user_stated_preference\"}[/TOOL]\n"
+        "好的, 已記住你偏好簡潔技術回覆。\n"
+        "[TOOL]memory{\"action\":\"add\",\"path\":\"10_Permanent/Manual_Inputs/style_concise_tech.md\",\"content\":\"---\\ntype: user_profile\\nsource: user\\ntags: [manual_input, style]\\nai_ready: true\\netl_status: internalised\\nsecurity_level: safe_data\\n---\\n\\n# 對話風格偏好\\n\\n<summary>\\n使用者偏好簡潔、技術導向的回覆\\n</summary>\\n\\n<context>\\n- 直接給結論 + 步驟\\n- 跳過寒暄\\n</context>\",\"reason\":\"user_stated\"}[/TOOL]\n"
+        "```\n\n"
+        "## 範例 2 — 看 vault 結構\n\n"
+        "使用者: 你看一下 70_Active_Plans 裡面有哪些檔案\n"
+        "你的回應:\n"
+        "```\n"
+        "[TOOL]files{\"action\":\"list_dir\",\"path\":\"70_Active_Plans\"}[/TOOL]\n"
+        "稍後我整理告訴你。\n"
         "```\n\n"
         "## 重要原則\n\n"
-        "1. **正常回應在前, tool block 在後** — 不要只回 tool block, 使用者也要看得到你的回應\n"
-        "2. **tool block 會被自動移除不顯示給使用者** — 你不用解釋「我即將呼叫 tool」, 直接 call 即可\n"
-        "3. **執行結果會在下次對話告知你** — 第一次 call 是「fire and forget」, 不要假設你看得到結果\n"
-        "4. **錯誤時系統會把錯誤訊息加在你的回應末端** — 使用者看得到「[tool error: ...]」, 之後你可以對話中修正\n"
+        "1. **正常回應在前, tool block 在後** — 不要只回 tool block\n"
+        "2. **tool block 會被自動移除不顯示給使用者** — 不用解釋「我即將呼叫 tool」, 直接 call\n"
+        "3. **執行結果會在下次對話顯示給使用者+下次的你** — 第一次 call 是「fire and forget」\n"
+        "4. **錯誤時系統會把訊息加在 response 末端** — 使用者看得到 `✗ tool [error: ...]`, 之後你可以對話中修正\n"
         "=== END TOOLS ===\n"
     )
 
@@ -519,10 +542,15 @@ def execute_agent_tool_call(
     *,
     operator: str = "agent",
 ) -> dict[str, Any]:
-    """Execute a single parsed tool call via MemoryRuntime.apply_memory_tool.
+    """Execute a single parsed tool call via MemoryRuntime / file ops.
+
+    Supports two tool names (V2 C3 + C12):
+    - `memory`: 結構化 memory ops (add/replace/remove/get) via apply_memory_tool, frontmatter 走 vault.adapter
+    - `files`:  原始 file ops (read_file/write_file/append_file/list_dir/mkdir) within vault
+                走 execute_tool_request, target 強制 vault (沙盒邊界, agent 寫不到 repo source)
 
     Returns: `{"tool": str, "ok": bool, "path": str, "action": str, "message": str, "error": str}`.
-    Path treatment governance is enforced inside apply_memory_tool (raises PermissionError on raw zones).
+    Path 治理 inside apply_memory_tool / can_write — raw zones (20/80/90) 永遠拒.
     """
     tool_name = str(call.get("tool", "")).lower()
     args = call.get("args", {})
@@ -537,10 +565,18 @@ def execute_agent_tool_call(
     if "_parse_error" in args:
         result["error"] = f"args parse failed: {args['_parse_error']}"
         return result
-    if tool_name != "memory":
-        result["error"] = f"unsupported tool: {tool_name}"
-        return result
 
+    if tool_name == "memory":
+        return _execute_memory_tool(runtime, args, operator, result)
+    if tool_name == "files":
+        return _execute_files_tool(runtime, args, operator, result)
+
+    result["error"] = f"unsupported tool: {tool_name} (supported: memory, files)"
+    return result
+
+
+def _execute_memory_tool(runtime: Any, args: dict[str, Any], operator: str, result: dict[str, Any]) -> dict[str, Any]:
+    """memory.add/replace/remove/get — V2 C3."""
     action = str(args.get("action", "")).strip().lower()
     path = str(args.get("path", "")).strip()
     content = args.get("content", "")
@@ -568,6 +604,62 @@ def execute_agent_tool_call(
     except PermissionError as exc:
         result["error"] = f"permission denied: {exc}"
     except ValueError as exc:
+        result["error"] = f"invalid: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    return result
+
+
+def _execute_files_tool(runtime: Any, args: dict[str, Any], operator: str, result: dict[str, Any]) -> dict[str, Any]:
+    """files.read_file/write_file/append_file/list_dir/mkdir — V2 C12.
+
+    強制 target=vault (沙盒邊界, agent 寫不到 repo source code).
+    寫入動作 (write/append/mkdir) 額外經 runtime.profile.can_write 過 governance.
+    """
+    action = str(args.get("action", "")).strip().lower()
+    path = str(args.get("path", "")).strip()
+
+    if action not in _ALLOWED_ACTIONS:
+        result["error"] = f"unsupported files action: {action} (supported: {sorted(_ALLOWED_ACTIONS)})"
+        return result
+    if not path and action != "list_dir":
+        result["error"] = "files path is required"
+        return result
+
+    # 寫入動作先過 RuntimeProfile.can_write (raw zone 20/80/90 拒)
+    if action in ("write_file", "append_file", "mkdir"):
+        if not runtime.profile.can_write(path):
+            result["error"] = f"permission denied: 寫入越界或唯讀路徑 — {path}"
+            return result
+
+    # 強制 vault target (agent 沙盒)
+    request_with_target = dict(args)
+    request_with_target["target"] = "vault"
+    if not request_with_target.get("path"):
+        request_with_target["path"] = "."
+
+    try:
+        # vault_root 從 runtime.adapter.vault_root, workspace_root 同 vault (强制沙盒)
+        vault_path = Path(runtime.adapter.vault_root)
+        payload = execute_tool_request(
+            vault_root=vault_path,
+            workspace_root=vault_path,  # agent 沙盒 = vault, 不能跳出
+            request=request_with_target,
+        )
+        result["ok"] = bool(payload.get("ok", False))
+        result["message"] = render_tool_result(payload)[:300]
+        # 寫入動作要走 search index update
+        if action in ("write_file", "append_file") and result["ok"]:
+            try:
+                rel = path.replace("\\", "/").lstrip("/")
+                runtime.search_manager.index_path(rel)
+            except Exception:  # noqa: BLE001
+                pass
+    except PermissionError as exc:
+        result["error"] = f"permission denied: {exc}"
+    except FileNotFoundError as exc:
+        result["error"] = f"not found: {exc}"
+    except (ValueError, FileExistsError) as exc:
         result["error"] = f"invalid: {exc}"
     except Exception as exc:  # noqa: BLE001
         result["error"] = f"{type(exc).__name__}: {exc}"
