@@ -23,7 +23,7 @@ from agent_memory.security.atomic import atomic_write
 from agent_memory.security.locks import file_lock
 from agent_memory.security.scanner import scan_memory_content
 from agent_memory.transport_profiles import ensure_transport_profiles_file
-from agent_memory.types import Frontmatter, MemoryNote, MemorySource, MemoryType
+from agent_memory.types import EtlStatus, Frontmatter, MemoryNote, MemorySource, MemoryType, SecurityLevel
 from agent_memory.vault.adapter import VaultAdapter
 
 _READONLY_PREFIXES = ("20_Literature/", "80_Fleeting/", "90_Daily_Journal/")
@@ -595,6 +595,30 @@ class ObsidianVaultAdapter(VaultAdapter):
         if not isinstance(tags, list):
             tags = []
 
+        aliases = payload.get("aliases", [])
+        if not isinstance(aliases, list):
+            aliases = []
+
+        # V2 schema (commit C1) — 新 3 欄位, 背向相容 parse:
+        # 缺 ai_ready 預設 True; 缺 etl_status 預設 processing; 缺 security_level 預設 safe_data
+        ai_ready_raw = payload.get("ai_ready", True)
+        if isinstance(ai_ready_raw, str):
+            ai_ready = ai_ready_raw.strip().lower() in ("true", "yes", "1")
+        else:
+            ai_ready = bool(ai_ready_raw)
+
+        etl_raw = str(payload.get("etl_status", "processing")).strip().lower()
+        try:
+            etl_status = EtlStatus(etl_raw)
+        except ValueError:
+            etl_status = EtlStatus.PROCESSING
+
+        sec_raw = str(payload.get("security_level", "safe_data")).strip().lower()
+        try:
+            security_level = SecurityLevel(sec_raw)
+        except ValueError:
+            security_level = SecurityLevel.SAFE_DATA
+
         return Frontmatter(
             type=mtype,
             source=source,
@@ -606,6 +630,10 @@ class ObsidianVaultAdapter(VaultAdapter):
             tags=[str(t) for t in tags],
             char_count=int(payload.get("char_count", 0)),
             extras={str(k): v for k, v in extras.items()},
+            ai_ready=ai_ready,
+            etl_status=etl_status,
+            security_level=security_level,
+            aliases=[str(a) for a in aliases],
         )
 
     def _frontmatter_to_dict(self, fm: Frontmatter) -> dict:
@@ -620,5 +648,10 @@ class ObsidianVaultAdapter(VaultAdapter):
             "tags": fm.tags,
             "char_count": fm.char_count,
             "extras": fm.extras,
+            # V2 schema (commit C1)
+            "ai_ready": fm.ai_ready,
+            "etl_status": fm.etl_status.value if hasattr(fm.etl_status, "value") else str(fm.etl_status),
+            "security_level": fm.security_level.value if hasattr(fm.security_level, "value") else str(fm.security_level),
+            "aliases": fm.aliases,
         }
 
