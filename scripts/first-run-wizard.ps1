@@ -947,18 +947,55 @@ try {
 
         if ($shouldRunDiscordSetup -and -not $tokenOk -and -not $NonInteractive) {
             Write-Host ""
-            Write-Host "  ▶ 請貼上 Discord Bot Token" -ForegroundColor Yellow
-            Write-Host "    （從 Discord Developer Portal → Bot → Token 取得）" -ForegroundColor DarkGray
-            Write-Host "    ⚠ 接下來會跳出『隱形輸入框』, 貼上後按 Enter; 留空 = 跳過 Discord" -ForegroundColor Yellow
-            $sec = Read-Host -Prompt "  $DiscordTokenEnv (隱形輸入)" -AsSecureString
-            if ($sec -and $sec.Length -gt 0) {
-                $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+            Write-Host "  ▶ Discord Bot Token 輸入方式" -ForegroundColor Yellow
+            Write-Host "    [1] 從剪貼簿讀 (推薦 — paste 不會被截斷, 會顯示 masked 預覽)" -ForegroundColor White
+            Write-Host "    [2] 隱形輸入 (SecureString — 隱私好, 但長字串 paste 在 PS5.1 可能被截斷)" -ForegroundColor DarkGray
+            $inputMethod = (Read-Host "  選 [1-2] (預設 1, 直接 Enter 即可)").Trim()
+            if ([string]::IsNullOrWhiteSpace($inputMethod)) { $inputMethod = "1" }
+
+            $tokenVal = ""
+            if ($inputMethod -eq "1") {
+                Write-Host ""
+                Write-Host "  請先在 Discord Developer Portal → Bot → Reset Token → Copy" -ForegroundColor Yellow
+                Write-Host "  把 token 複製到剪貼簿, 然後回來按 Enter" -ForegroundColor Yellow
+                [void](Read-Host "  按 Enter 從剪貼簿讀 token")
                 try {
-                    $tokenVal = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr)
+                    Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
+                    $tokenVal = [string]([System.Windows.Forms.Clipboard]::GetText()).Trim()
                 }
-                finally {
-                    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
+                catch {
+                    try {
+                        $tokenVal = [string](Get-Clipboard -Format Text -ErrorAction Stop).Trim()
+                    }
+                    catch {
+                        Write-Host "  [ERR] 無法讀剪貼簿: $($_.Exception.Message)" -ForegroundColor Red
+                        $tokenVal = ""
+                    }
                 }
+                if ([string]::IsNullOrWhiteSpace($tokenVal)) {
+                    Write-Host "  剪貼簿是空的, 跳過 Discord (你可以稍後從 menu [3] 重設)" -ForegroundColor Yellow
+                    $shouldRunDiscordSetup = $false
+                    $discordSkipReason = "clipboard empty"
+                }
+            }
+            else {
+                # SecureString fallback
+                Write-Host ""
+                Write-Host "  ⚠ 接下來跳出『隱形輸入框』, 貼上後按 Enter; 留空 = 跳過 Discord" -ForegroundColor Yellow
+                $sec = Read-Host -Prompt "  $DiscordTokenEnv (隱形輸入)" -AsSecureString
+                if ($sec -and $sec.Length -gt 0) {
+                    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec)
+                    try { $tokenVal = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($bstr) }
+                    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+                }
+                else {
+                    Write-Host "  留空, 跳過 Discord" -ForegroundColor Yellow
+                    $shouldRunDiscordSetup = $false
+                    $discordSkipReason = "no token provided"
+                }
+            }
+
+            if ($shouldRunDiscordSetup -and $tokenVal) {
                 # 健檢 1: 長度 (Discord bot token 一般 50-72 字元 base64. 太短 = 貼錯或被截斷)
                 $tokenPreview = Format-DiscordTokenPreview -Token $tokenVal
                 Write-Host ""
@@ -1004,13 +1041,9 @@ try {
                     Write-Host "  [OK] $DiscordTokenEnv 寫入 Windows 使用者環境變數" -ForegroundColor Green
                 }
                 $tokenOk = $true
-                }   # close my "else" (token length 健檢 通過分支)
-            }
-            else {
-                # 留空 → 跳過 Discord
-                $shouldRunDiscordSetup = $false
-                $discordSkipReason = "no token provided"
-            }
+                }   # close "else" (token 驗證通過分支)
+            }   # close "if ($shouldRunDiscordSetup -and $tokenVal)"
+            # 注意: 沒 token 的情況已在 input method branch 內處理 ($shouldRunDiscordSetup=$false + discordSkipReason 設好), 這裡不要再加 else 覆蓋原因
         }
     }
 
