@@ -70,11 +70,13 @@ if (-not (Test-Path -LiteralPath $ConfigFile)) {
 }
 
 $cfg = Get-Content -LiteralPath $ConfigFile -Raw -Encoding UTF8 | ConvertFrom-Json
-if (-not $cfg.relays -or $cfg.relays.Count -eq 0) {
+# PS5.1 PSCustomObject property 抓單元素陣列會解包成 scalar, @() 強制當陣列才能用 .Count
+$relayList = @($cfg.relays)
+if ($relayList.Count -eq 0) {
     Write-Host "[ERR] $ConfigFile 沒有 relays 區塊" -ForegroundColor Red
     exit 1
 }
-$primary = $cfg.relays[0]
+$primary = $relayList[0]
 $tokenEnv = [string]$primary.token_env
 $persona = [string]$primary.persona
 $channelIds = @($primary.channel_ids)

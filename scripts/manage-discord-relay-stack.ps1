@@ -154,8 +154,10 @@ function Build-RelaySpec {
     $allowDegraded = [bool](Get-OptionalValue -Source $Relay -Name "allow_llm_degraded" -Default (Get-OptionalValue -Source $Global -Name "allow_llm_degraded" -Default $true))
     $disableMessageIntent = [bool](Get-OptionalValue -Source $Relay -Name "disable_message_content_intent" -Default (Get-OptionalValue -Source $Global -Name "disable_message_content_intent" -Default $false))
 
-    $channelIds = To-StringArray -InputObject (Get-OptionalValue -Source $Relay -Name "channel_ids" -Default @())
-    $mentionOnlyIds = To-StringArray -InputObject (Get-OptionalValue -Source $Relay -Name "mention_only_channel_ids" -Default @())
+    # PS5.1 function return 經過單一賦值 caller 會解包單元素陣列為 scalar / $null,
+    # 必須 @() wrap 才能保證收到 array 並能用 .Count
+    $channelIds = @(To-StringArray -InputObject (Get-OptionalValue -Source $Relay -Name "channel_ids" -Default @()))
+    $mentionOnlyIds = @(To-StringArray -InputObject (Get-OptionalValue -Source $Relay -Name "mention_only_channel_ids" -Default @()))
     if ($channelIds.Count -eq 0) {
         throw "relay.channel_ids is required for relay '$name'."
     }
