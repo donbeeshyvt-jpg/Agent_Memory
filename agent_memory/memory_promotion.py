@@ -10,17 +10,20 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from agent_memory.entity_extract import extract_entities_from_text
 from agent_memory.search import SearchHit
 from agent_memory.search.manager import MemorySearchManager
 from agent_memory.security.atomic import atomic_write
 from agent_memory.security.locks import file_lock
-from agent_memory.types import Frontmatter, MemoryNote, MemorySource, MemoryType
+from agent_memory.types import Frontmatter, LifecycleState, MemoryNote, MemorySource, MemoryType
 from agent_memory.vault import ObsidianVaultAdapter
 
 RECALL_TRACKER_RELATIVE_PATH = ".ai/short_term_recall.json"
 PROMOTION_EVENTS_RELATIVE_PATH = "11_AI_Mirror/ingestion_logs/promotion_events.md"
 PROMOTION_MARKER_PREFIX = "<!-- agent-memory-promotion:"
 PROMOTION_MARKER_SUFFIX = "-->"
+# R7 C17: 中期記憶聚合落點
+MIDTERM_DIR_RELATIVE = "10_Permanent/Mid_Term"
 _PROMOTION_SOURCE_PREFIXES = (
     "11_AI_Mirror/ingestion_logs/daily_flush/",
     "11_AI_Mirror/internalised_candidates/",
@@ -576,3 +579,179 @@ def run_promotion_cycle(
         "promoted": promoted,
         "skipped": skipped,
     }
+
+
+# ─── R7 C17: 短 → 中期 entity 聚合 ────────────────────────────────────────────
+
+
+def _now_local_iso() -> str:
+    """本機時區 ISO with offset (e.g. 2026-05-16T14:30:00+08:00) — R7 C18 也用此."""
+
+    return datetime.now().astimezone().isoformat()
+
+
+def aggregate_to_midterm(
+    vault_root: Path,
+    daily_flush_path: str,
+    *,
+    session_id: str = "",
+    max_entities_per_flush: int = 10,
+) -> dict[str, Any]:
+    """從一個 daily_flush 抽 entity → 累加到對應 `Mid_Term/<entity>.md`.
+
+    R7 C17 短 → 中期聚合主邏輯 (V2_Round7 §4.1).
+
+    對每個抽出的 entity_id:
+    - 若 `Mid_Term/<entity_id>.md` 不存在 → 建檔, lifecycle_state=mid, mention_count=1
+    - 若已存在且非 pinned → mention_count +1, 加 subsection 記這次 session
+    - 若已存在且 pinned → 跳過 mention_count 累計 (pinned baseline 不被熱度干擾)
+
+    Args:
+        vault_root: vault 根目錄
+        daily_flush_path: 來源 daily_flush 路徑 (相對 vault, 例 `11_AI_Mirror/ingestion_logs/daily_flush/2026-05-16.md`)
+        session_id: 對應 session id (給 traceability)
+        max_entities_per_flush: 一個 daily_flush 最多處理幾個 entity (避免 noise 炸 Mid_Term/)
+
+    Returns:
+        dict: {processed_entities, created, updated, skipped_pinned, daily_flush_path, error?}
+    """
+
+    root = Path(vault_root).expanduser().resolve()
+    adapter = ObsidianVaultAdapter(root)
+    daily_note = adapter.read_note(daily_flush_path)
+    if daily_note is None:
+        return {
+            "error": f"daily_flush not found: {daily_flush_path}",
+            "processed_entities": [],
+            "created": [],
+            "updated": [],
+            "skipped_pinned": [],
+        }
+
+    entities = extract_entities_from_text(daily_note.body, max_entities=max_entities_per_flush)
+    if not entities:
+        return {
+            "processed_entities": [],
+            "created": [],
+            "updated": [],
+            "skipped_pinned": [],
+            "daily_flush_path": daily_flush_path,
+        }
+
+    created: list[str] = []
+    updated: list[str] = []
+    skipped_pinned: list[str] = []
+    now_iso = _now_local_iso()
+
+    for entity_id in entities:
+        target_path = f"{MIDTERM_DIR_RELATIVE}/{entity_id}.md"
+        existing = adapter.read_note(target_path)
+
+        if existing is None:
+            # 第一次遇到此 entity → 建中期檔
+            note = MemoryNote(
+                path=target_path,
+                frontmatter=Frontmatter(
+                    type=MemoryType.CONCEPT,
+                    source=MemorySource.PROMOTION,
+                    tags=["mid_term", "aggregated"],
+                    agent="entity-aggregator",
+                    lifecycle_state=LifecycleState.MID,
+                    mention_count=1,
+                    last_activity_at=now_iso,
+                    pinned=False,
+                    extras={
+                        "source_daily_flush": daily_flush_path,
+                        "first_session": session_id,
+                    },
+                ),
+                body=(
+                    f"# {entity_id}\n\n"
+                    "## 來源\n\n"
+                    f"- 第一次提及: `{daily_flush_path}` ({now_iso})\n"
+                    f"- session: `{session_id}`\n\n"
+                    "## 累積提及\n\n"
+                    f"- {now_iso} session=`{session_id}` from `{daily_flush_path}`\n\n"
+                    "> 此檔由 entity-aggregator 自動建立 (R7 C17 短→中聚合).\n"
+                    "> Mid_Term 為「可變」層: LLM 對話可改寫此檔以累積上下文.\n"
+                    "> 當 `mention_count >= 3` + stable_age >= 7d + no-edit >= 3d 後 curator 會升格到長期 (Concepts/Facts/MEMORY).\n"
+                ),
+            )
+            adapter.write_note(note)
+            created.append(entity_id)
+            continue
+
+        # 已存在
+        fm = existing.frontmatter
+        if fm.pinned:
+            # pinned 跳過累計 (避免 hot entity 干擾)
+            skipped_pinned.append(entity_id)
+            continue
+
+        # 累計 mention + last_activity_at + body subsection
+        fm.mention_count += 1
+        fm.last_activity_at = now_iso
+        # 若 lifecycle_state 已是 long/stale/archived (例如曾升格再被降回) 不要拉回 mid
+        if fm.lifecycle_state in (LifecycleState.SHORT,):
+            fm.lifecycle_state = LifecycleState.MID
+        new_block = f"- {now_iso} session=`{session_id}` from `{daily_flush_path}`"
+        if new_block.strip() not in existing.body:
+            existing.body = existing.body.rstrip() + "\n" + new_block + "\n"
+        existing.frontmatter = fm
+        adapter.write_note(existing)
+        updated.append(entity_id)
+
+    return {
+        "processed_entities": entities,
+        "created": created,
+        "updated": updated,
+        "skipped_pinned": skipped_pinned,
+        "daily_flush_path": daily_flush_path,
+    }
+
+
+def list_midterm_entries(
+    vault_root: Path,
+    *,
+    min_mention_count: int = 0,
+    only_unpromoted: bool = True,
+) -> list[dict[str, Any]]:
+    """列出 Mid_Term/ 內所有 entity (給 curator weekly 升長期掃描用, C19 會接).
+
+    Args:
+        min_mention_count: 過濾 mention_count 達標的
+        only_unpromoted: True → 只回未升格 (lifecycle_state=mid). 升格後變 long / stale / archived 就不再回.
+
+    Returns: list of {path, entity_id, mention_count, last_activity_at, lifecycle_state, pinned, created}
+    """
+
+    root = Path(vault_root).expanduser().resolve()
+    mid_dir = root / MIDTERM_DIR_RELATIVE
+    if not mid_dir.exists():
+        return []
+
+    adapter = ObsidianVaultAdapter(root)
+    rows: list[dict[str, Any]] = []
+    for path_obj in sorted(mid_dir.glob("*.md")):
+        if path_obj.name.startswith("_"):
+            # 跳過 _DIR_INFO.md / _Example_*.md 之類底線開頭的非 entity 檔
+            continue
+        rel = str(path_obj.relative_to(root)).replace("\\", "/")
+        note = adapter.read_note(rel)
+        if note is None:
+            continue
+        fm = note.frontmatter
+        if fm.mention_count < min_mention_count:
+            continue
+        if only_unpromoted and fm.lifecycle_state != LifecycleState.MID:
+            continue
+        rows.append({
+            "path": rel,
+            "entity_id": path_obj.stem,
+            "mention_count": fm.mention_count,
+            "last_activity_at": fm.last_activity_at,
+            "lifecycle_state": fm.lifecycle_state.value,
+            "pinned": fm.pinned,
+            "created": fm.created.isoformat() if fm.created else "",
+        })
+    return rows
