@@ -23,6 +23,7 @@ _CANONICAL_ZH_PURPOSE: dict[str, str] = {
     "10_Permanent/Facts": "事實記憶",
     "10_Permanent/Concepts": "概念記憶",
     "10_Permanent/Manual_Inputs": "使用者投餵記憶區",
+    "10_Permanent/Mid_Term": "中期可變記憶區（升格過渡層）",
     "11_AI_Mirror": "AI 鏡像層",
     "11_AI_Mirror/90_to_80": "日誌降噪鏡像",
     "11_AI_Mirror/external_ingest": "外部資料鏡像",
@@ -43,6 +44,7 @@ _CANONICAL_ZH_PURPOSE: dict[str, str] = {
     "80_Fleeting": "暫存靈感層（唯讀來源）",
     "90_Daily_Journal": "日誌原始層（唯讀）",
     "99_Archive": "封存層",
+    "99_Archive/auto_archived": "自動封存區（curator 180d 無命中移入）",
 }
 
 

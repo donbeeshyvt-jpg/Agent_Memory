@@ -57,6 +57,29 @@ class SecurityLevel(str, Enum):
     CONFIDENTIAL = "confidential"
 
 
+class LifecycleState(str, Enum):
+    """三層升降格狀態 (Round 7 C16). 對應 V2_Round7 §2-§4.
+
+    跟 etl_status 互補:
+    - etl_status     描述「資料成熟度」(raw → processing → internalised → archived)
+    - lifecycle_state 描述「升降格狀態」(short → mid → long → stale → archived)
+    - 一個檔可能 etl_status=internalised + lifecycle_state=stale (已升長期但 90d 無命中)
+
+    狀態:
+    - short    : 短期 (Session_Logs / daily_flush) — N1=2 + 24h grace + 跨 2 session → mid
+    - mid      : 中期可變 (10_Permanent/Mid_Term/) — N2=3 + stable≥7d + no-edit≥3d → long
+    - long     : 長期凍結 (MEMORY/Profiles/Facts/Concepts/Manual_Inputs) — 90d 無命中 → stale
+    - stale    : 標記但保留位置 — 180d 無命中 → archived
+    - archived : 已移到 99_Archive/auto_archived/<YYYY>/ (不刪檔, pinned 可保護)
+    """
+
+    SHORT = "short"
+    MID = "mid"
+    LONG = "long"
+    STALE = "stale"
+    ARCHIVED = "archived"
+
+
 @dataclass(slots=True)
 class Frontmatter:
     """Standard frontmatter schema for memory markdown.
@@ -67,6 +90,12 @@ class Frontmatter:
     - security_level: 權限分級 (見 SecurityLevel enum)
     - aliases: 同義詞 (BM25 命中提升, GraphRAG entity link)
 
+    Round 7 新增 (commit C16):
+    - lifecycle_state: 升降格狀態 (見 LifecycleState enum)
+    - mention_count: 累計被提及次數 (短→中升 N1=2 / 中→長升 N2=3 用)
+    - last_activity_at: 最後一次被 RAG 命中 / LLM 動到的時間 (本機時區 ISO, 含 offset)
+    - pinned: 使用者保護旗標 (true → curator 永遠跳過自動降級, hermes 抄)
+
     背向相容: 既有檔 YAML 缺欄位時, parse 用 sensible default.
     """
 
@@ -76,15 +105,21 @@ class Frontmatter:
     updated: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     agent: str = "agent-memory-core"
     status: str = "active"
-    schema_version: int = 2  # bump: V2 加 3 欄位 + aliases
+    schema_version: int = 3  # bump: R7 加 4 欄 (lifecycle_state / mention_count / last_activity_at / pinned)
     tags: list[str] = field(default_factory=list)
     char_count: int = 0
     extras: dict[str, Any] = field(default_factory=dict)
-    # V2 新欄位
+    # V2 新欄位 (C1)
     ai_ready: bool = True
     etl_status: EtlStatus = EtlStatus.PROCESSING
     security_level: SecurityLevel = SecurityLevel.SAFE_DATA
     aliases: list[str] = field(default_factory=list)
+    # Round 7 新欄位 (C16) — 預設 long + pinned False 是「最保守安全」選擇
+    # daily_flush / session_log 寫入時 caller 自行明示 lifecycle_state=SHORT
+    lifecycle_state: LifecycleState = LifecycleState.LONG
+    mention_count: int = 0
+    last_activity_at: str = ""  # 空字串表示從未被命中, 本機時區 ISO with offset (例: 2026-05-16T14:30:00+08:00)
+    pinned: bool = False
 
 
 @dataclass(slots=True)

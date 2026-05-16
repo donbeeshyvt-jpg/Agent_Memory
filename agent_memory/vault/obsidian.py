@@ -23,7 +23,7 @@ from agent_memory.security.atomic import atomic_write
 from agent_memory.security.locks import file_lock
 from agent_memory.security.scanner import scan_memory_content
 from agent_memory.transport_profiles import ensure_transport_profiles_file
-from agent_memory.types import EtlStatus, Frontmatter, MemoryNote, MemorySource, MemoryType, SecurityLevel
+from agent_memory.types import EtlStatus, Frontmatter, LifecycleState, MemoryNote, MemorySource, MemoryType, SecurityLevel
 from agent_memory.vault.adapter import VaultAdapter
 
 _READONLY_PREFIXES = ("20_Literature/", "80_Fleeting/", "90_Daily_Journal/")
@@ -56,6 +56,7 @@ _SKELETON_DIRS = (
     "10_Permanent/Facts",
     "10_Permanent/Concepts",
     "10_Permanent/Manual_Inputs",
+    "10_Permanent/Mid_Term",  # R7 C16: 中期可變記憶區 (升格過渡層)
     "11_AI_Mirror",
     "11_AI_Mirror/90_to_80",
     "11_AI_Mirror/external_ingest",
@@ -76,6 +77,7 @@ _SKELETON_DIRS = (
     "80_Fleeting",
     "90_Daily_Journal",
     "99_Archive",
+    "99_Archive/auto_archived",  # R7 C16: 自動封存區 (curator 180d archive 落點)
     ".ai",
     ".obsidian",
 )
@@ -170,6 +172,8 @@ class ObsidianVaultAdapter(VaultAdapter):
                     source=MemorySource.USER,
                     tags=["profile", "baseline"],
                     etl_status=EtlStatus.INTERNALISED,  # 永久層 baseline
+                    lifecycle_state=LifecycleState.LONG,  # R7 C16: baseline = 長期凍結
+                    pinned=True,  # R7 C16: 永遠不被自動降級 (hermes pinned 抄)
                 ),
                 body=(
                     "# USER\n\n"
@@ -196,6 +200,8 @@ class ObsidianVaultAdapter(VaultAdapter):
                     source=MemorySource.AGENT,
                     tags=["memory", "baseline"],
                     etl_status=EtlStatus.INTERNALISED,  # 永久層 baseline
+                    lifecycle_state=LifecycleState.LONG,  # R7 C16: baseline = 長期凍結
+                    pinned=True,  # R7 C16: 永遠不被自動降級 (hermes pinned 抄)
                 ),
                 body=(
                     "# MEMORY\n\n"
@@ -662,6 +668,32 @@ class ObsidianVaultAdapter(VaultAdapter):
         except ValueError:
             security_level = SecurityLevel.SAFE_DATA
 
+        # R7 C16 schema_version=3 — 新 4 欄, 背向相容 parse:
+        # 缺 lifecycle_state 預設 long (最保守安全, 不被誤降級)
+        # 缺 mention_count 預設 0; 缺 last_activity_at 預設 "" (從未命中)
+        # 缺 pinned 預設 False
+        lifecycle_raw = str(payload.get("lifecycle_state", "long")).strip().lower()
+        try:
+            lifecycle_state = LifecycleState(lifecycle_raw)
+        except ValueError:
+            lifecycle_state = LifecycleState.LONG
+
+        try:
+            mention_count = int(payload.get("mention_count", 0))
+            if mention_count < 0:
+                mention_count = 0
+        except (TypeError, ValueError):
+            mention_count = 0
+
+        last_activity_raw = payload.get("last_activity_at", "")
+        last_activity_at = str(last_activity_raw).strip() if last_activity_raw else ""
+
+        pinned_raw = payload.get("pinned", False)
+        if isinstance(pinned_raw, str):
+            pinned = pinned_raw.strip().lower() in ("true", "yes", "1")
+        else:
+            pinned = bool(pinned_raw)
+
         return Frontmatter(
             type=mtype,
             source=source,
@@ -677,6 +709,10 @@ class ObsidianVaultAdapter(VaultAdapter):
             etl_status=etl_status,
             security_level=security_level,
             aliases=[str(a) for a in aliases],
+            lifecycle_state=lifecycle_state,
+            mention_count=mention_count,
+            last_activity_at=last_activity_at,
+            pinned=pinned,
         )
 
     def _frontmatter_to_dict(self, fm: Frontmatter) -> dict:
@@ -696,5 +732,10 @@ class ObsidianVaultAdapter(VaultAdapter):
             "etl_status": fm.etl_status.value if hasattr(fm.etl_status, "value") else str(fm.etl_status),
             "security_level": fm.security_level.value if hasattr(fm.security_level, "value") else str(fm.security_level),
             "aliases": fm.aliases,
+            # R7 schema (commit C16) — lifecycle 升降格四欄
+            "lifecycle_state": fm.lifecycle_state.value if hasattr(fm.lifecycle_state, "value") else str(fm.lifecycle_state),
+            "mention_count": fm.mention_count,
+            "last_activity_at": fm.last_activity_at,
+            "pinned": fm.pinned,
         }
 
