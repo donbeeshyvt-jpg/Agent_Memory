@@ -299,13 +299,24 @@ def run_chat_turn(
     # 對齊使用者期待: 升格應該自動, 不該依賴手動 menu [D] / schtasks 排程.
     # transport_ingest 內也會呼叫 — 同檔 import 多次冪等 (counter 不會重複累加).
     auto_evolve_status: dict[str, Any] = {}
+    curator_status: dict[str, Any] = {}
     # 跳過 wizard-verify 等非真實使用者對話 (context 標記)
-    if "wizard" not in (context or "").lower() and "verify" not in (context or "").lower():
+    is_real_chat = "wizard" not in (context or "").lower() and "verify" not in (context or "").lower()
+    if is_real_chat:
         try:
             from agent_memory.auto_evolve import maybe_trigger_promotion
             auto_evolve_status = maybe_trigger_promotion(adapter.vault_root)
         except Exception:  # noqa: BLE001
             auto_evolve_status = {}
+
+        # R7 C18: curator idle-trigger — 更 last_chat_at + 檢查 should_run_now → 背景 thread
+        # 跟 C15 auto_evolve 並存分工: auto_evolve 是 chat-counter 即時; curator 是 idle time-based
+        try:
+            from agent_memory.curator import record_chat_ended, maybe_trigger_curator
+            record_chat_ended(adapter.vault_root)
+            curator_status = maybe_trigger_curator(adapter.vault_root, background=True)
+        except Exception:  # noqa: BLE001
+            curator_status = {}
 
     return {
         "persona": persona,
@@ -323,4 +334,5 @@ def run_chat_turn(
         "agent_tool_calls": agent_tool_results,  # Phase A C3 (A.5)
         "memory_context_hits": memory_context_hits,  # Phase A C6 (dynamic fence)
         "auto_evolve": auto_evolve_status,  # Phase A C15
+        "curator": curator_status,  # R7 C18
     }

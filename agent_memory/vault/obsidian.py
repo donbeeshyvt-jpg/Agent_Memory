@@ -279,6 +279,12 @@ class ObsidianVaultAdapter(VaultAdapter):
         ensure_channel_bindings_file(self._root, overwrite=False)
         ensure_transport_profiles_file(self._root, overwrite=False)
         ensure_persona_governance_file(self._root, overwrite=False)
+        # R7 C18: bootstrap promotion.yaml (curator config) — lazy import 避免循環
+        try:
+            from agent_memory.curator import ensure_promotion_config_file
+            ensure_promotion_config_file(self._root, overwrite=False)
+        except Exception:  # noqa: BLE001
+            pass
         self.ensure_runtime_profile_scaffold(overwrite=False)
         self.ensure_brain_manifest(owner_id="owner", brain_id=None, overwrite=False)
         self.ensure_brain_scope_doc(overwrite=False)
