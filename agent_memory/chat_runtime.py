@@ -85,6 +85,27 @@ def run_chat_turn(
     except Exception:  # noqa: BLE001
         skill_proposal_resolved = {}
 
+    # R8 C24: 對話開頭 parse 使用者是否在 dismiss 上次的 gap 提問
+    # (跟 skill 提議 dismiss 走不同 keyword set: 稍後/跳過/不要 vs 升格/好)
+    gap_resolved: dict[str, Any] = {}
+    try:
+        from agent_memory.gap_analysis import (
+            parse_gap_intent,
+            load_pending_gaps,
+            dismiss_gap,
+        )
+        gap_intent = parse_gap_intent(message)
+        if gap_intent == "dismiss":
+            pending_gaps = load_pending_gaps(adapter.vault_root)
+            target_gap = next(
+                (g for g in pending_gaps if not g.get("resolved_at") and not g.get("dismissed_at")),
+                None,
+            )
+            if target_gap:
+                gap_resolved = dismiss_gap(adapter.vault_root, gap_id=target_gap["gap_id"])
+    except Exception:  # noqa: BLE001
+        gap_resolved = {}
+
     hist_path = session_note_path(
         adapter,
         persona_id=persona,
@@ -348,7 +369,9 @@ def run_chat_turn(
 
     # R7 C20b: response 末端貼最多 1 個 skill 升格提議 (取代 menu gate, 使用者拍板)
     # 跳過 wizard/verify context. proposal 從 .ai/pending_skill_suggestions.json 拉.
+    # R8 C24: skill 提議優先;若沒 skill 提議再考慮 user gap 提問 (每 response 最多 1 個 footer)
     skill_proposal_offered: dict[str, Any] | None = None
+    gap_offered: dict[str, Any] | None = None
     if is_real_chat:
         try:
             from agent_memory.skill_suggestions import (
@@ -361,6 +384,20 @@ def run_chat_turn(
                 skill_proposal_offered = proposal
         except Exception:  # noqa: BLE001
             skill_proposal_offered = None
+
+        # R8 C24: 若上面沒貼 skill 提議, 看是否有 user gap 要問 (max 1 footer per response)
+        if skill_proposal_offered is None:
+            try:
+                from agent_memory.gap_analysis import (
+                    pick_next_gap,
+                    build_gap_footer,
+                )
+                gap = pick_next_gap(adapter.vault_root, auto_dismiss_days=14)
+                if gap:
+                    response_text = response_text.rstrip() + build_gap_footer(gap)
+                    gap_offered = gap
+            except Exception:  # noqa: BLE001
+                gap_offered = None
 
     return {
         "persona": persona,
@@ -381,4 +418,6 @@ def run_chat_turn(
         "curator": curator_status,  # R7 C18
         "skill_proposal_offered": skill_proposal_offered,  # R7 C20b (footer 貼了什麼)
         "skill_proposal_resolved": skill_proposal_resolved,  # R7 C20b (使用者回應動作)
+        "gap_offered": gap_offered,  # R8 C24 (user gap 提問 footer)
+        "gap_resolved": gap_resolved,  # R8 C24 (使用者 dismiss gap)
     }

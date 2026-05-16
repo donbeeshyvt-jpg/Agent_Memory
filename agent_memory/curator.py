@@ -428,6 +428,18 @@ def run_weekly_deep(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any
     except Exception as exc:  # noqa: BLE001
         result["steps"]["skill_suggestions_scan"] = {"error": str(exc)}
 
+    # Step 4 (R8 C24): user gap scan (USER.md 空欄位 + Mid_Term 高頻 entity 不在 USER)
+    try:
+        from agent_memory.gap_analysis import scan_user_gaps
+        gap_scan = scan_user_gaps(root, cooldown_days=7, min_midterm_mention=3)
+        result["steps"]["user_gaps_scan"] = {
+            "new_added_count": len(gap_scan.get("new_added", [])),
+            "skipped_count": len(gap_scan.get("skipped", [])),
+            "total_pending": gap_scan.get("total_pending", 0),
+        }
+    except Exception as exc:  # noqa: BLE001
+        result["steps"]["user_gaps_scan"] = {"error": str(exc)}
+
     result["ended_at"] = _now_local_iso()
     _append_curator_log(root, result)
     return result
