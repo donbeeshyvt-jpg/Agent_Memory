@@ -456,6 +456,27 @@ def _build_parser() -> argparse.ArgumentParser:
     wikilinks.add_argument("--json", action="store_true", help="Print result as JSON.")
     wikilinks.set_defaults(func=_cmd_wikilinks_graph)
 
+    # R7 C22: curator status / force-run / skill-suggestions inspection CLI
+    curator_status = sub.add_parser("curator-status", help="R7 curator — show state + should_run_now diagnosis.")
+    curator_status.add_argument("--json", action="store_true", help="Print as JSON.")
+    curator_status.set_defaults(func=_cmd_curator_status)
+
+    curator_force = sub.add_parser("curator-force-run", help="R7 curator — force-run skipping should_run_now check.")
+    curator_force.add_argument("--mode", choices=["daily", "weekly"], default="daily", help="daily light or weekly deep.")
+    curator_force.add_argument("--json", action="store_true", help="Print as JSON.")
+    curator_force.set_defaults(func=_cmd_curator_force_run)
+
+    skill_sugg = sub.add_parser("skill-suggestions-list", help="R7 C20b — list pending skill upgrade suggestions.")
+    skill_sugg.add_argument("--include-resolved", action="store_true", help="Include dismissed/promoted entries.")
+    skill_sugg.add_argument("--json", action="store_true", help="Print as JSON.")
+    skill_sugg.set_defaults(func=_cmd_skill_suggestions_list)
+
+    midterm_list = sub.add_parser("midterm-list", help="R7 — list 10_Permanent/Mid_Term entries (entity 累積狀態).")
+    midterm_list.add_argument("--min-mention", type=int, default=0, help="Filter mention_count >= N.")
+    midterm_list.add_argument("--all", action="store_true", help="Include promoted/stale/archived (default only mid).")
+    midterm_list.add_argument("--json", action="store_true", help="Print as JSON.")
+    midterm_list.set_defaults(func=_cmd_midterm_list)
+
     persona_create = sub.add_parser("persona-create", help="Create one persona proposal.")
     persona_create.add_argument("--display-name", required=True, help="Persona display name.")
     persona_create.add_argument("--persona-id", default=None, help="Optional explicit persona id.")
@@ -1766,6 +1787,159 @@ def _cmd_wikilinks_graph(args: argparse.Namespace) -> int:
 
     print(f"[ERR] unknown action: {action}")
     return 1
+
+
+# ─── R7 C22: Curator observability + power user force-run ────────────────────
+
+
+def _cmd_curator_status(args: argparse.Namespace) -> int:
+    """Show curator state + should_run_now diagnosis for daily/weekly."""
+    import json as _json
+    from agent_memory.curator import (
+        load_state, load_config, should_run_now, _now_local,
+    )
+
+    adapter = _build_adapter(args)
+    vault = adapter.vault_root
+    state = load_state(vault)
+    config = load_config(vault)
+    now = _now_local()
+    daily_ok, daily_reason = should_run_now(state, config, "daily", now=now)
+    weekly_ok, weekly_reason = should_run_now(state, config, "weekly", now=now)
+
+    payload = {
+        "vault_root": str(vault),
+        "now_local": now.isoformat(),
+        "config": {
+            "daily_interval_hours": config.daily_interval_hours,
+            "weekly_interval_hours": config.weekly_interval_hours,
+            "min_idle_hours": config.min_idle_hours,
+            "first_run_defer": config.first_run_defer,
+            "paused": config.paused,
+            "circuit_breaker_max_failures": config.circuit_breaker_max_failures,
+        },
+        "state": state.to_dict(),
+        "daily": {"ok": daily_ok, "reason": daily_reason},
+        "weekly": {"ok": weekly_ok, "reason": weekly_reason},
+    }
+    if args.json:
+        print(_json.dumps(payload, ensure_ascii=False, indent=2))
+        return 0
+
+    print("Curator state (R7 C18):")
+    print(f"  now (本機時區): {payload['now_local']}")
+    print(f"  last_daily_run_at  : {state.last_daily_run_at}")
+    print(f"  last_weekly_run_at : {state.last_weekly_run_at}")
+    print(f"  last_chat_at       : {state.last_chat_at}")
+    print(f"  consecutive_failures: {state.consecutive_failures}")
+    print()
+    print("Should run now (AND 條件):")
+    print(f"  daily  : ok={daily_ok:5} reason={daily_reason}")
+    print(f"  weekly : ok={weekly_ok:5} reason={weekly_reason}")
+    print()
+    print("Config:")
+    print(f"  daily_interval = {config.daily_interval_hours}h, weekly_interval = {config.weekly_interval_hours}h")
+    print(f"  min_idle = {config.min_idle_hours}h, paused = {config.paused}")
+    return 0
+
+
+def _cmd_curator_force_run(args: argparse.Namespace) -> int:
+    """Force-run curator (skip should_run_now)."""
+    import json as _json
+    from agent_memory.curator import force_run
+
+    adapter = _build_adapter(args)
+    mode = (args.mode or "daily").strip().lower()
+    if mode not in ("daily", "weekly"):
+        print(f"[ERR] unknown mode: {mode}")
+        return 1
+    result = force_run(adapter.vault_root, mode)
+    if args.json:
+        print(_json.dumps(result, ensure_ascii=False, indent=2, default=str))
+        return 0
+
+    print(f"[OK] curator force_run ({mode}) — started_at={result.get('started_at')} ended_at={result.get('ended_at')}")
+    if mode == "daily":
+        print(f"  scanned_flushes: {result.get('scanned_flushes', 0)}")
+        print(f"  aggregated entries: {len(result.get('aggregated', []))}")
+        umbrella = result.get("umbrella", {})
+        print(f"  umbrella groups: {umbrella.get('groups_count', 0)}, consolidated: {umbrella.get('consolidated_count', 0)}")
+    else:
+        steps = result.get("steps", {})
+        promote = steps.get("promote_midterm_to_long", {})
+        demote = steps.get("demote_long", {})
+        skill = steps.get("skill_suggestions_scan", {})
+        print(f"  promote_midterm_to_long: promoted={promote.get('promoted_count', 0)} candidates={promote.get('candidates_count', 0)}")
+        print(f"  demote_long           : staled={demote.get('staled_count', 0)} archived={demote.get('archived_count', 0)}")
+        print(f"  skill_suggestions_scan: new={skill.get('new_added_count', 0)} pending_total={skill.get('total_pending', 0)}")
+    errors = result.get("errors", [])
+    if errors:
+        print(f"  errors: {errors}")
+    return 0
+
+
+def _cmd_skill_suggestions_list(args: argparse.Namespace) -> int:
+    """List R7 C20b pending skill upgrade suggestions."""
+    import json as _json
+    from agent_memory.skill_suggestions import load_pending
+
+    adapter = _build_adapter(args)
+    pending = load_pending(adapter.vault_root)
+    include_resolved = bool(args.include_resolved)
+
+    visible = [
+        s for s in pending
+        if include_resolved or (not s.get("dismissed_at") and not s.get("promoted_to"))
+    ]
+
+    if args.json:
+        print(_json.dumps(visible, ensure_ascii=False, indent=2))
+        return 0
+
+    if not visible:
+        print("[INFO] 沒有 pending skill 升格提議.")
+        print("  (curator weekly deep run 才會 scan; 也要 Mid_Term 有 tag 含 procedure/workflow/steps 的檔)")
+        return 0
+
+    print(f"[OK] pending skill suggestions ({len(visible)}):")
+    for s in visible:
+        marker = "✓" if s.get("promoted_to") else ("✗" if s.get("dismissed_at") else "·")
+        print(f"  {marker} {s.get('entity_id', '')} (mention={s.get('mention_count', 0)})")
+        print(f"      summary: {s.get('summary', '')[:100]}")
+        print(f"      source : {s.get('source_path', '')}")
+        print(f"      proposed_at: {s.get('proposed_at', '')}")
+        if s.get("promoted_to"):
+            print(f"      promoted_to: {s.get('promoted_to')}")
+        if s.get("dismissed_at"):
+            print(f"      dismissed_at: {s.get('dismissed_at')} reason={s.get('dismiss_reason', '')}")
+    return 0
+
+
+def _cmd_midterm_list(args: argparse.Namespace) -> int:
+    """List Mid_Term/ entries (R7 中期記憶累積狀態)."""
+    import json as _json
+    from agent_memory.memory_promotion import list_midterm_entries
+
+    adapter = _build_adapter(args)
+    entries = list_midterm_entries(
+        adapter.vault_root,
+        min_mention_count=max(0, int(args.min_mention)),
+        only_unpromoted=not bool(args.all),
+    )
+
+    if args.json:
+        print(_json.dumps(entries, ensure_ascii=False, indent=2))
+        return 0
+
+    if not entries:
+        print("[INFO] Mid_Term/ 還沒有 entity. 觸發條件: 對話累積 daily_flush 後 curator daily light idle 2h+24h 跑.")
+        return 0
+
+    print(f"[OK] Mid_Term entries ({len(entries)}):")
+    for e in entries:
+        pin_marker = " 📌" if e.get("pinned") else ""
+        print(f"  {e['entity_id']:30s} mention={e['mention_count']:3d}  state={e['lifecycle_state']:8s}  last_active={e['last_activity_at']}{pin_marker}")
+    return 0
 
 
 def _cmd_promote_cycle(args: argparse.Namespace) -> int:

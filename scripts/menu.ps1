@@ -630,21 +630,54 @@ function Invoke-PersonaManager {
 function Invoke-DaemonManager {
     Write-Host ""
     Write-Border "─"
-    Write-Host "  [自動進化排程] ETL daemon" -ForegroundColor $TitleColor
+    Write-Host "  [自動進化排程] R7 Curator + 舊 daemon" -ForegroundColor $TitleColor
     Write-Border "─"
     Write-Host ""
-    Write-Host "  daemon 會自動跑:" -ForegroundColor DarkGray
-    Write-Host "    - promote-cycle (短期記憶 -> 長期升格)" -ForegroundColor DarkGray
-    Write-Host "    - skill-maintain (技能 lifecycle 維護)" -ForegroundColor DarkGray
-    Write-Host "  log 寫到 <vault>/11_AI_Mirror/ingestion_logs/daemon_runs.jsonl" -ForegroundColor DarkGray
+    Write-Host "  ★ R7 curator (新, 對話自動 idle-trigger): 不需手動跑, 對話 idle 2h+24h/7d 自動跑" -ForegroundColor Green
+    Write-Host "    daily light : 短→中聚合 (Mid_Term) + umbrella 合併" -ForegroundColor DarkGray
+    Write-Host "    weekly deep : 中→長升格 + 90/180d 降級 + skill 升格提議" -ForegroundColor DarkGray
+    Write-Host "  log: <vault>/11_AI_Mirror/ingestion_logs/curator_runs.jsonl" -ForegroundColor DarkGray
     Write-Host ""
-    Write-Host "    [1] 立刻跑一次 (測試 daemon)" -ForegroundColor White
-    Write-Host "    [2] 顯示排程命令 (你複製去 cmd / PowerShell 跑來設定每日 3am 自動跑)" -ForegroundColor White
-    Write-Host "    [3] 看最近一次 daemon log" -ForegroundColor White
+    Write-Host "    [C] 看 R7 curator 狀態 (state + 距下次跑還多久)" -ForegroundColor White
+    Write-Host "    [4] 強制跑 R7 curator daily light  (短→中)" -ForegroundColor White
+    Write-Host "    [5] 強制跑 R7 curator weekly deep (中→長 + skill 提議)" -ForegroundColor White
+    Write-Host "    [S] 看 R7 pending skill 升格提議清單" -ForegroundColor White
+    Write-Host "    [M] 看 R7 Mid_Term 累積 (entity 列表)" -ForegroundColor White
+    Write-Host ""
+    Write-Host "  舊 daemon (legacy, promote-cycle 舊路徑):" -ForegroundColor DarkGray
+    Write-Host "    [1] 立刻跑一次舊 daemon" -ForegroundColor DarkGray
+    Write-Host "    [2] 顯示 schtasks 排程命令" -ForegroundColor DarkGray
+    Write-Host "    [3] 看舊 daemon log" -ForegroundColor DarkGray
+    Write-Host ""
     Write-Host "    [B] 回主選單" -ForegroundColor DarkGray
     Write-Host ""
-    $sub = (Read-Host "  選 [1-3/B]").Trim().ToUpper()
+    $sub = (Read-Host "  選 [C/4/5/S/M/1/2/3/B]").Trim().ToUpper()
     switch ($sub) {
+        "C" {
+            $a = @("-m", "agent_memory", "curator-status")
+            if ($VaultRoot) { $a += @("--vault-root", $VaultRoot) }
+            & python @a
+        }
+        "4" {
+            $a = @("-m", "agent_memory", "curator-force-run", "--mode", "daily")
+            if ($VaultRoot) { $a += @("--vault-root", $VaultRoot) }
+            & python @a
+        }
+        "5" {
+            $a = @("-m", "agent_memory", "curator-force-run", "--mode", "weekly")
+            if ($VaultRoot) { $a += @("--vault-root", $VaultRoot) }
+            & python @a
+        }
+        "S" {
+            $a = @("-m", "agent_memory", "skill-suggestions-list")
+            if ($VaultRoot) { $a += @("--vault-root", $VaultRoot) }
+            & python @a
+        }
+        "M" {
+            $a = @("-m", "agent_memory", "midterm-list")
+            if ($VaultRoot) { $a += @("--vault-root", $VaultRoot) }
+            & python @a
+        }
         "1" {
             $args = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $PSScriptRoot "agent-memory-daemon.ps1"), "-Once")
             if ($VaultRoot) { $args += @("-VaultRoot", $VaultRoot) }
@@ -665,7 +698,7 @@ function Invoke-DaemonManager {
                     Write-Host "    $_" -ForegroundColor DarkGray
                 }
             } else {
-                Write-Host "  [INFO] daemon 還沒跑過, log 不存在" -ForegroundColor Yellow
+                Write-Host "  [INFO] 舊 daemon 還沒跑過, log 不存在" -ForegroundColor Yellow
                 Write-Host "    路徑: $logFile" -ForegroundColor DarkGray
             }
         }
