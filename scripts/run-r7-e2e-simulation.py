@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""R7 E2E simulation — 模擬完整使用者操作驗證自我進化迴圈 (R7 C23).
+"""R7 + R8 E2E simulation — 模擬完整使用者操作驗證自我進化 + 主動歸納迴圈 (R7 C23 + R8 C26).
 
-目的: 給接手 AI / 使用者 / regression 一個「跑一個指令看 R7 進化迴圈是否串通」的工具.
+目的: 給接手 AI / 使用者 / regression 一個「跑一個指令看 R7+R8 進化迴圈是否串通」的工具.
 
 模擬完整 e2e flow:
     1. Fresh vault bootstrap (ensure_skeleton)
@@ -426,6 +426,113 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         "promotion_events.md 寫入升降事件",
         promotion_events.exists() and promotion_events.stat().st_size > 0,
     )
+
+    # ─── Step 9 (R8 C24+C25+C26): 主動歸納驗證 — gap + weekly digest ───────
+    report.section("Step 9 (R8): 主動歸納 — user gap + weekly digest")
+
+    from agent_memory.gap_analysis import (
+        scan_user_gaps, pick_next_gap, parse_gap_intent, dismiss_gap, load_pending_gaps,
+    )
+    from agent_memory.weekly_digest import (
+        generate_weekly_digest, pick_undelivered_digest_footer, current_week_id, load_digest_state,
+    )
+
+    # 9.1 — gap scan: bootstrap USER.md 含「（請填寫）」應該抓到 + coffee.md (mention=5) 不在 USER.md 也抓
+    # 加 coffee Mid_Term entity 模擬高頻
+    adapter.write_note(MemoryNote(
+        path="10_Permanent/Mid_Term/coffee.md",
+        frontmatter=Frontmatter(
+            type=MemoryType.CONCEPT, source=MemorySource.PROMOTION,
+            tags=["mid_term"], lifecycle_state=LifecycleState.MID,
+            mention_count=5, pinned=False,
+        ),
+        body="# coffee\n\n使用者愛喝咖啡\n",
+    ))
+    gap_scan_result = scan_user_gaps(vault_root)
+    # Step 6 curator weekly 已 call scan_user_gaps 一次, placeholder 已進 pending. 第二次 scan 因 cooldown skip.
+    # 改看「pending 總清單」(weekly + 本次 coffee 加總)
+    full_pending = load_pending_gaps(vault_root)
+    report.step(
+        "gap scan 累積有 USER.md placeholder (curator weekly Step 6 已抓)",
+        any("placeholder" in g.get("gap_id", "") for g in full_pending),
+        f"pending gap_ids: {[g.get('gap_id') for g in full_pending]}",
+    )
+    report.step(
+        "gap scan 抓到 Mid_Term/coffee 不在 USER.md",
+        any("coffee" in g.get("gap_id", "") for g in full_pending),
+    )
+
+    # 9.2 — pick + dismiss
+    gap = pick_next_gap(vault_root)
+    report.step(
+        "pick_next_gap 拿到至少 1 個 gap",
+        gap is not None,
+        f"gap_id = {gap.get('gap_id') if gap else None}",
+    )
+
+    intent_dismiss = parse_gap_intent("跳過")
+    report.step(
+        "parse_gap_intent('跳過') → dismiss",
+        intent_dismiss == "dismiss",
+    )
+    intent_long = parse_gap_intent("這是我的偏好回覆語氣 (很長的答覆)")
+    report.step(
+        "parse_gap_intent(長句) → none (防誤判)",
+        intent_long == "none",
+    )
+
+    if gap:
+        d_result = dismiss_gap(vault_root, gap_id=gap["gap_id"])
+        report.step(
+            "dismiss_gap 標 dismissed",
+            d_result.get("action") == "dismissed",
+        )
+        # 確認下次 pick 不會再拿到同個
+        gap2 = pick_next_gap(vault_root)
+        report.step(
+            "dismiss 後 pick_next_gap 換下一個 (或 None)",
+            gap2 is None or gap2.get("gap_id") != gap["gap_id"],
+            f"now picked: {gap2.get('gap_id') if gap2 else None}",
+        )
+
+    # 9.3 — weekly digest 已由 curator weekly 跑時自動產 (Step 6 內)
+    digest_dir = vault_root / "11_AI_Mirror/ingestion_logs/weekly_digest"
+    digest_files = list(digest_dir.glob("*.md")) if digest_dir.exists() else []
+    report.step(
+        "weekly_digest/<YYYY-WW>.md 自動產生 (curator weekly Step 5)",
+        len(digest_files) >= 1,
+        f"digest files: {[p.name for p in digest_files]}",
+    )
+
+    state_path = vault_root / ".ai/weekly_digest_state.json"
+    report.step(
+        ".ai/weekly_digest_state.json 寫入",
+        state_path.exists(),
+    )
+
+    # 9.4 — pick footer first time → 拿到; 第二次同 week → None
+    footer1 = pick_undelivered_digest_footer(vault_root)
+    report.step(
+        "pick_undelivered_digest_footer 第一次拿到 footer",
+        footer1 is not None,
+    )
+    footer2 = pick_undelivered_digest_footer(vault_root)
+    report.step(
+        "pick_undelivered_digest_footer 同週第二次回 None (last_shown 已標)",
+        footer2 is None,
+    )
+
+    # 9.5 — 重生 digest (Step 7 升 skill 發生在 Step 6 curator weekly 之後, 需重新跑才會反映)
+    # 模擬「下週 curator weekly 跑」會把上週升的 skill 抓進來
+    fresh_digest = generate_weekly_digest(vault_root)
+    digest_path_abs = vault_root / fresh_digest["digest_path"]
+    if digest_path_abs.exists():
+        digest_text = digest_path_abs.read_text(encoding="utf-8")
+        report.step(
+            "重生 digest 後內含本輪升 Skill 紀錄 (grep-then-analyze)",
+            "grep-then-analyze" in digest_text,
+            f"digest size = {digest_path_abs.stat().st_size}",
+        )
 
     return report.summary()
 
