@@ -1072,6 +1072,192 @@ def demote_long_to_stale_or_archive(
     }
 
 
+# ─── R7 C20a: Umbrella consolidation (keyword-based, hermes 抄) ──────────────
+
+
+def consolidate_umbrella_keyword(
+    vault_root: Path,
+    *,
+    min_group_size: int = 2,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Daily light step: keyword-based umbrella consolidation (R7 C20a).
+
+    抄 hermes agent/curator.py:329-399 umbrella consolidation pattern, 簡化為 prefix-based:
+    - 切 entity_id by '-' 得 first segment
+    - 若同一 first_segment 有 >= min_group_size 個 Mid_Term entries → 建/補 umbrella
+
+    範例:
+        python-async.md + python-decorator.md + python-typing.md
+        → 新建 (或補) Mid_Term/python.md (umbrella) + 3 個 subsection
+        原 3 檔加 `<!-- umbrella'd into: ... -->` redirect marker + extras.umbrella_of
+
+    Design rule (V2_Round7 §5.3):
+    - 不刪原檔 (hermes "merge not delete" 模式)
+    - 已是 umbrella (tags 含 "umbrella") 自己不再被 consolidate
+    - lifecycle_state != mid 跳過 (升格過 / archived 不動)
+    - pinned 跳過
+
+    LLM-based deep consolidation (weekly) 留 C20a 後續 / Round 8.
+    """
+
+    root = Path(vault_root).expanduser().resolve()
+    adapter = ObsidianVaultAdapter(root)
+    mid_dir = root / MIDTERM_DIR_RELATIVE
+    if not mid_dir.exists():
+        return {
+            "min_group_size": min_group_size,
+            "dry_run": dry_run,
+            "groups": [],
+            "consolidated": [],
+            "skipped": [],
+        }
+
+    # 1) Group by first prefix segment
+    groups: dict[str, list[str]] = {}
+    for path_obj in sorted(mid_dir.glob("*.md")):
+        if path_obj.name.startswith("_"):
+            continue
+        eid = path_obj.stem
+        rel = str(path_obj.relative_to(root)).replace("\\", "/")
+        note = adapter.read_note(rel)
+        if note is None:
+            continue
+        if "umbrella" in note.frontmatter.tags:
+            continue
+        if note.frontmatter.lifecycle_state != LifecycleState.MID:
+            continue
+        if note.frontmatter.pinned:
+            continue
+        if "-" not in eid:
+            continue
+        prefix = eid.split("-", 1)[0]
+        if not prefix:
+            continue
+        groups.setdefault(prefix, []).append(eid)
+
+    consolidated: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    group_summary: list[dict[str, Any]] = []
+    now = datetime.now().astimezone()
+
+    for prefix, members in groups.items():
+        if len(members) < min_group_size:
+            continue  # 太少不算 group
+        group_summary.append({"prefix": prefix, "members": members})
+        if dry_run:
+            continue
+
+        umbrella_path = f"{MIDTERM_DIR_RELATIVE}/{prefix}.md"
+        umbrella_note = adapter.read_note(umbrella_path)
+        merged_mention = 0
+        member_summaries: list[str] = []
+
+        for eid in members:
+            mem_path = f"{MIDTERM_DIR_RELATIVE}/{eid}.md"
+            mem_note = adapter.read_note(mem_path)
+            if mem_note is None:
+                continue
+            merged_mention += mem_note.frontmatter.mention_count
+            # 抽 title (第一個 # heading) 當 summary
+            title = next(
+                (ln.lstrip("# ").strip() for ln in mem_note.body.splitlines() if ln.strip().startswith("#")),
+                eid,
+            )
+            member_summaries.append(
+                f"### {eid} (mention_count={mem_note.frontmatter.mention_count})\n- title: {title}\n- source: `{mem_path}`\n"
+            )
+            # member 加 redirect marker + extras
+            marker = f"<!-- umbrella'd into: {umbrella_path} @ {now.isoformat()} -->"
+            if marker not in mem_note.body:
+                mem_note.body = mem_note.body.rstrip() + "\n\n" + marker + "\n"
+            mem_note.frontmatter.extras["umbrella_of"] = umbrella_path
+            try:
+                adapter.write_note(mem_note)
+            except Exception as exc:  # noqa: BLE001
+                skipped.append({"path": mem_path, "reason": f"member_marker_error: {exc}"})
+
+        members_section = "\n".join(member_summaries) if member_summaries else "(no readable members)\n"
+        body = (
+            f"# {prefix} (umbrella)\n\n"
+            "## Umbrella 說明\n\n"
+            "- 此檔由 R7 C20a curator daily light **自動 keyword 合併**生成\n"
+            f"- 合併時間: {now.isoformat()}\n"
+            f"- 合併成員: {', '.join(members)}\n"
+            f"- 合併規則: entity_id 同一前綴 `{prefix}-*` 且 ≥ {min_group_size} 個\n"
+            "- hermes mode: 合併不刪, 子檔仍可被 RAG 個別命中\n\n"
+            "## 子節點摘要\n\n"
+            f"{members_section}\n"
+        )
+
+        if umbrella_note is None:
+            new_note = MemoryNote(
+                path=umbrella_path,
+                frontmatter=Frontmatter(
+                    type=MemoryType.CONCEPT,
+                    source=MemorySource.PROMOTION,
+                    tags=["umbrella", "mid_term", "consolidated"],
+                    agent="curator-umbrella",
+                    lifecycle_state=LifecycleState.MID,
+                    mention_count=merged_mention,
+                    last_activity_at=now.isoformat(),
+                    pinned=False,
+                    extras={
+                        "umbrella_prefix": prefix,
+                        "umbrella_members": members,
+                        "consolidated_at": now.isoformat(),
+                    },
+                ),
+                body=body,
+            )
+            try:
+                adapter.write_note(new_note)
+                consolidated.append({
+                    "umbrella": umbrella_path,
+                    "members": members,
+                    "merged_mention": merged_mention,
+                    "action": "created",
+                })
+            except Exception as exc:  # noqa: BLE001
+                skipped.append({"prefix": prefix, "reason": f"umbrella_create_error: {exc}"})
+        else:
+            # 已存在 umbrella, append 新 members 不重複
+            extras = umbrella_note.frontmatter.extras if isinstance(umbrella_note.frontmatter.extras, dict) else {}
+            existing_members = extras.get("umbrella_members", [])
+            if not isinstance(existing_members, list):
+                existing_members = []
+            new_members = [m for m in members if m not in existing_members]
+            if not new_members:
+                continue
+            umbrella_note.body = (
+                umbrella_note.body.rstrip()
+                + f"\n\n## 新合併 ({now.date().isoformat()})\n\n"
+                + members_section
+                + "\n"
+            )
+            umbrella_note.frontmatter.extras["umbrella_members"] = list(existing_members) + new_members
+            umbrella_note.frontmatter.mention_count = umbrella_note.frontmatter.mention_count + merged_mention
+            umbrella_note.frontmatter.last_activity_at = now.isoformat()
+            try:
+                adapter.write_note(umbrella_note)
+                consolidated.append({
+                    "umbrella": umbrella_path,
+                    "members": new_members,
+                    "merged_mention": merged_mention,
+                    "action": "appended",
+                })
+            except Exception as exc:  # noqa: BLE001
+                skipped.append({"prefix": prefix, "reason": f"umbrella_append_error: {exc}"})
+
+    return {
+        "min_group_size": min_group_size,
+        "dry_run": dry_run,
+        "groups": group_summary,
+        "consolidated": consolidated,
+        "skipped": skipped,
+    }
+
+
 def list_midterm_entries(
     vault_root: Path,
     *,

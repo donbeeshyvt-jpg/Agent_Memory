@@ -39,6 +39,7 @@ import yaml
 
 from agent_memory.memory_promotion import (
     aggregate_to_midterm,
+    consolidate_umbrella_keyword,
     demote_long_to_stale_or_archive,
     list_midterm_entries,
     promote_midterm_to_long,
@@ -357,6 +358,17 @@ def run_daily_light(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any
             result["aggregated"].append({"path": flush_path, **agg})
         except Exception as exc:  # noqa: BLE001
             result["errors"].append({"path": flush_path, "error": str(exc)})
+
+    # R7 C20a: keyword-based umbrella consolidation (daily light step 2)
+    try:
+        umbrella_result = consolidate_umbrella_keyword(root, dry_run=dry_run)
+        result["umbrella"] = {
+            "groups_count": len(umbrella_result.get("groups", [])),
+            "consolidated_count": len(umbrella_result.get("consolidated", [])),
+            "consolidated": umbrella_result.get("consolidated", []),
+        }
+    except Exception as exc:  # noqa: BLE001
+        result["errors"].append({"step": "umbrella", "error": str(exc)})
 
     result["ended_at"] = _now_local_iso()
     _append_curator_log(root, result)
