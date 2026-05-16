@@ -416,7 +416,17 @@ def run_weekly_deep(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any
     except Exception as exc:  # noqa: BLE001
         result["steps"]["demote_long"] = {"error": str(exc)}
 
-    # Step 3-5: umbrella consolidation (C20a) + skill 升格提議 (C20b) — 後續 commit 加
+    # Step 3: R7 C20b skill 升格提議 scan (寫 .ai/pending_skill_suggestions.json)
+    try:
+        from agent_memory.skill_suggestions import scan_skill_candidates
+        skill_scan = scan_skill_candidates(root, cooldown_days=7)
+        result["steps"]["skill_suggestions_scan"] = {
+            "new_added_count": len(skill_scan.get("new_added", [])),
+            "skipped_count": len(skill_scan.get("skipped", [])),
+            "total_pending": skill_scan.get("total_pending", 0),
+        }
+    except Exception as exc:  # noqa: BLE001
+        result["steps"]["skill_suggestions_scan"] = {"error": str(exc)}
 
     result["ended_at"] = _now_local_iso()
     _append_curator_log(root, result)

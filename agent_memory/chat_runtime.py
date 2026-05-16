@@ -57,6 +57,34 @@ def run_chat_turn(
     dialogue_prompt: str = "",
     shared_channel_history: str = "",
 ) -> dict[str, Any]:
+    # R7 C20b: 對話開頭 parse 使用者上一輪是否在回應「skill 升格提議」
+    # 只在「短輸入 + 純 keyword 開頭」時觸發, 避免「升職很爽」誤判
+    skill_proposal_resolved: dict[str, Any] = {}
+    try:
+        from agent_memory.skill_suggestions import (
+            parse_user_response_intent,
+            load_pending,
+            record_user_response,
+        )
+        intent = parse_user_response_intent(message)
+        if intent in ("accept", "decline"):
+            pending_list = load_pending(adapter.vault_root)
+            target_entry: dict[str, Any] | None = None
+            for entry in pending_list:
+                if entry.get("dismissed_at") or entry.get("promoted_to"):
+                    continue
+                target_entry = entry
+                break
+            if target_entry:
+                accept_flag = intent == "accept"
+                skill_proposal_resolved = record_user_response(
+                    adapter.vault_root,
+                    entity_id=target_entry["entity_id"],
+                    accept=accept_flag,
+                )
+    except Exception:  # noqa: BLE001
+        skill_proposal_resolved = {}
+
     hist_path = session_note_path(
         adapter,
         persona_id=persona,
@@ -318,6 +346,22 @@ def run_chat_turn(
         except Exception:  # noqa: BLE001
             curator_status = {}
 
+    # R7 C20b: response 末端貼最多 1 個 skill 升格提議 (取代 menu gate, 使用者拍板)
+    # 跳過 wizard/verify context. proposal 從 .ai/pending_skill_suggestions.json 拉.
+    skill_proposal_offered: dict[str, Any] | None = None
+    if is_real_chat:
+        try:
+            from agent_memory.skill_suggestions import (
+                pick_next_proposal,
+                build_chat_proposal_footer,
+            )
+            proposal = pick_next_proposal(adapter.vault_root, auto_dismiss_days=7)
+            if proposal:
+                response_text = response_text.rstrip() + build_chat_proposal_footer(proposal)
+                skill_proposal_offered = proposal
+        except Exception:  # noqa: BLE001
+            skill_proposal_offered = None
+
     return {
         "persona": persona,
         "context": context,
@@ -335,4 +379,6 @@ def run_chat_turn(
         "memory_context_hits": memory_context_hits,  # Phase A C6 (dynamic fence)
         "auto_evolve": auto_evolve_status,  # Phase A C15
         "curator": curator_status,  # R7 C18
+        "skill_proposal_offered": skill_proposal_offered,  # R7 C20b (footer 貼了什麼)
+        "skill_proposal_resolved": skill_proposal_resolved,  # R7 C20b (使用者回應動作)
     }
