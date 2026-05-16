@@ -843,6 +843,12 @@ def promote_midterm_to_long(
         if fm.pinned:
             skipped.append({"path": rel, "reason": "pinned"})
             continue
+        # R7 C20b/C23 修補: tag 含 SKILL_SIGNAL_TAGS 跳過直接升長 — 讓 skill scan 走對話提議 path.
+        # 否則 procedure / workflow 流程會被誤升到 Concepts/, 失去「對話中提議升 skill」機會.
+        _skill_signal_tags = {"procedure", "workflow", "steps", "skill_candidate", "playbook"}
+        if set(fm.tags) & _skill_signal_tags:
+            skipped.append({"path": rel, "reason": "skill_candidate_reserved_for_skill_scan (避免越過對話提議)"})
+            continue
         if fm.mention_count < threshold.min_mention_count:
             skipped.append({
                 "path": rel,
