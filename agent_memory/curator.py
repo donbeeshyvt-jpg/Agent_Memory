@@ -440,6 +440,18 @@ def run_weekly_deep(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any
     except Exception as exc:  # noqa: BLE001
         result["steps"]["user_gaps_scan"] = {"error": str(exc)}
 
+    # Step 5 (R8 C25): weekly digest (對應 MISSION §3.7 主動歸納)
+    try:
+        from agent_memory.weekly_digest import generate_weekly_digest
+        digest_result = generate_weekly_digest(root)
+        result["steps"]["weekly_digest"] = {
+            "week_id": digest_result.get("week_id"),
+            "digest_path": digest_result.get("digest_path"),
+            "stats": digest_result.get("stats"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        result["steps"]["weekly_digest"] = {"error": str(exc)}
+
     result["ended_at"] = _now_local_iso()
     _append_curator_log(root, result)
     return result

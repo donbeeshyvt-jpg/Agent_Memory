@@ -399,6 +399,20 @@ def run_chat_turn(
             except Exception:  # noqa: BLE001
                 gap_offered = None
 
+    # R8 C25: 若有「上週新 digest 還沒呈現過」就 prepend 在 response 開頭給使用者看一次
+    # (跟末端 footer 不同位置 — 開頭給「上週發生了什麼」感覺更自然)
+    digest_shown: dict[str, Any] | None = None
+    if is_real_chat:
+        try:
+            from agent_memory.weekly_digest import pick_undelivered_digest_footer
+            dfooter = pick_undelivered_digest_footer(adapter.vault_root)
+            if dfooter:
+                # Prepend 到 response 開頭, 之間隔一空行
+                response_text = dfooter.lstrip() + "\n\n" + response_text.lstrip()
+                digest_shown = {"shown": True}
+        except Exception:  # noqa: BLE001
+            digest_shown = None
+
     return {
         "persona": persona,
         "context": context,
@@ -420,4 +434,5 @@ def run_chat_turn(
         "skill_proposal_resolved": skill_proposal_resolved,  # R7 C20b (使用者回應動作)
         "gap_offered": gap_offered,  # R8 C24 (user gap 提問 footer)
         "gap_resolved": gap_resolved,  # R8 C24 (使用者 dismiss gap)
+        "digest_shown": digest_shown,  # R8 C25 (weekly digest 開頭呈現)
     }
