@@ -658,6 +658,7 @@ def run_transport_event(
             warn = "\n\n---\n⚠ [security scan] 偵測到可疑輸入 pattern: " + "; ".join(injection_scan.get("reasons", []))
             warn += "\n     管家照常回覆但已記錄. 若是無心使用語句可忽略此警示."
             result["response"] = str(result.get("response", "")) + warn
+        # Phase A C15: auto_evolve 已在 run_chat_turn 內處理 (避免 double-count counter)
     except LLMClientError as exc:
         if not allow_llm_degraded:
             raise

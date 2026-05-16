@@ -295,6 +295,18 @@ def run_chat_turn(
     except Exception:  # noqa: BLE001
         route_event = None
 
+    # Phase A C15: 自動進化觸發 (chat 完累加 counter, 達門檻 → 背景 promote-cycle)
+    # 對齊使用者期待: 升格應該自動, 不該依賴手動 menu [D] / schtasks 排程.
+    # transport_ingest 內也會呼叫 — 同檔 import 多次冪等 (counter 不會重複累加).
+    auto_evolve_status: dict[str, Any] = {}
+    # 跳過 wizard-verify 等非真實使用者對話 (context 標記)
+    if "wizard" not in (context or "").lower() and "verify" not in (context or "").lower():
+        try:
+            from agent_memory.auto_evolve import maybe_trigger_promotion
+            auto_evolve_status = maybe_trigger_promotion(adapter.vault_root)
+        except Exception:  # noqa: BLE001
+            auto_evolve_status = {}
+
     return {
         "persona": persona,
         "context": context,
@@ -310,4 +322,5 @@ def run_chat_turn(
         },
         "agent_tool_calls": agent_tool_results,  # Phase A C3 (A.5)
         "memory_context_hits": memory_context_hits,  # Phase A C6 (dynamic fence)
+        "auto_evolve": auto_evolve_status,  # Phase A C15
     }
