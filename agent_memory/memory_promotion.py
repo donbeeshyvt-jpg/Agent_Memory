@@ -710,6 +710,368 @@ def aggregate_to_midterm(
     }
 
 
+# ─── R7 C19: 中 → 長升格 + 90/180d 降級 ─────────────────────────────────────
+
+
+@dataclass(slots=True)
+class MidToLongThresholds:
+    """V2_Round7 §4.2 中→長升格門檻 (使用者拍板)."""
+
+    min_mention_count: int = 3
+    min_stable_days: int = 7
+    no_edit_days: int = 3
+
+
+@dataclass(slots=True)
+class LifecycleThresholds:
+    """V2_Round7 §4.3 長期降級門檻 (個人用 90/180d, archive 不刪檔)."""
+
+    stale_after_days: int = 90
+    archive_after_days: int = 180
+
+
+def _load_mid_to_long_thresholds(vault_root: Path) -> MidToLongThresholds:
+    """Load mid_to_long thresholds from promotion.yaml (缺 → defaults)."""
+
+    root = Path(vault_root).expanduser().resolve()
+    cfg_path = root / "00_System/08_Runtime_Profiles/promotion.yaml"
+    if not cfg_path.exists():
+        return MidToLongThresholds()
+    try:
+        import yaml as _yaml
+        payload = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        mtl = payload.get("mid_to_long", {}) if isinstance(payload, dict) else {}
+        if not isinstance(mtl, dict):
+            mtl = {}
+        return MidToLongThresholds(
+            min_mention_count=int(mtl.get("min_mention_count", 3)),
+            min_stable_days=int(mtl.get("min_stable_days", 7)),
+            no_edit_days=int(mtl.get("no_edit_days", 3)),
+        )
+    except Exception:  # noqa: BLE001
+        return MidToLongThresholds()
+
+
+def _load_lifecycle_thresholds(vault_root: Path) -> LifecycleThresholds:
+    """Load long_lifecycle thresholds from promotion.yaml."""
+
+    root = Path(vault_root).expanduser().resolve()
+    cfg_path = root / "00_System/08_Runtime_Profiles/promotion.yaml"
+    if not cfg_path.exists():
+        return LifecycleThresholds()
+    try:
+        import yaml as _yaml
+        payload = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        ll = payload.get("long_lifecycle", {}) if isinstance(payload, dict) else {}
+        if not isinstance(ll, dict):
+            ll = {}
+        return LifecycleThresholds(
+            stale_after_days=int(ll.get("stale_after_days", 90)),
+            archive_after_days=int(ll.get("archive_after_days", 180)),
+        )
+    except Exception:  # noqa: BLE001
+        return LifecycleThresholds()
+
+
+def _safe_parse_iso(raw: str) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return None
+
+
+def promote_midterm_to_long(
+    vault_root: Path,
+    *,
+    thresholds: MidToLongThresholds | None = None,
+    dry_run: bool = False,
+    max_promotions: int = 20,
+) -> dict[str, Any]:
+    """中 → 長升格 (R7 C19, V2_Round7 §4.2 雙軌制 = counter + 時間穩定性).
+
+    對 `Mid_Term/<entity>.md` 滿足 ALL 條件:
+        - `lifecycle_state == mid` (未升格過)
+        - `pinned == False`
+        - `mention_count >= N2` (預設 3)
+        - stable_age (now - created) >= 7d
+        - no-edit (now - updated) >= 3d
+
+    動作:
+        - 升到 `Concepts/` 或 `MEMORY.md` (沿用 `_decide_target` 邏輯)
+        - 原 Mid_Term 檔 `lifecycle_state=long` + `extras.promoted_to/promoted_at` (不刪原檔留 traceability)
+        - 寫 promotion_events.md
+    """
+
+    root = Path(vault_root).expanduser().resolve()
+    adapter = ObsidianVaultAdapter(root)
+    threshold = thresholds or _load_mid_to_long_thresholds(root)
+    now = datetime.now().astimezone()  # 本機時區
+    mid_dir = root / MIDTERM_DIR_RELATIVE
+
+    promoted: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+    remaining = max(1, int(max_promotions))
+
+    if not mid_dir.exists():
+        return {
+            "thresholds": {
+                "min_mention_count": threshold.min_mention_count,
+                "min_stable_days": threshold.min_stable_days,
+                "no_edit_days": threshold.no_edit_days,
+            },
+            "dry_run": dry_run,
+            "promoted": [],
+            "skipped": [],
+            "candidates": [],
+        }
+
+    for path_obj in sorted(mid_dir.glob("*.md")):
+        if path_obj.name.startswith("_"):
+            continue
+        rel = str(path_obj.relative_to(root)).replace("\\", "/")
+        note = adapter.read_note(rel)
+        if note is None:
+            continue
+        fm = note.frontmatter
+
+        if fm.lifecycle_state != LifecycleState.MID:
+            skipped.append({"path": rel, "reason": f"not_mid (state={fm.lifecycle_state.value})"})
+            continue
+        if fm.pinned:
+            skipped.append({"path": rel, "reason": "pinned"})
+            continue
+        if fm.mention_count < threshold.min_mention_count:
+            skipped.append({
+                "path": rel,
+                "reason": f"mention_below_threshold ({fm.mention_count} < {threshold.min_mention_count})",
+            })
+            continue
+
+        created_local = fm.created.astimezone() if fm.created else now
+        updated_local = fm.updated.astimezone() if fm.updated else now
+        stable_days = (now - created_local).total_seconds() / 86400
+        no_edit_days = (now - updated_local).total_seconds() / 86400
+
+        if stable_days < threshold.min_stable_days:
+            skipped.append({
+                "path": rel,
+                "reason": f"not_stable_enough ({stable_days:.1f}d / {threshold.min_stable_days}d)",
+            })
+            continue
+        if no_edit_days < threshold.no_edit_days:
+            skipped.append({
+                "path": rel,
+                "reason": f"too_recent_edit ({no_edit_days:.1f}d / {threshold.no_edit_days}d)",
+            })
+            continue
+
+        candidate_info = {
+            "path": rel,
+            "mention_count": fm.mention_count,
+            "stable_days": round(stable_days, 1),
+            "no_edit_days": round(no_edit_days, 1),
+        }
+        candidates.append(candidate_info)
+
+        if dry_run:
+            continue
+        if remaining <= 0:
+            skipped.append({"path": rel, "reason": "promotion_limit"})
+            continue
+
+        excerpt = _excerpt_for_promotion(note)
+        if not excerpt:
+            skipped.append({"path": rel, "reason": "empty_excerpt"})
+            continue
+        target_type = _decide_target(note, excerpt)
+
+        try:
+            if target_type == "concept":
+                target_path = _promote_to_concept(adapter, source_path=rel, excerpt=excerpt, score=1.0)
+            else:
+                target_path = _promote_to_memory(adapter, source_path=rel, excerpt=excerpt, score=1.0)
+        except Exception as exc:  # noqa: BLE001
+            skipped.append({"path": rel, "reason": f"promote_error: {exc}"})
+            continue
+
+        # 原 Mid_Term 檔轉 long state + marker (不刪原檔, 留 traceability)
+        fm.lifecycle_state = LifecycleState.LONG
+        fm.extras["promoted_to"] = target_path
+        fm.extras["promoted_at"] = now.isoformat()
+        note.frontmatter = fm
+        marker = f"\n<!-- promoted_to: {target_path} @ {now.isoformat()} -->\n"
+        if marker.strip() not in note.body:
+            note.body = note.body.rstrip() + marker
+        try:
+            adapter.write_note(note)
+        except Exception as exc:  # noqa: BLE001
+            skipped.append({"path": rel, "reason": f"midterm_marker_write_error: {exc}"})
+            continue
+
+        block = (
+            f"## {now.isoformat()} promotion (R7 mid→long)\n\n"
+            f"- source_path: `{rel}`\n"
+            f"- target_type: `{target_type}`\n"
+            f"- target_path: `{target_path}`\n"
+            f"- mention_count: `{fm.mention_count}`\n"
+            f"- stable_days: `{stable_days:.1f}`\n"
+            f"- operator: `curator-weekly`\n\n"
+        )
+        _append_promotion_event(root, block=block)
+
+        promoted.append({
+            "path": rel,
+            "target_type": target_type,
+            "target_path": target_path,
+            "mention_count": fm.mention_count,
+        })
+        remaining -= 1
+
+    return {
+        "thresholds": {
+            "min_mention_count": threshold.min_mention_count,
+            "min_stable_days": threshold.min_stable_days,
+            "no_edit_days": threshold.no_edit_days,
+        },
+        "dry_run": dry_run,
+        "candidates": candidates,
+        "promoted": promoted,
+        "skipped": skipped,
+    }
+
+
+def demote_long_to_stale_or_archive(
+    vault_root: Path,
+    *,
+    thresholds: LifecycleThresholds | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """長期降級 (R7 C19, hermes 抄但個人用 90/180d 放寬).
+
+    對 `10_Permanent/` 內所有 .md (跳過 Mid_Term/ 子層, 跳過 _DIR_INFO):
+        - pinned skip
+        - `last_activity_at` 為空 → 用 `updated` 當 fallback
+        - elapsed > 180d → 移到 `99_Archive/auto_archived/<YYYY>/<name>.md` + state=archived
+        - elapsed > 90d → state=stale (標記不動位置)
+
+    Archive 走 atomic_write 而非 write_note (繞過 scanner — 搬檔不是新內容).
+    """
+
+    root = Path(vault_root).expanduser().resolve()
+    adapter = ObsidianVaultAdapter(root)
+    threshold = thresholds or _load_lifecycle_thresholds(root)
+    now = datetime.now().astimezone()
+
+    staled: list[dict[str, Any]] = []
+    archived: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    permanent_dir = root / "10_Permanent"
+
+    if not permanent_dir.exists():
+        return {
+            "thresholds": {
+                "stale_after_days": threshold.stale_after_days,
+                "archive_after_days": threshold.archive_after_days,
+            },
+            "dry_run": dry_run,
+            "staled": [],
+            "archived": [],
+            "skipped": [],
+        }
+
+    for path_obj in permanent_dir.rglob("*.md"):
+        if not path_obj.is_file():
+            continue
+        if path_obj.name.startswith("_"):
+            continue
+        rel = str(path_obj.relative_to(root)).replace("\\", "/")
+        # 中期由 promote_midterm_to_long 管, demote 不動 Mid_Term/
+        if "/Mid_Term/" in rel:
+            continue
+        note = adapter.read_note(rel)
+        if note is None:
+            continue
+        fm = note.frontmatter
+        if fm.pinned:
+            skipped.append({"path": rel, "reason": "pinned"})
+            continue
+        if fm.lifecycle_state == LifecycleState.ARCHIVED:
+            skipped.append({"path": rel, "reason": "already_archived"})
+            continue
+        if fm.lifecycle_state == LifecycleState.MID:
+            # 不該出現在 10_Permanent/ 非 Mid_Term/ 路徑但保險
+            skipped.append({"path": rel, "reason": "lifecycle_mid_outside_midterm"})
+            continue
+
+        last_active = _safe_parse_iso(fm.last_activity_at)
+        if last_active is None:
+            last_active = fm.updated.astimezone() if fm.updated else now
+        elapsed_days = (now - last_active).total_seconds() / 86400
+
+        # Archive 優先 (180d > 90d)
+        if elapsed_days >= threshold.archive_after_days:
+            if dry_run:
+                archived.append({"path": rel, "elapsed_days": round(elapsed_days, 1), "skipped": "dry_run"})
+                continue
+            year = last_active.year if last_active else now.year
+            archive_rel = f"99_Archive/auto_archived/{year}/{path_obj.name}"
+            archive_abs = root / archive_rel
+            try:
+                archive_abs.parent.mkdir(parents=True, exist_ok=True)
+                # 改 frontmatter state + extras 再 serialize 寫到新位置 (繞過 scanner)
+                fm.lifecycle_state = LifecycleState.ARCHIVED
+                fm.etl_status = fm.etl_status  # 保留 etl
+                fm.extras["archived_at"] = now.isoformat()
+                fm.extras["archived_from"] = rel
+                metadata = adapter._frontmatter_to_dict(fm)
+                text = adapter.serialize_frontmatter(metadata, note.body)
+                atomic_write(archive_abs, text)
+                path_obj.unlink()
+                archived.append({"path": rel, "to": archive_rel, "elapsed_days": round(elapsed_days, 1)})
+                _append_promotion_event(
+                    root,
+                    block=(
+                        f"## {now.isoformat()} demote (R7 long→archived)\n\n"
+                        f"- source_path: `{rel}`\n"
+                        f"- archive_path: `{archive_rel}`\n"
+                        f"- elapsed_days: `{elapsed_days:.1f}`\n"
+                        f"- operator: `curator-weekly`\n\n"
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                skipped.append({"path": rel, "reason": f"archive_error: {exc}"})
+            continue
+
+        # Stale (90d ≤ elapsed < 180d)
+        if elapsed_days >= threshold.stale_after_days:
+            if fm.lifecycle_state == LifecycleState.STALE:
+                continue  # 已 stale 不重複標
+            if dry_run:
+                staled.append({"path": rel, "elapsed_days": round(elapsed_days, 1), "skipped": "dry_run"})
+                continue
+            fm.lifecycle_state = LifecycleState.STALE
+            note.frontmatter = fm
+            try:
+                adapter.write_note(note)
+                staled.append({"path": rel, "elapsed_days": round(elapsed_days, 1)})
+            except Exception as exc:  # noqa: BLE001
+                skipped.append({"path": rel, "reason": f"stale_mark_error: {exc}"})
+
+    return {
+        "thresholds": {
+            "stale_after_days": threshold.stale_after_days,
+            "archive_after_days": threshold.archive_after_days,
+        },
+        "dry_run": dry_run,
+        "staled": staled,
+        "archived": archived,
+        "skipped": skipped,
+    }
+
+
 def list_midterm_entries(
     vault_root: Path,
     *,

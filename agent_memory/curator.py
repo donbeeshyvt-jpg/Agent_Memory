@@ -37,7 +37,12 @@ from typing import Any, Optional
 
 import yaml
 
-from agent_memory.memory_promotion import aggregate_to_midterm, list_midterm_entries
+from agent_memory.memory_promotion import (
+    aggregate_to_midterm,
+    demote_long_to_stale_or_archive,
+    list_midterm_entries,
+    promote_midterm_to_long,
+)
 from agent_memory.security.atomic import atomic_write
 from agent_memory.security.locks import file_lock
 
@@ -359,9 +364,10 @@ def run_daily_light(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any
 
 
 def run_weekly_deep(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any]:
-    """Weekly deep run — C19 升長 + 降級 + C20a/b 之後加進來.
+    """Weekly deep run — 中→長升格 + 90/180d 降級 (C19) + umbrella/skill (C20a/b 接).
 
-    R7 C18 階段: 框架 stub, 只列 mid_to_long 候選給 caller / log 看. 真實升降格 C19 填.
+    R7 C18+C19 整合: 中→長 promote_midterm_to_long + 長期 demote_long_to_stale_or_archive.
+    C20a umbrella + C20b skill 提議 由後續 commit 加進來.
     """
 
     root = Path(vault_root).expanduser().resolve()
@@ -370,15 +376,35 @@ def run_weekly_deep(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any
         "mode": "weekly_deep",
         "started_at": started_at.isoformat(),
         "dry_run": bool(dry_run),
-        "midterm_candidates": [],
-        "note": "C18 stub — promote_midterm_to_long / demote / umbrella / skill 提議 留 C19/C20",
+        "steps": {},
     }
+
+    # Step 1: 中→長升格 (C19)
     try:
-        candidates = list_midterm_entries(root, min_mention_count=3, only_unpromoted=True)
-        result["midterm_candidates"] = candidates
-        result["candidate_count"] = len(candidates)
+        promote_result = promote_midterm_to_long(root, dry_run=dry_run)
+        result["steps"]["promote_midterm_to_long"] = {
+            "promoted_count": len(promote_result.get("promoted", [])),
+            "candidates_count": len(promote_result.get("candidates", [])),
+            "skipped_count": len(promote_result.get("skipped", [])),
+            "thresholds": promote_result.get("thresholds"),
+            "promoted": promote_result.get("promoted", []),
+        }
     except Exception as exc:  # noqa: BLE001
-        result["error"] = str(exc)
+        result["steps"]["promote_midterm_to_long"] = {"error": str(exc)}
+
+    # Step 2: 長期 stale / archive 降級 (C19)
+    try:
+        demote_result = demote_long_to_stale_or_archive(root, dry_run=dry_run)
+        result["steps"]["demote_long"] = {
+            "staled_count": len(demote_result.get("staled", [])),
+            "archived_count": len(demote_result.get("archived", [])),
+            "skipped_count": len(demote_result.get("skipped", [])),
+            "thresholds": demote_result.get("thresholds"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        result["steps"]["demote_long"] = {"error": str(exc)}
+
+    # Step 3-5: umbrella consolidation (C20a) + skill 升格提議 (C20b) — 後續 commit 加
 
     result["ended_at"] = _now_local_iso()
     _append_curator_log(root, result)
