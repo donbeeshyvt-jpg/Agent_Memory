@@ -486,6 +486,17 @@ def run_medium_24h(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any]
     except Exception as exc:  # noqa: BLE001
         result["errors"].append({"step": "user_gaps_scan", "error": str(exc)})
 
+    # Step 4 (R10 C37): write 00_System/09_Index/Recent_Updates.md (Obsidian 可見)
+    try:
+        from agent_memory.recent_updates import write_recent_updates
+        if not dry_run:
+            ru_result = write_recent_updates(root)
+            result["recent_updates"] = ru_result
+        else:
+            result["recent_updates"] = {"skipped": "dry_run"}
+    except Exception as exc:  # noqa: BLE001
+        result["errors"].append({"step": "recent_updates", "error": str(exc)})
+
     result["ended_at"] = _now_local_iso()
     _append_curator_log(root, result)
     return result
@@ -606,6 +617,17 @@ def run_weekly_deep(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any
         }
     except Exception as exc:  # noqa: BLE001
         result["steps"]["llm_contradiction"] = {"error": str(exc)}
+
+    # Step 8 (R10 C37): write 00_System/09_Index/Recent_Updates.md (Obsidian 可見)
+    try:
+        from agent_memory.recent_updates import write_recent_updates
+        if not dry_run:
+            ru_result = write_recent_updates(root)
+            result["steps"]["recent_updates"] = ru_result
+        else:
+            result["steps"]["recent_updates"] = {"skipped": "dry_run"}
+    except Exception as exc:  # noqa: BLE001
+        result["steps"]["recent_updates"] = {"error": str(exc)}
 
     result["ended_at"] = _now_local_iso()
     _append_curator_log(root, result)
