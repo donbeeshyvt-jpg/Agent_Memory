@@ -577,6 +577,23 @@ def run_weekly_deep(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any
     except Exception as exc:  # noqa: BLE001
         result["steps"]["weekly_digest"] = {"error": str(exc)}
 
+    # Step 6 (R9 C27): LLM umbrella + procedure tag detect
+    # 對應 MISSION §5.4 LLM 介入「A. Sleep cycle」+ Q5 修補 (skill 自動標 gap)
+    # LLM 不可用時 fallback 不影響其他 step (try/except 包好)
+    try:
+        from agent_memory.umbrella_llm import consolidate_umbrella_with_llm
+        llm_result = consolidate_umbrella_with_llm(root)
+        result["steps"]["llm_umbrella"] = {
+            "scanned": llm_result.get("scanned_entries", 0),
+            "merges_added": len(llm_result.get("merges_added", [])),
+            "procedure_tags_added": len(llm_result.get("procedure_tags_added", [])),
+            "llm_called": llm_result.get("llm_called", False),
+            "mock_used": llm_result.get("mock_used", False),
+            "error": llm_result.get("error"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        result["steps"]["llm_umbrella"] = {"error": str(exc)}
+
     result["ended_at"] = _now_local_iso()
     _append_curator_log(root, result)
     return result
