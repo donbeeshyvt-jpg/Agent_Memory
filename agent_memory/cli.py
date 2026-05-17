@@ -477,6 +477,13 @@ def _build_parser() -> argparse.ArgumentParser:
     midterm_list.add_argument("--json", action="store_true", help="Print as JSON.")
     midterm_list.set_defaults(func=_cmd_midterm_list)
 
+    # R9 C29: on-demand topic reflection
+    reflect = sub.add_parser("reflect", help="R9 — 主動整理 X 主題, 產 Concepts/reflection_<topic>_<date>.md.")
+    reflect.add_argument("--topic", required=True, help="Topic 字串 (例: Python / Round 7 / Discord).")
+    reflect.add_argument("--max-match", type=int, default=30, help="Scan 最多幾個 .md (預設 30).")
+    reflect.add_argument("--json", action="store_true", help="Print as JSON.")
+    reflect.set_defaults(func=_cmd_reflect)
+
     persona_create = sub.add_parser("persona-create", help="Create one persona proposal.")
     persona_create.add_argument("--display-name", required=True, help="Persona display name.")
     persona_create.add_argument("--persona-id", default=None, help="Optional explicit persona id.")
@@ -1913,6 +1920,34 @@ def _cmd_skill_suggestions_list(args: argparse.Namespace) -> int:
         if s.get("dismissed_at"):
             print(f"      dismissed_at: {s.get('dismissed_at')} reason={s.get('dismiss_reason', '')}")
     return 0
+
+
+def _cmd_reflect(args: argparse.Namespace) -> int:
+    """R9 C29 — on-demand reflect topic. 預設真 LLM call (LLM 不可用 fallback)."""
+    import json as _json
+    from agent_memory.reflect import reflect_topic
+
+    adapter = _build_adapter(args)
+    result = reflect_topic(adapter.vault_root, args.topic, max_match=max(1, int(args.max_match)))
+
+    if args.json:
+        print(_json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+
+    action = result.get("action")
+    if action == "created":
+        print(f"[OK] reflection 已建立: {result['path']}")
+        print(f"  從 {result['matches_count']} 個 .md 整理 (LLM mock_used={result.get('mock_used', False)})")
+        return 0
+    if action == "no_matches":
+        print(f"[INFO] 沒找到跟 '{args.topic}' 相關的記憶. 試其他主題或先讓對話累積一些 Mid_Term entity.")
+        return 0
+    if action == "llm_failed":
+        print(f"[ERR] LLM call 失敗 (matched {result.get('matches', 0)} 個 .md 但無法產 reflection).")
+        print("  - 檢查 .env 內 LLM API key / endpoint, 或用 mock 跑 e2e 測試.")
+        return 1
+    print(f"[ERR] {result}")
+    return 1
 
 
 def _cmd_midterm_list(args: argparse.Namespace) -> int:

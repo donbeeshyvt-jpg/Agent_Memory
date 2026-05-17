@@ -594,6 +594,19 @@ def run_weekly_deep(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any
     except Exception as exc:  # noqa: BLE001
         result["steps"]["llm_umbrella"] = {"error": str(exc)}
 
+    # Step 7 (R9 C30): USER.md vs Mid_Term 矛盾偵測 (LLM)
+    try:
+        from agent_memory.gap_analysis import scan_user_gaps_llm
+        contradict = scan_user_gaps_llm(root)
+        result["steps"]["llm_contradiction"] = {
+            "added": len(contradict.get("added", [])),
+            "mock_used": contradict.get("mock_used", False),
+            "error": contradict.get("error"),
+            "note": contradict.get("note"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        result["steps"]["llm_contradiction"] = {"error": str(exc)}
+
     result["ended_at"] = _now_local_iso()
     _append_curator_log(root, result)
     return result

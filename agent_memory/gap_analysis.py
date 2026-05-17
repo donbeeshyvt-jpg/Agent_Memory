@@ -322,6 +322,118 @@ def mark_gap_resolved(vault_root: Path, *, gap_id: str) -> dict[str, Any]:
     return {"action": "not_found", "gap_id": gap_id}
 
 
+# ─── R9 C30: USER.md vs Mid_Term 矛盾偵測 (LLM) ──────────────────────────────
+
+
+def _call_llm_contradiction(prompt: str, *, mock_response: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+    """Real LLM call (or mock) — 回 contradictions list.
+
+    mock_response: e2e 用. 傳 list 直接當輸出.
+    """
+
+    if mock_response is not None:
+        return mock_response
+    try:
+        from agent_memory.llm_client import LLMClient
+        import json as _json
+        client = LLMClient()
+        result = client.generate(prompt=prompt, temperature=0.1, timeout_s=45.0, max_tokens=600)
+        text = result.content.strip() if hasattr(result, "content") else str(result)
+        if "```" in text:
+            for p in text.split("```"):
+                p = p.strip()
+                if p.startswith("json"):
+                    p = p[4:].strip()
+                if p.startswith("[") and p.endswith("]"):
+                    text = p
+                    break
+        data = _json.loads(text)
+        return data if isinstance(data, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def scan_user_gaps_llm(
+    vault_root: Path,
+    *,
+    mock_response: list[dict[str, Any]] | None = None,
+    cooldown_days: int = 7,
+) -> dict[str, Any]:
+    """R9 C30: LLM 偵測 USER.md 跟近期 Mid_Term entity 之間的矛盾.
+
+    例: USER.md 寫「偏好簡潔」, Mid_Term 累積「常要長技術說明」→ 衝突.
+
+    寫進 pending_user_gaps.json kind=contradiction 給對話 footer 用 (跟其他 gap 同 pool).
+    """
+
+    root = Path(vault_root).expanduser().resolve()
+    adapter = ObsidianVaultAdapter(root)
+    user_note = adapter.read_note(USER_PROFILE_PATH)
+    if user_note is None:
+        return {"added": [], "error": "user_md_missing"}
+
+    # 列近期 Mid_Term 高頻 entity 給 LLM
+    mid_dir = root / MIDTERM_DIR
+    entries: list[dict[str, Any]] = []
+    if mid_dir.exists():
+        for p in sorted(mid_dir.glob("*.md")):
+            if p.name.startswith("_"):
+                continue
+            note = adapter.read_note(str(p.relative_to(root)).replace("\\", "/"))
+            if note is None or note.frontmatter.pinned:
+                continue
+            if note.frontmatter.lifecycle_state != LifecycleState.MID:
+                continue
+            if note.frontmatter.mention_count < 3:
+                continue
+            summary = next((ln.strip() for ln in note.body.splitlines() if ln.strip() and not ln.strip().startswith("#")), p.stem)[:120]
+            entries.append({"entity_id": p.stem, "summary": summary, "mention": note.frontmatter.mention_count})
+
+    if not entries and mock_response is None:
+        return {"added": [], "note": "no_high_mention_midterm_entries"}
+
+    # Build prompt
+    user_excerpt = user_note.body[:1500]
+    prompt = (
+        "你是 Memory Consistency Checker. 以下是使用者 USER.md baseline + 近期 Mid_Term 高頻 entity.\n"
+        "請找出 USER.md 的偏好 / 設定 與 Mid_Term 累積實際行為之間「**明顯矛盾**」.\n"
+        "回 JSON list, 每項: {user_md_claim, midterm_evidence_entity, severity:low|medium|high, reason}.\n"
+        "若沒明顯矛盾就回 []. 不要過度敏感.\n\n"
+        f"USER.md 內容:\n{user_excerpt}\n\n"
+        "Mid_Term 高頻 entry:\n"
+        + "\n".join(f"- `{e['entity_id']}` x{e['mention']}: {e['summary']}" for e in entries)
+    )
+    contradictions = _call_llm_contradiction(prompt, mock_response=mock_response)
+
+    # 寫進 pending_user_gaps.json kind=contradiction
+    pending = load_pending_gaps(root)
+    now = datetime.now().astimezone()
+    existing_keys = {g.get("gap_id", "") for g in pending}
+    added: list[dict[str, Any]] = []
+    for c in contradictions:
+        if not isinstance(c, dict):
+            continue
+        evidence_eid = str(c.get("midterm_evidence_entity", "?")).strip()
+        gap_id = f"contradiction:{evidence_eid}"
+        if gap_id in existing_keys:
+            continue
+        entry = {
+            "gap_id": gap_id,
+            "kind": "contradiction",
+            "user_md_claim": str(c.get("user_md_claim", "")),
+            "evidence_entity": evidence_eid,
+            "severity": str(c.get("severity", "low")),
+            "reason": str(c.get("reason", "")),
+            "proposed_at": now.isoformat(),
+            "dismissed_at": None,
+            "resolved_at": None,
+        }
+        pending.append(entry)
+        added.append(entry)
+    save_pending_gaps(root, pending)
+    return {"added": added, "total_pending": len(pending), "mock_used": mock_response is not None}
+
+
 def build_gap_footer(gap: dict[str, Any]) -> str:
     """Build chat response 末端的 gap 問題 footer."""
 
@@ -349,6 +461,16 @@ def build_gap_footer(gap: dict[str, Any]) -> str:
             "\n\n---\n"
             "❓ USER.md 還沒建立, 你願意先告訴我一些基本資訊嗎?\n"
             "  (偏好稱呼 / 主要身份 / 使用語言 / 回覆語氣 / 偏好工具)"
+        )
+    if kind == "contradiction":
+        claim = gap.get("user_md_claim", "?")
+        evidence = gap.get("evidence_entity", "?")
+        reason = gap.get("reason", "")
+        return (
+            "\n\n---\n"
+            f"❓ 我注意到一個矛盾: 你 USER.md 寫「{claim}」但近期 Mid_Term 累積「{evidence}」,\n"
+            f"  {reason}\n"
+            "  要不要更新 USER.md? 或回「稍後」之後再說."
         )
     # 預設
     return (
