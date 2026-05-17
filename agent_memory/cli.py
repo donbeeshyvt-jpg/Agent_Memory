@@ -484,6 +484,32 @@ def _build_parser() -> argparse.ArgumentParser:
     reflect.add_argument("--json", action="store_true", help="Print as JSON.")
     reflect.set_defaults(func=_cmd_reflect)
 
+    # R10 C36: observability views — 統一觀察 4 個 .ai/pending_*.json
+    umbrella_list = sub.add_parser("umbrella-list", help="R10 C36 — list R9 LLM umbrella 合併建議.")
+    umbrella_list.add_argument("--include-resolved", action="store_true", help="Include accepted/dismissed entries.")
+    umbrella_list.add_argument("--json", action="store_true", help="Print as JSON.")
+    umbrella_list.set_defaults(func=_cmd_umbrella_list)
+
+    procedure_tag_list = sub.add_parser("procedure-tag-list", help="R10 C36 — list R9 LLM procedure tag 自動標建議.")
+    procedure_tag_list.add_argument("--include-resolved", action="store_true", help="Include applied/dismissed entries.")
+    procedure_tag_list.add_argument("--json", action="store_true", help="Print as JSON.")
+    procedure_tag_list.set_defaults(func=_cmd_procedure_tag_list)
+
+    gap_list_cmd = sub.add_parser("gap-list", help="R10 C36 — list R8 USER.md gap (placeholder/midterm_not_in_user/contradiction).")
+    gap_list_cmd.add_argument("--include-resolved", action="store_true", help="Include dismissed/resolved entries.")
+    gap_list_cmd.add_argument("--kind", default=None, choices=["placeholder", "midterm_not_in_user", "contradiction"], help="Filter by gap kind.")
+    gap_list_cmd.add_argument("--json", action="store_true", help="Print as JSON.")
+    gap_list_cmd.set_defaults(func=_cmd_gap_list)
+
+    contradiction_list = sub.add_parser("contradiction-list", help="R10 C36 — list R9 USER.md vs Mid_Term 矛盾 (gap kind=contradiction 子集).")
+    contradiction_list.add_argument("--include-resolved", action="store_true", help="Include dismissed/resolved entries.")
+    contradiction_list.add_argument("--json", action="store_true", help="Print as JSON.")
+    contradiction_list.set_defaults(func=_cmd_contradiction_list)
+
+    pending_overview_cmd = sub.add_parser("pending-overview", help="R10 C36 — 一次看所有 pending (skill/umbrella/procedure/gap) 數量 + 來源檔.")
+    pending_overview_cmd.add_argument("--json", action="store_true", help="Print as JSON.")
+    pending_overview_cmd.set_defaults(func=_cmd_pending_overview)
+
     persona_create = sub.add_parser("persona-create", help="Create one persona proposal.")
     persona_create.add_argument("--display-name", required=True, help="Persona display name.")
     persona_create.add_argument("--persona-id", default=None, help="Optional explicit persona id.")
@@ -1948,6 +1974,188 @@ def _cmd_reflect(args: argparse.Namespace) -> int:
         return 1
     print(f"[ERR] {result}")
     return 1
+
+
+def _cmd_umbrella_list(args: argparse.Namespace) -> int:
+    """R10 C36 — list R9 LLM umbrella 合併建議."""
+    import json as _json
+    from agent_memory.observability_views import list_umbrella_suggestions
+
+    adapter = _build_adapter(args)
+    entries = list_umbrella_suggestions(adapter.vault_root, include_resolved=bool(args.include_resolved))
+
+    if args.json:
+        print(_json.dumps(entries, ensure_ascii=False, indent=2))
+        return 0
+
+    if not entries:
+        print("[INFO] 沒有 pending umbrella 合併建議.")
+        print("  (R9 C27 LLM umbrella scan 跑 weekly deep 才會產; 真實 LLM 不可用會 fallback skip)")
+        return 0
+
+    print(f"[OK] pending umbrella suggestions ({len(entries)}):")
+    for e in entries:
+        marker = "✓" if e.get("accepted_at") else ("✗" if e.get("dismissed_at") else "·")
+        umbrella_id = e.get("umbrella_id", "")
+        members = e.get("members", [])
+        print(f"  {marker} {umbrella_id:30s} members={len(members)}  proposed_at={e.get('proposed_at', '')}")
+        if members:
+            print(f"      members: {', '.join(str(m) for m in members[:6])}{' ...' if len(members) > 6 else ''}")
+        reason = str(e.get("reason", ""))
+        if reason:
+            print(f"      reason : {reason[:120]}")
+        if e.get("accepted_at"):
+            print(f"      accepted_at: {e.get('accepted_at')}")
+        if e.get("dismissed_at"):
+            print(f"      dismissed_at: {e.get('dismissed_at')}")
+    return 0
+
+
+def _cmd_procedure_tag_list(args: argparse.Namespace) -> int:
+    """R10 C36 — list R9 LLM procedure tag 自動標建議."""
+    import json as _json
+    from agent_memory.observability_views import list_procedure_tag_suggestions
+
+    adapter = _build_adapter(args)
+    entries = list_procedure_tag_suggestions(adapter.vault_root, include_resolved=bool(args.include_resolved))
+
+    if args.json:
+        print(_json.dumps(entries, ensure_ascii=False, indent=2))
+        return 0
+
+    if not entries:
+        print("[INFO] 沒有 pending procedure tag 自動標建議.")
+        print("  (R9 C27 跟 umbrella 一起產, weekly deep 才會跑; 標記後 Mid_Term entity 走 skill 分支)")
+        return 0
+
+    print(f"[OK] pending procedure tag suggestions ({len(entries)}):")
+    for e in entries:
+        marker = "✓" if e.get("applied_at") else ("✗" if e.get("dismissed_at") else "·")
+        print(f"  {marker} {e.get('entity_id', ''):30s} proposed_at={e.get('proposed_at', '')}")
+        reason = str(e.get("reason", ""))
+        if reason:
+            print(f"      reason : {reason[:120]}")
+        if e.get("applied_at"):
+            print(f"      applied_at: {e.get('applied_at')}")
+        if e.get("dismissed_at"):
+            print(f"      dismissed_at: {e.get('dismissed_at')}")
+    return 0
+
+
+def _cmd_gap_list(args: argparse.Namespace) -> int:
+    """R10 C36 — list R8 USER.md gap (含 R9 contradiction)."""
+    import json as _json
+    from agent_memory.observability_views import list_user_gaps
+
+    adapter = _build_adapter(args)
+    entries = list_user_gaps(
+        adapter.vault_root,
+        include_resolved=bool(args.include_resolved),
+        kind=args.kind,
+    )
+
+    if args.json:
+        print(_json.dumps(entries, ensure_ascii=False, indent=2))
+        return 0
+
+    if not entries:
+        kind_hint = f" (kind={args.kind})" if args.kind else ""
+        print(f"[INFO] 沒有 pending USER.md gap{kind_hint}.")
+        print("  (R8 C24 placeholder scan 在 curator weekly deep 跑; R9 C30 contradiction 也是 weekly LLM step)")
+        return 0
+
+    print(f"[OK] pending USER.md gaps ({len(entries)}):")
+    for e in entries:
+        marker = "✓" if e.get("resolved_at") else ("✗" if e.get("dismissed_at") else "·")
+        kind = str(e.get("kind", "unknown"))
+        gap_id = str(e.get("gap_id", ""))
+        print(f"  {marker} [{kind:22s}] {gap_id}")
+        question = str(e.get("question", "") or e.get("summary", ""))
+        if question:
+            print(f"      question: {question[:140]}")
+        print(f"      proposed_at: {e.get('proposed_at', '')}")
+        if e.get("dismissed_at"):
+            print(f"      dismissed_at: {e.get('dismissed_at')}")
+        if e.get("resolved_at"):
+            print(f"      resolved_at: {e.get('resolved_at')}")
+    return 0
+
+
+def _cmd_contradiction_list(args: argparse.Namespace) -> int:
+    """R10 C36 — list R9 USER.md vs Mid_Term 矛盾 (gap kind=contradiction)."""
+    import json as _json
+    from agent_memory.observability_views import list_contradictions
+
+    adapter = _build_adapter(args)
+    entries = list_contradictions(adapter.vault_root, include_resolved=bool(args.include_resolved))
+
+    if args.json:
+        print(_json.dumps(entries, ensure_ascii=False, indent=2))
+        return 0
+
+    if not entries:
+        print("[INFO] 沒有 pending contradiction.")
+        print("  (R9 C30 scan_user_gaps_llm 跑 weekly deep; LLM 不可用會 fallback skip)")
+        return 0
+
+    print(f"[OK] pending contradictions ({len(entries)}):")
+    for e in entries:
+        marker = "✓" if e.get("resolved_at") else ("✗" if e.get("dismissed_at") else "·")
+        gap_id = str(e.get("gap_id", ""))
+        print(f"  {marker} {gap_id}")
+        user_value = str(e.get("user_value", ""))
+        midterm_value = str(e.get("midterm_value", ""))
+        if user_value or midterm_value:
+            print(f"      USER.md   : {user_value[:120]}")
+            print(f"      Mid_Term  : {midterm_value[:120]}")
+        question = str(e.get("question", ""))
+        if question:
+            print(f"      question  : {question[:140]}")
+        print(f"      proposed_at: {e.get('proposed_at', '')}")
+        if e.get("dismissed_at"):
+            print(f"      dismissed_at: {e.get('dismissed_at')}")
+    return 0
+
+
+def _cmd_pending_overview(args: argparse.Namespace) -> int:
+    """R10 C36 — 一次看 4 個 pending pool 數量總覽."""
+    import json as _json
+    from agent_memory.observability_views import pending_overview
+
+    adapter = _build_adapter(args)
+    overview = pending_overview(adapter.vault_root)
+
+    if args.json:
+        print(_json.dumps(overview, ensure_ascii=False, indent=2))
+        return 0
+
+    total = overview["total_pending"]
+    print(f"[OK] pending overview — total {total} pending")
+    print("")
+
+    def _row(label: str, info: dict[str, Any]) -> None:
+        pending = info.get("pending", 0)
+        resolved = info.get("resolved", 0)
+        oldest = info.get("oldest_proposed_at", "") or "-"
+        path = info.get("path", "")
+        print(f"  {label:24s} pending={pending:3d}  resolved={resolved:3d}  oldest={oldest}")
+        print(f"  {'':24s}   path: {path}")
+
+    _row("skill_suggestions", overview["skill_suggestions"])
+    _row("umbrella", overview["umbrella"])
+    _row("procedure_tags", overview["procedure_tags"])
+
+    gaps = overview["user_gaps"]
+    pending = gaps.get("pending", 0)
+    resolved = gaps.get("resolved", 0)
+    oldest = gaps.get("oldest_proposed_at", "") or "-"
+    path = gaps.get("path", "")
+    by_kind = gaps.get("by_kind", {})
+    by_kind_str = ", ".join(f"{k}={v}" for k, v in sorted(by_kind.items())) if by_kind else "-"
+    print(f"  {'user_gaps':24s} pending={pending:3d}  resolved={resolved:3d}  oldest={oldest}")
+    print(f"  {'':24s}   by_kind: {by_kind_str}")
+    print(f"  {'':24s}   path   : {path}")
+    return 0
 
 
 def _cmd_midterm_list(args: argparse.Namespace) -> int:

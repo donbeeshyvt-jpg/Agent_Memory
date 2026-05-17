@@ -644,6 +644,13 @@ function Invoke-DaemonManager {
     Write-Host "    [S] 看 R7 pending skill 升格提議清單" -ForegroundColor White
     Write-Host "    [M] 看 R7 Mid_Term 累積 (entity 列表)" -ForegroundColor White
     Write-Host ""
+    Write-Host "  ★ R10 觀察工具 (R8 gap + R9 LLM 整理 pending pool):" -ForegroundColor Green
+    Write-Host "    [O] 看 4 個 pending pool 總覽 (skill/umbrella/procedure/gap)" -ForegroundColor White
+    Write-Host "    [U] 看 R9 LLM umbrella 合併建議清單" -ForegroundColor White
+    Write-Host "    [T] 看 R9 LLM procedure tag 自動標建議清單" -ForegroundColor White
+    Write-Host "    [G] 看 R8 USER.md gap + R9 contradiction 清單" -ForegroundColor White
+    Write-Host "    [N] 看 R9 USER.md vs Mid_Term 矛盾子集 (contradiction)" -ForegroundColor White
+    Write-Host ""
     Write-Host "  舊 daemon (legacy, promote-cycle 舊路徑):" -ForegroundColor DarkGray
     Write-Host "    [1] 立刻跑一次舊 daemon" -ForegroundColor DarkGray
     Write-Host "    [2] 顯示 schtasks 排程命令" -ForegroundColor DarkGray
@@ -651,7 +658,7 @@ function Invoke-DaemonManager {
     Write-Host ""
     Write-Host "    [B] 回主選單" -ForegroundColor DarkGray
     Write-Host ""
-    $sub = (Read-Host "  選 [C/4/5/S/M/1/2/3/B]").Trim().ToUpper()
+    $sub = (Read-Host "  選 [C/4/5/S/M/O/U/T/G/N/1/2/3/B]").Trim().ToUpper()
     switch ($sub) {
         "C" {
             $a = @("-m", "agent_memory", "curator-status")
@@ -675,6 +682,31 @@ function Invoke-DaemonManager {
         }
         "M" {
             $a = @("-m", "agent_memory", "midterm-list")
+            if ($VaultRoot) { $a += @("--vault-root", $VaultRoot) }
+            & python @a
+        }
+        "O" {
+            $a = @("-m", "agent_memory", "pending-overview")
+            if ($VaultRoot) { $a += @("--vault-root", $VaultRoot) }
+            & python @a
+        }
+        "U" {
+            $a = @("-m", "agent_memory", "umbrella-list")
+            if ($VaultRoot) { $a += @("--vault-root", $VaultRoot) }
+            & python @a
+        }
+        "T" {
+            $a = @("-m", "agent_memory", "procedure-tag-list")
+            if ($VaultRoot) { $a += @("--vault-root", $VaultRoot) }
+            & python @a
+        }
+        "G" {
+            $a = @("-m", "agent_memory", "gap-list")
+            if ($VaultRoot) { $a += @("--vault-root", $VaultRoot) }
+            & python @a
+        }
+        "N" {
+            $a = @("-m", "agent_memory", "contradiction-list")
             if ($VaultRoot) { $a += @("--vault-root", $VaultRoot) }
             & python @a
         }
