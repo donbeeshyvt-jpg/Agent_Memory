@@ -76,15 +76,30 @@ def _parse_iso(raw: str | None) -> datetime | None:
 
 @dataclass(slots=True)
 class CuratorConfig:
-    """Curator 配置 — 從 promotion.yaml 讀 (缺 → defaults)."""
+    """Curator 配置 — 從 promotion.yaml 讀 (缺 → defaults).
 
-    daily_interval_hours: float = 24.0
-    weekly_interval_hours: float = 168.0  # 7d
-    min_idle_hours: float = 2.0
+    R9 C34: 三層節奏 (對齊使用者 2026-05-17「2h 固定整理 + 7d LLM 統整」直覺)
+    - light  (2h interval, min_idle 30min): 純機械短→中 aggregate (跨頻道對話即時可檢索)
+    - medium (24h interval, min_idle 1h)  : 純機械 umbrella keyword + gap scan + 標 stale
+    - deep   (7d interval, min_idle 2h)   : LLM 整理 (umbrella + narrative + 矛盾偵測) + 升長 + archive + skill scan + digest
+
+    舊 daily_interval_hours / weekly_interval_hours 保留為 backward-compat alias.
+    """
+
+    # R9 C34: 三層節奏
+    light_interval_hours: float = 2.0
+    light_min_idle_hours: float = 0.5
+    medium_interval_hours: float = 24.0
+    medium_min_idle_hours: float = 1.0
+    weekly_interval_hours: float = 168.0  # 7d (deep)
+    min_idle_hours: float = 2.0  # weekly deep idle 條件 + 通用 fallback
+    # 共通
     first_run_defer: bool = True
     paused: bool = False
     circuit_breaker_max_failures: int = 3
     circuit_breaker_cooldown_minutes: float = 60.0
+    # Backward-compat (舊 R7 配置, 還有人在用): daily ≈ medium
+    daily_interval_hours: float = 24.0
 
     @classmethod
     def from_yaml(cls, payload: dict) -> "CuratorConfig":
@@ -94,54 +109,80 @@ class CuratorConfig:
         if not isinstance(curator, dict):
             curator = {}
         return cls(
-            daily_interval_hours=float(curator.get("daily_interval_hours", 24.0)),
+            light_interval_hours=float(curator.get("light_interval_hours", 2.0)),
+            light_min_idle_hours=float(curator.get("light_min_idle_hours", 0.5)),
+            medium_interval_hours=float(curator.get("medium_interval_hours", 24.0)),
+            medium_min_idle_hours=float(curator.get("medium_min_idle_hours", 1.0)),
             weekly_interval_hours=float(curator.get("weekly_interval_hours", 168.0)),
             min_idle_hours=float(curator.get("min_idle_hours", 2.0)),
             first_run_defer=bool(curator.get("first_run_defer", True)),
             paused=bool(curator.get("paused", False)),
             circuit_breaker_max_failures=int(curator.get("circuit_breaker_max_failures", 3)),
             circuit_breaker_cooldown_minutes=float(curator.get("circuit_breaker_cooldown_minutes", 60.0)),
+            daily_interval_hours=float(curator.get("daily_interval_hours", 24.0)),
         )
 
 
 @dataclass(slots=True)
 class CuratorState:
-    """Curator 持久化 state — 寫到 .ai/curator_state.json (本機時區 ISO)."""
+    """Curator 持久化 state — 寫到 .ai/curator_state.json (本機時區 ISO).
 
-    last_daily_run_at: Optional[datetime] = None
+    R9 C34: 三層節奏 → 加 last_light_run_at / last_medium_run_at + 對應 seeded.
+    保留 last_daily_run_at 為 backward-compat alias (= last_medium_run_at).
+    """
+
+    # R9 C34: 三層
+    last_light_run_at: Optional[datetime] = None
+    last_medium_run_at: Optional[datetime] = None
     last_weekly_run_at: Optional[datetime] = None
     last_chat_at: Optional[datetime] = None
-    first_daily_seeded_at: Optional[datetime] = None
+    first_light_seeded_at: Optional[datetime] = None
+    first_medium_seeded_at: Optional[datetime] = None
     first_weekly_seeded_at: Optional[datetime] = None
     consecutive_failures: int = 0
     last_failure_at: Optional[datetime] = None
+    # Backward-compat aliases (R7 readers 還能讀)
+    last_daily_run_at: Optional[datetime] = None
+    first_daily_seeded_at: Optional[datetime] = None
 
     def to_dict(self) -> dict[str, Any]:
         def _iso(dt: datetime | None) -> str:
             return dt.isoformat() if dt else ""
 
         return {
-            "last_daily_run_at": _iso(self.last_daily_run_at),
+            "last_light_run_at": _iso(self.last_light_run_at),
+            "last_medium_run_at": _iso(self.last_medium_run_at),
             "last_weekly_run_at": _iso(self.last_weekly_run_at),
             "last_chat_at": _iso(self.last_chat_at),
-            "first_daily_seeded_at": _iso(self.first_daily_seeded_at),
+            "first_light_seeded_at": _iso(self.first_light_seeded_at),
+            "first_medium_seeded_at": _iso(self.first_medium_seeded_at),
             "first_weekly_seeded_at": _iso(self.first_weekly_seeded_at),
             "consecutive_failures": int(self.consecutive_failures),
             "last_failure_at": _iso(self.last_failure_at),
+            # Backward-compat
+            "last_daily_run_at": _iso(self.last_daily_run_at or self.last_medium_run_at),
+            "first_daily_seeded_at": _iso(self.first_daily_seeded_at or self.first_medium_seeded_at),
         }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "CuratorState":
         if not isinstance(payload, dict):
             return cls()
+        # 從 R7 state 讀: last_daily_run_at 在 R9 變 last_medium_run_at (語意相同 - 一天一次)
+        legacy_daily = _parse_iso(payload.get("last_daily_run_at", ""))
+        legacy_daily_seed = _parse_iso(payload.get("first_daily_seeded_at", ""))
         return cls(
-            last_daily_run_at=_parse_iso(payload.get("last_daily_run_at", "")),
+            last_light_run_at=_parse_iso(payload.get("last_light_run_at", "")),
+            last_medium_run_at=_parse_iso(payload.get("last_medium_run_at", "")) or legacy_daily,
             last_weekly_run_at=_parse_iso(payload.get("last_weekly_run_at", "")),
             last_chat_at=_parse_iso(payload.get("last_chat_at", "")),
-            first_daily_seeded_at=_parse_iso(payload.get("first_daily_seeded_at", "")),
+            first_light_seeded_at=_parse_iso(payload.get("first_light_seeded_at", "")),
+            first_medium_seeded_at=_parse_iso(payload.get("first_medium_seeded_at", "")) or legacy_daily_seed,
             first_weekly_seeded_at=_parse_iso(payload.get("first_weekly_seeded_at", "")),
             consecutive_failures=int(payload.get("consecutive_failures", 0)),
             last_failure_at=_parse_iso(payload.get("last_failure_at", "")),
+            last_daily_run_at=legacy_daily,
+            first_daily_seeded_at=legacy_daily_seed,
         )
 
 
@@ -215,7 +256,11 @@ def ensure_promotion_config_file(vault_root: Path, *, overwrite: bool = False) -
             "archive_after_days": 180,
         },
         "curator": {
-            "daily_interval_hours": 24,
+            # R9 C34: 三層節奏 (對齊使用者「2h 機械 + 7d LLM」直覺)
+            "light_interval_hours": 2,
+            "light_min_idle_hours": 0.5,
+            "medium_interval_hours": 24,
+            "medium_min_idle_hours": 1,
             "weekly_interval_hours": 168,
             "min_idle_hours": 2,
             "first_run_defer": True,
@@ -223,6 +268,8 @@ def ensure_promotion_config_file(vault_root: Path, *, overwrite: bool = False) -
             "paused": False,
             "circuit_breaker_max_failures": 3,
             "circuit_breaker_cooldown_minutes": 60,
+            # Backward-compat alias (R7 readers 用)
+            "daily_interval_hours": 24,
         },
         "skill_suggestion": {
             "in_chat_proposal": True,
@@ -242,16 +289,19 @@ def ensure_promotion_config_file(vault_root: Path, *, overwrite: bool = False) -
 def should_run_now(
     state: CuratorState,
     config: CuratorConfig,
-    mode: str = "daily",
+    mode: str = "medium",
     *,
     now: datetime | None = None,
 ) -> tuple[bool, str]:
     """抄 hermes agent/curator.py:198-248 — AND 條件 should_run_now.
 
+    R9 C34: 三層 mode — light (2h) / medium (24h, 舊 daily 別名) / weekly (7d).
+    Backward-compat: mode='daily' → 視為 'medium'.
+
     Args:
         state: 當前 CuratorState (注意: first_run_defer 會就地改 seeded_at, caller 要 save_state)
         config: CuratorConfig
-        mode: 'daily' | 'weekly'
+        mode: 'light' | 'medium' | 'weekly' (or 'daily' 為 medium 別名)
         now: 測試 inject; None → _now_local()
 
     Returns: (ok, reason) — reason 為 log/diag 用 string
@@ -272,23 +322,35 @@ def should_run_now(
         if elapsed < cooldown_seconds:
             return False, f"circuit_breaker_cooldown ({elapsed / 60:.1f}min / {config.circuit_breaker_cooldown_minutes}min)"
 
-    if mode == "daily":
-        last_run = state.last_daily_run_at
-        interval_hours = config.daily_interval_hours
-        seeded_at = state.first_daily_seeded_at
-    elif mode == "weekly":
+    # mode 標準化 + 對應參數
+    mode_norm = mode.strip().lower()
+    if mode_norm == "daily":
+        mode_norm = "medium"  # backward-compat alias
+
+    if mode_norm == "light":
+        last_run = state.last_light_run_at
+        interval_hours = config.light_interval_hours
+        seeded_at = state.first_light_seeded_at
+        min_idle = config.light_min_idle_hours
+        seed_attr = "first_light_seeded_at"
+    elif mode_norm == "medium":
+        last_run = state.last_medium_run_at
+        interval_hours = config.medium_interval_hours
+        seeded_at = state.first_medium_seeded_at
+        min_idle = config.medium_min_idle_hours
+        seed_attr = "first_medium_seeded_at"
+    elif mode_norm == "weekly":
         last_run = state.last_weekly_run_at
         interval_hours = config.weekly_interval_hours
         seeded_at = state.first_weekly_seeded_at
+        min_idle = config.min_idle_hours
+        seed_attr = "first_weekly_seeded_at"
     else:
         return False, f"unknown_mode: {mode}"
 
     # First-run defer (hermes 抄): 第一次 call 只 seed 不跑
     if config.first_run_defer and seeded_at is None and last_run is None:
-        if mode == "daily":
-            state.first_daily_seeded_at = now
-        else:
-            state.first_weekly_seeded_at = now
+        setattr(state, seed_attr, now)
         return False, "first_run_deferred"
 
     if last_run is None and seeded_at is not None:
@@ -303,8 +365,8 @@ def should_run_now(
     # AND idle 條件 — last_chat_at = None 視為「剛初始化, 可以跑」
     if state.last_chat_at is not None:
         idle_hours = (now - state.last_chat_at).total_seconds() / 3600
-        if idle_hours < config.min_idle_hours:
-            return False, f"not_idle_enough ({idle_hours:.1f}h / {config.min_idle_hours}h)"
+        if idle_hours < min_idle:
+            return False, f"not_idle_enough ({idle_hours:.1f}h / {min_idle}h)"
 
     return True, "ok"
 
@@ -324,25 +386,68 @@ def _recent_daily_flush_files(vault_root: Path, *, max_files: int = 3) -> list[s
     return [str(p.relative_to(root)).replace("\\", "/") for p in files[:max_files]]
 
 
-def run_daily_light(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any]:
-    """Daily light run — 短→中 aggregate + 標 stale (C19 接降級).
+def run_light_2h(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    """R9 C34: light run (每 2h) — 短→中 aggregate only, 最輕量.
 
-    R7 C18 階段範圍:
-    - 短→中 aggregate (call C17 aggregate_to_midterm) ✓
-    - 標 stale (留 C19 demote_long_to_stale_or_archive)
-    - keyword umbrella (留 C20a)
+    對齊使用者「2 小時固定機械整理」直覺. 不跑 umbrella / stale 標記 / weekly LLM
+    那些都留給 medium / weekly. 目的是「跨頻道對話即時可檢索」感受.
     """
 
     root = Path(vault_root).expanduser().resolve()
     started_at = _now_local()
     result: dict[str, Any] = {
-        "mode": "daily_light",
+        "mode": "light_2h",
         "started_at": started_at.isoformat(),
         "dry_run": bool(dry_run),
         "aggregated": [],
         "errors": [],
     }
 
+    # Light 只看「最近 1 天」daily_flush (避免重複工作)
+    flushes = _recent_daily_flush_files(root, max_files=1)
+    result["scanned_flushes"] = len(flushes)
+    for flush_path in flushes:
+        if dry_run:
+            result["aggregated"].append({"path": flush_path, "skipped": "dry_run"})
+            continue
+        try:
+            agg = aggregate_to_midterm(
+                root,
+                flush_path,
+                session_id=f"curator-light-{started_at.strftime('%Y%m%d-%H%M')}",
+            )
+            result["aggregated"].append({"path": flush_path, **agg})
+        except Exception as exc:  # noqa: BLE001
+            result["errors"].append({"path": flush_path, "error": str(exc)})
+
+    result["ended_at"] = _now_local_iso()
+    _append_curator_log(root, result)
+    return result
+
+
+def run_medium_24h(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    """R9 C34: medium run (每 24h) — 機械中量整理.
+
+    動作:
+    - 短→中 aggregate (近 3 天 daily_flush, 比 light 更全)
+    - keyword umbrella consolidation (C20a)
+    - USER.md gap scan (C24, 不需 LLM 那段)
+    - 標 stale (簡單 metadata 變動, 不 archive 移檔)
+
+    跟 weekly deep 分工: medium 純機械, weekly 加 LLM.
+    """
+
+    root = Path(vault_root).expanduser().resolve()
+    started_at = _now_local()
+    result: dict[str, Any] = {
+        "mode": "medium_24h",
+        "started_at": started_at.isoformat(),
+        "dry_run": bool(dry_run),
+        "aggregated": [],
+        "errors": [],
+    }
+
+    # Step 1: 短→中 aggregate 近 3 天
     flushes = _recent_daily_flush_files(root, max_files=3)
     result["scanned_flushes"] = len(flushes)
     for flush_path in flushes:
@@ -353,13 +458,13 @@ def run_daily_light(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any
             agg = aggregate_to_midterm(
                 root,
                 flush_path,
-                session_id=f"curator-daily-{started_at.date().isoformat()}",
+                session_id=f"curator-medium-{started_at.date().isoformat()}",
             )
             result["aggregated"].append({"path": flush_path, **agg})
         except Exception as exc:  # noqa: BLE001
             result["errors"].append({"path": flush_path, "error": str(exc)})
 
-    # R7 C20a: keyword-based umbrella consolidation (daily light step 2)
+    # Step 2: keyword umbrella consolidation (R7 C20a)
     try:
         umbrella_result = consolidate_umbrella_keyword(root, dry_run=dry_run)
         result["umbrella"] = {
@@ -370,9 +475,29 @@ def run_daily_light(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any
     except Exception as exc:  # noqa: BLE001
         result["errors"].append({"step": "umbrella", "error": str(exc)})
 
+    # Step 3: USER.md gap scan (R8 C24, 機械 regex + entity 比對)
+    try:
+        from agent_memory.gap_analysis import scan_user_gaps
+        gap_scan = scan_user_gaps(root, cooldown_days=7, min_midterm_mention=3)
+        result["user_gaps_scan"] = {
+            "new_added_count": len(gap_scan.get("new_added", [])),
+            "total_pending": gap_scan.get("total_pending", 0),
+        }
+    except Exception as exc:  # noqa: BLE001
+        result["errors"].append({"step": "user_gaps_scan", "error": str(exc)})
+
     result["ended_at"] = _now_local_iso()
     _append_curator_log(root, result)
     return result
+
+
+# R7 backward-compat alias — 舊 caller 還 call run_daily_light 不會壞
+def run_daily_light(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any]:
+    """[Deprecated R9 C34] run_daily_light → run_medium_24h.
+
+    R7 caller backward-compat. 新 caller 用 run_light_2h / run_medium_24h / run_weekly_deep.
+    """
+    return run_medium_24h(vault_root, dry_run=dry_run)
 
 
 def run_weekly_deep(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any]:
@@ -487,50 +612,69 @@ def record_chat_ended(vault_root: Path) -> None:
 def maybe_trigger_curator(vault_root: Path, *, background: bool = True) -> dict[str, Any]:
     """主入口 — chat 結束或 menu [D] 開時 call. check should_run_now 後 fire-and-forget.
 
-    Args:
-        vault_root: vault 根目錄
-        background: True → 跑背景 thread 不阻擋對話; False → 同步 (給 menu [D] 確認結果用)
+    R9 C34: 三層節奏 — light (2h) + medium (24h) + weekly (7d). 每次 chat 結束都 check 三層.
+    每層 AND idle 條件不同 (light 30min / medium 1h / weekly 2h) 自然錯開.
 
-    Returns: dict {daily_ran, weekly_ran, daily_reason, weekly_reason, scheduled (bool)}
+    Returns: dict {light_ran, medium_ran, weekly_ran, *_reason, scheduled}
     """
 
     config = load_config(vault_root)
     state = load_state(vault_root)
     result: dict[str, Any] = {}
 
-    daily_ok, daily_reason = should_run_now(state, config, "daily")
+    light_ok, light_reason = should_run_now(state, config, "light")
+    medium_ok, medium_reason = should_run_now(state, config, "medium")
     weekly_ok, weekly_reason = should_run_now(state, config, "weekly")
 
-    result["daily_reason"] = daily_reason
+    result["light_reason"] = light_reason
+    result["medium_reason"] = medium_reason
     result["weekly_reason"] = weekly_reason
-    result["daily_ran"] = bool(daily_ok)
+    result["light_ran"] = bool(light_ok)
+    result["medium_ran"] = bool(medium_ok)
     result["weekly_ran"] = bool(weekly_ok)
-    result["scheduled"] = bool(daily_ok or weekly_ok)
+    result["scheduled"] = bool(light_ok or medium_ok or weekly_ok)
+    # Backward-compat alias
+    result["daily_ran"] = bool(medium_ok)
+    result["daily_reason"] = medium_reason
 
     # First-run defer / seeded_at 寫回 (因為 should_run_now 改了 state)
-    if daily_reason == "first_run_deferred" or weekly_reason == "first_run_deferred":
+    if "first_run_deferred" in (light_reason, medium_reason, weekly_reason):
         try:
             save_state(vault_root, state)
         except Exception:  # noqa: BLE001
             pass
 
-    if not (daily_ok or weekly_ok):
+    if not (light_ok or medium_ok or weekly_ok):
         return result
 
     def _do_run() -> None:
         new_state = load_state(vault_root)  # 重讀避免兩 thread race
-        if daily_ok:
-            try:
-                run_daily_light(vault_root)
-                new_state.last_daily_run_at = _now_local()
-                new_state.consecutive_failures = 0
-            except Exception:  # noqa: BLE001
-                new_state.consecutive_failures += 1
-                new_state.last_failure_at = _now_local()
+        # 三層按重量級序: light → medium → weekly (medium 跑時順帶 cover light 範圍)
+        # 但若三者同時 ok (極少: fresh first window), 只跑最重那層 (weekly 已 cover medium+light)
         if weekly_ok:
             try:
                 run_weekly_deep(vault_root)
                 new_state.last_weekly_run_at = _now_local()
+                new_state.last_medium_run_at = _now_local()  # weekly 順帶覆蓋
+                new_state.last_light_run_at = _now_local()
+                new_state.consecutive_failures = 0
+            except Exception:  # noqa: BLE001
+                new_state.consecutive_failures += 1
+                new_state.last_failure_at = _now_local()
+        elif medium_ok:
+            try:
+                run_medium_24h(vault_root)
+                new_state.last_medium_run_at = _now_local()
+                new_state.last_light_run_at = _now_local()  # medium 順帶覆蓋
+                new_state.last_daily_run_at = _now_local()  # backward-compat
+                new_state.consecutive_failures = 0
+            except Exception:  # noqa: BLE001
+                new_state.consecutive_failures += 1
+                new_state.last_failure_at = _now_local()
+        elif light_ok:
+            try:
+                run_light_2h(vault_root)
+                new_state.last_light_run_at = _now_local()
                 new_state.consecutive_failures = 0
             except Exception:  # noqa: BLE001
                 new_state.consecutive_failures += 1
@@ -548,17 +692,33 @@ def maybe_trigger_curator(vault_root: Path, *, background: bool = True) -> dict[
     return result
 
 
-def force_run(vault_root: Path, mode: str = "daily") -> dict[str, Any]:
-    """Force-run skip should_run_now — 給 menu [D] / CLI 用."""
+def force_run(vault_root: Path, mode: str = "medium") -> dict[str, Any]:
+    """Force-run skip should_run_now — 給 menu [D] / CLI 用.
 
-    if mode == "weekly":
+    R9 C34: 支援 light / medium / weekly. 'daily' = medium 別名 (backward-compat).
+    """
+
+    mode_norm = mode.strip().lower()
+    if mode_norm == "daily":
+        mode_norm = "medium"
+
+    if mode_norm == "weekly":
         result = run_weekly_deep(vault_root)
         state = load_state(vault_root)
         state.last_weekly_run_at = _now_local()
         save_state(vault_root, state)
         return result
-    result = run_daily_light(vault_root)
+    if mode_norm == "light":
+        result = run_light_2h(vault_root)
+        state = load_state(vault_root)
+        state.last_light_run_at = _now_local()
+        save_state(vault_root, state)
+        return result
+    # medium (預設)
+    result = run_medium_24h(vault_root)
     state = load_state(vault_root)
-    state.last_daily_run_at = _now_local()
+    state.last_medium_run_at = _now_local()
+    state.last_light_run_at = _now_local()  # medium 順帶覆蓋
+    state.last_daily_run_at = _now_local()  # backward-compat
     save_state(vault_root, state)
     return result
