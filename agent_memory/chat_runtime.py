@@ -144,6 +144,22 @@ def run_chat_turn(
         system_prompt += "\n" + skill_context + "\n"
     if history_tail:
         system_prompt += "\n以下是本 session 最近對話摘錄（供延續語境）：\n" + history_tail + "\n"
+
+    # R9 C31: cross-channel session linking — 同 persona 最近 30 分鐘其他 session_log
+    cross_session_paths: list[str] = []
+    try:
+        from agent_memory.session_linker import collect_recent_cross_session_context
+        cross_ctx = collect_recent_cross_session_context(
+            adapter.vault_root,
+            persona_id=persona,
+            current_session_id=session,
+            recent_minutes=30,
+        )
+        if cross_ctx.get("text_block"):
+            system_prompt += "\n" + cross_ctx["text_block"] + "\n"
+            cross_session_paths = list(cross_ctx.get("session_paths", []))
+    except Exception:  # noqa: BLE001
+        cross_session_paths = []
     shared_history = _tail_excerpt(str(shared_channel_history or ""), max_chars=2400)
     if shared_history:
         system_prompt += "\n以下是共通頻道近期摘錄（跨角色共享）：\n" + shared_history + "\n"
@@ -435,4 +451,5 @@ def run_chat_turn(
         "gap_offered": gap_offered,  # R8 C24 (user gap 提問 footer)
         "gap_resolved": gap_resolved,  # R8 C24 (使用者 dismiss gap)
         "digest_shown": digest_shown,  # R8 C25 (weekly digest 開頭呈現)
+        "cross_session_paths": cross_session_paths,  # R9 C31 (跨入口載入的 session 列表)
     }
