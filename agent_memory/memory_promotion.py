@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agent_memory.entity_extract import extract_entities_from_text
+from agent_memory.entity_extract import extract_entities_from_text, extract_entities_with_count
 from agent_memory.search import SearchHit
 from agent_memory.search.manager import MemorySearchManager
 from agent_memory.security.atomic import atomic_write
@@ -595,25 +595,36 @@ def aggregate_to_midterm(
     daily_flush_path: str,
     *,
     session_id: str = "",
-    max_entities_per_flush: int = 10,
+    max_entities_per_flush: int = 30,
+    min_occurrences_for_first_entry: int = 1,
 ) -> dict[str, Any]:
     """從一個 daily_flush 抽 entity → 累加到對應 `Mid_Term/<entity>.md`.
 
     R7 C17 短 → 中期聚合主邏輯 (V2_Round7 §4.1).
+    R9 C35: max_entities_per_flush 預設 10→30 + 加 min_occurrences 過濾 + filter 雜訊.
 
     對每個抽出的 entity_id:
-    - 若 `Mid_Term/<entity_id>.md` 不存在 → 建檔, lifecycle_state=mid, mention_count=1
-    - 若已存在且非 pinned → mention_count +1, 加 subsection 記這次 session
+    - 若 `Mid_Term/<entity_id>.md` 不存在 → 建檔, lifecycle_state=mid, mention_count=該日 occurrence
+    - 若已存在且非 pinned → mention_count += 該日 occurrence, 加 subsection 記這次 session
     - 若已存在且 pinned → 跳過 mention_count 累計 (pinned baseline 不被熱度干擾)
+
+    R9 C35 雜訊保護:
+    - max 30 (原 10) — 一天高量對話下 entity 不會漏抽
+    - 純表情 / 1 字 / 純數字 / 純標點自動 filter (extract_entities_with_count 內處理)
+    - min_occurrences_for_first_entry: **「第一次建檔」** 的 entity 須在 flush 內出現 ≥N 次才建
+      (避免「偶然提到一次」就進 Mid_Term 污染)
+      預設 1 = 不限制 (R7 行為); 設 2 = 偶然 1 次不算
 
     Args:
         vault_root: vault 根目錄
-        daily_flush_path: 來源 daily_flush 路徑 (相對 vault, 例 `11_AI_Mirror/ingestion_logs/daily_flush/2026-05-16.md`)
+        daily_flush_path: 來源 daily_flush 路徑
         session_id: 對應 session id (給 traceability)
-        max_entities_per_flush: 一個 daily_flush 最多處理幾個 entity (避免 noise 炸 Mid_Term/)
+        max_entities_per_flush: 一個 daily_flush 最多處理幾個 entity (R9: 30)
+        min_occurrences_for_first_entry: 新 entity 建檔門檻 (R9: 預設 1 不限, 可調)
 
     Returns:
-        dict: {processed_entities, created, updated, skipped_pinned, daily_flush_path, error?}
+        dict: {processed_entities, created, updated, skipped_pinned, skipped_trivial,
+               daily_flush_path, error?}
     """
 
     root = Path(vault_root).expanduser().resolve()
@@ -626,29 +637,45 @@ def aggregate_to_midterm(
             "created": [],
             "updated": [],
             "skipped_pinned": [],
+            "skipped_trivial": [],
         }
 
-    entities = extract_entities_from_text(daily_note.body, max_entities=max_entities_per_flush)
+    # R9 C35: 用 extract_entities_with_count 拿 (eid, occurrence) — 後續可按出現次數累計 mention
+    entity_counts = extract_entities_with_count(
+        daily_note.body,
+        max_entities=max_entities_per_flush,
+        min_occurrences=1,
+    )
+    entities = [eid for eid, _ in entity_counts]
     if not entities:
         return {
             "processed_entities": [],
             "created": [],
             "updated": [],
             "skipped_pinned": [],
+            "skipped_trivial": [],
             "daily_flush_path": daily_flush_path,
         }
 
     created: list[str] = []
     updated: list[str] = []
     skipped_pinned: list[str] = []
+    skipped_trivial: list[str] = []  # R9 C35: 偶然提及 < min_occurrences 但 entity 還沒有 Mid_Term 檔
     now_iso = _now_local_iso()
+
+    occurrence_map = dict(entity_counts)
 
     for entity_id in entities:
         target_path = f"{MIDTERM_DIR_RELATIVE}/{entity_id}.md"
         existing = adapter.read_note(target_path)
+        occurrences = occurrence_map.get(entity_id, 1)
 
         if existing is None:
-            # 第一次遇到此 entity → 建中期檔
+            # R9 C35: 第一次建檔須達 min_occurrences (避免偶然提一次就進 Mid_Term)
+            if occurrences < min_occurrences_for_first_entry:
+                skipped_trivial.append(entity_id)
+                continue
+            # 第一次遇到此 entity → 建中期檔 (mention_count = 本 flush 內 occurrence)
             note = MemoryNote(
                 path=target_path,
                 frontmatter=Frontmatter(
@@ -657,7 +684,7 @@ def aggregate_to_midterm(
                     tags=["mid_term", "aggregated"],
                     agent="entity-aggregator",
                     lifecycle_state=LifecycleState.MID,
-                    mention_count=1,
+                    mention_count=occurrences,
                     last_activity_at=now_iso,
                     pinned=False,
                     extras={
@@ -668,11 +695,11 @@ def aggregate_to_midterm(
                 body=(
                     f"# {entity_id}\n\n"
                     "## 來源\n\n"
-                    f"- 第一次提及: `{daily_flush_path}` ({now_iso})\n"
+                    f"- 第一次提及: `{daily_flush_path}` ({now_iso}, 該 flush 內 {occurrences} 次)\n"
                     f"- session: `{session_id}`\n\n"
                     "## 累積提及\n\n"
-                    f"- {now_iso} session=`{session_id}` from `{daily_flush_path}`\n\n"
-                    "> 此檔由 entity-aggregator 自動建立 (R7 C17 短→中聚合).\n"
+                    f"- {now_iso} session=`{session_id}` from `{daily_flush_path}` ({occurrences} 次)\n\n"
+                    "> 此檔由 entity-aggregator 自動建立 (R7 C17 短→中聚合, R9 C35 加 occurrence 計次).\n"
                     "> Mid_Term 為「可變」層: LLM 對話可改寫此檔以累積上下文.\n"
                     "> 當 `mention_count >= 3` + stable_age >= 7d + no-edit >= 3d 後 curator 會升格到長期 (Concepts/Facts/MEMORY).\n"
                 ),
@@ -688,13 +715,12 @@ def aggregate_to_midterm(
             skipped_pinned.append(entity_id)
             continue
 
-        # 累計 mention + last_activity_at + body subsection
-        fm.mention_count += 1
+        # R9 C35: 累計 mention 用本 flush 內實際 occurrence 而非固定 +1
+        fm.mention_count += occurrences
         fm.last_activity_at = now_iso
-        # 若 lifecycle_state 已是 long/stale/archived (例如曾升格再被降回) 不要拉回 mid
         if fm.lifecycle_state in (LifecycleState.SHORT,):
             fm.lifecycle_state = LifecycleState.MID
-        new_block = f"- {now_iso} session=`{session_id}` from `{daily_flush_path}`"
+        new_block = f"- {now_iso} session=`{session_id}` from `{daily_flush_path}` ({occurrences} 次)"
         if new_block.strip() not in existing.body:
             existing.body = existing.body.rstrip() + "\n" + new_block + "\n"
         existing.frontmatter = fm
@@ -706,6 +732,7 @@ def aggregate_to_midterm(
         "created": created,
         "updated": updated,
         "skipped_pinned": skipped_pinned,
+        "skipped_trivial": skipped_trivial,
         "daily_flush_path": daily_flush_path,
     }
 

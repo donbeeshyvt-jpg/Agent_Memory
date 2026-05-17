@@ -88,8 +88,31 @@ def keyword_fingerprint(keywords: list[str]) -> str:
     return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:12]
 
 
-def extract_entities_from_text(text: str, *, max_entities: int = 10) -> list[str]:
+def _is_trivial_entity(eid: str) -> bool:
+    """R9 C35: 過濾雜訊 entity — 純表情 / 1 字 / 純數字 / 純標點."""
+
+    if not eid:
+        return True
+    # 純數字
+    if eid.isdigit():
+        return True
+    # 1 字中文 (英文已有 KEYWORD_RE 至少 2 字過濾)
+    if len(eid) == 1:
+        return True
+    # 純標點 / 全 - / 全 _ 等
+    if all(c in "-_." for c in eid):
+        return True
+    # 太短 normalize 後變預設 fallback
+    if eid in ("entity", "untitled"):
+        return True
+    return False
+
+
+def extract_entities_from_text(text: str, *, max_entities: int = 30) -> list[str]:
     """High-level: 抽 entities from text. Wikilinks-first, keyword fingerprint 退化.
+
+    R9 C35: max_entities 預設 10→30 (對齊使用者「一天高量對話」場景, 避免 entity 漏抽).
+            加 _is_trivial_entity filter (避免純表情/單字/數字進 Mid_Term 污染).
 
     Return: list of normalized entity_id (slug-safe), 去重保序, 最多 max_entities 個.
     """
@@ -97,10 +120,10 @@ def extract_entities_from_text(text: str, *, max_entities: int = 10) -> list[str
     seen: set[str] = set()
     result: list[str] = []
 
-    # 1) Wikilinks-first
+    # 1) Wikilinks-first (使用者明確標 [[xxx]] 的最可信)
     for w in extract_wikilinks(text):
         eid = normalize_entity_id(w)
-        if eid and eid not in seen:
+        if eid and eid not in seen and not _is_trivial_entity(eid):
             seen.add(eid)
             result.append(eid)
             if len(result) >= max_entities:
@@ -114,6 +137,44 @@ def extract_entities_from_text(text: str, *, max_entities: int = 10) -> list[str
             if fp:
                 first_norm = normalize_entity_id(keywords[0])
                 fallback_id = f"{first_norm}-{fp[:8]}" if first_norm and first_norm != "entity" else f"entity-{fp[:8]}"
-                result.append(fallback_id)
+                if not _is_trivial_entity(fallback_id):
+                    result.append(fallback_id)
 
     return result
+
+
+def extract_entities_with_count(text: str, *, max_entities: int = 30, min_occurrences: int = 1) -> list[tuple[str, int]]:
+    """R9 C35: 抽 entity 並回 (eid, count) — 給「daily 內須 ≥N 次出現才算」用.
+
+    跟 extract_entities_from_text 差別: 同 entity 重複出現會被計次, 而非去重.
+    用於 aggregate_to_midterm 內過濾「偶然提到 1 次」的雜訊.
+
+    Args:
+        text: 來源文字 (一個 daily_flush 全文)
+        max_entities: 回傳上限
+        min_occurrences: 該 entity 在 text 內須出現 ≥N 次才被回 (預設 1, 不過濾)
+
+    Return: list of (entity_id, occurrence_count) 按 count 降序
+    """
+
+    counts: dict[str, int] = {}
+    for w in extract_wikilinks(text):
+        eid = normalize_entity_id(w)
+        if not eid or _is_trivial_entity(eid):
+            continue
+        counts[eid] = counts.get(eid, 0) + 1
+
+    if not counts:
+        # 退化 keyword fingerprint
+        keywords = extract_keywords(text, top_n=3)
+        if keywords:
+            fp = keyword_fingerprint(keywords)
+            if fp:
+                first_norm = normalize_entity_id(keywords[0])
+                fallback_id = f"{first_norm}-{fp[:8]}" if first_norm and first_norm != "entity" else f"entity-{fp[:8]}"
+                if not _is_trivial_entity(fallback_id):
+                    counts[fallback_id] = 1
+
+    filtered = [(eid, n) for eid, n in counts.items() if n >= min_occurrences]
+    filtered.sort(key=lambda x: x[1], reverse=True)
+    return filtered[:max_entities]
