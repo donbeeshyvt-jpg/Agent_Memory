@@ -534,6 +534,145 @@ def run_simulation(vault_root: Path, report: Report) -> int:
             f"digest size = {digest_path_abs.stat().st_size}",
         )
 
+    # ─── Step 10 (R9): LLM 整理 + 主動回想驗證 (含 mock infra) ─────────────
+    report.section("Step 10 (R9): LLM 整理 + 主動回想 (mock LLM)")
+
+    # 10.1 — C34 curator 三層節奏 (light / medium / weekly should_run_now 各自獨立)
+    from agent_memory.curator import should_run_now, CuratorState, CuratorConfig, _now_local, force_run as cf_force_run
+    from datetime import timedelta as _td
+    s_test = CuratorState()
+    c_test = CuratorConfig()
+    s_test.first_light_seeded_at = _now_local() - _td(hours=3)
+    s_test.first_medium_seeded_at = _now_local() - _td(hours=25)
+    s_test.first_weekly_seeded_at = _now_local() - _td(days=8)
+    for mode_test in ["light", "medium", "weekly"]:
+        ok_test, reason_test = should_run_now(s_test, c_test, mode_test)
+        report.step(
+            f"C34 should_run_now('{mode_test}') seeded 過 interval → ok",
+            ok_test,
+            f"reason={reason_test}",
+        )
+
+    # 10.2 — C35 entity filter (純表情/單字過濾) + extract_with_count occurrence
+    from agent_memory.entity_extract import extract_entities_from_text, extract_entities_with_count
+    trivial_test = extract_entities_from_text("[[1]] [[a]] [[!]] [[Python]] [[GraphRAG]]", max_entities=30)
+    report.step(
+        "C35 trivial filter 過濾 1/a/!, 保留 Python/GraphRAG",
+        "python" in trivial_test and "graphrag" in trivial_test and "1" not in trivial_test and "a" not in trivial_test,
+        f"result = {trivial_test}",
+    )
+    count_test = extract_entities_with_count("[[Python]] [[Python]] [[Python]] [[Vue]]", min_occurrences=2)
+    report.step(
+        "C35 extract_with_count min_occurrences=2 過濾 Vue(1 次)",
+        len(count_test) == 1 and count_test[0][0] == "python" and count_test[0][1] == 3,
+        f"result = {count_test}",
+    )
+
+    # 10.3 — C31 cross-session linking
+    from agent_memory.session_linker import collect_recent_cross_session_context
+    cross = collect_recent_cross_session_context(vault_root, persona_id="steward", current_session_id="x", recent_minutes=60)
+    report.step(
+        "C31 cross-session linking (有 session_log 可撈)",
+        isinstance(cross.get("text_block"), str),
+        f"persona={cross.get('persona_id')}, paths_count={len(cross.get('session_paths', []))}",
+    )
+
+    # 10.4 — C32 fresh chat recall (用前面已建的 session_log)
+    from agent_memory.session_linker import find_last_session_for_recall, build_fresh_chat_recall_prepend, is_fresh_session
+    recall = find_last_session_for_recall(vault_root, persona_id="steward", current_session_id="totally-new")
+    report.step(
+        "C32 find_last_session_for_recall: 沒 steward session_log 也不爆",
+        recall is None or isinstance(recall, dict),
+        f"recall = {'found' if recall else 'None (預期 - 沒建過 steward session_log)'}",
+    )
+    fresh = is_fresh_session(vault_root, persona_id="steward", context="discord-X", session_id="totally-new")
+    report.step(
+        "C32 is_fresh_session for new session → True",
+        fresh is True,
+    )
+
+    # 10.5 — C27 LLM umbrella (mock_response)
+    from agent_memory.umbrella_llm import consolidate_umbrella_with_llm, load_pending_umbrella, load_pending_procedure_tags, apply_procedure_tag
+    # 建 3 個語意相關但 prefix 不同 entity
+    for sub_eid, body in [
+        ("async-io-r9", "Python asyncio 用法"),
+        ("concurrent-futures-r9", "Python concurrent.futures"),
+        ("threading-r9", "Python threading 基礎"),
+    ]:
+        adapter.write_note(MemoryNote(
+            path=f"10_Permanent/Mid_Term/{sub_eid}.md",
+            frontmatter=Frontmatter(
+                type=MemoryType.CONCEPT, source=MemorySource.PROMOTION,
+                tags=["mid_term"], lifecycle_state=LifecycleState.MID,
+                mention_count=3, pinned=False,
+            ),
+            body=f"# {sub_eid}\n{body}",
+        ))
+    mock_um = {
+        "merges": [{
+            "umbrella_id": "python-concurrency-r9",
+            "members": ["async-io-r9", "concurrent-futures-r9", "threading-r9"],
+            "reason": "都是 Python 並行原語",
+        }],
+        "procedure_tags": [{
+            "entity_id": "async-io-r9",
+            "reason": "body 含 async/await 流程",
+        }],
+    }
+    um_result = consolidate_umbrella_with_llm(vault_root, mock_response=mock_um)
+    report.step(
+        "C27 LLM umbrella (mock): merges_added = 1",
+        len(um_result.get("merges_added", [])) == 1,
+        f"merges={um_result.get('merges_added', [])[:1]}",
+    )
+    report.step(
+        "C27 LLM procedure_tags_added (mock): 1 條 + apply 後 Mid_Term 含 procedure tag",
+        len(um_result.get("procedure_tags_added", [])) == 1,
+    )
+    ap = apply_procedure_tag(vault_root, entity_id="async-io-r9")
+    aio = adapter.read_note("10_Permanent/Mid_Term/async-io-r9.md")
+    report.step(
+        "C27 apply_procedure_tag 後 tags 含 'procedure'",
+        aio is not None and "procedure" in aio.frontmatter.tags,
+        f"tags = {aio.frontmatter.tags if aio else None}",
+    )
+
+    # 10.6 — C28 weekly digest LLM narrative (mock)
+    digest_with_llm = generate_weekly_digest(vault_root, llm_mock_narrative="本週注意力大部分在 Python 並行 + R9 設計, 建議週末做 reflect.")
+    digest_with_llm_path = vault_root / digest_with_llm["digest_path"]
+    report.step(
+        "C28 weekly digest with mock LLM narrative",
+        digest_with_llm.get("llm_narrative_used") is True
+            and "LLM 觀察" in digest_with_llm_path.read_text(encoding="utf-8"),
+        f"llm_narrative_used = {digest_with_llm.get('llm_narrative_used')}",
+    )
+
+    # 10.7 — C29 reflect on-demand (mock)
+    from agent_memory.reflect import reflect_topic
+    reflect_mock = "## 主題概覽\n你的 Python 記憶圍繞 async / concurrent\n\n## 核心要點\n- asyncio\n\n## 關聯 wikilinks\n[[python]]\n\n## 後續建議\n深入 FastAPI"
+    rf = reflect_topic(vault_root, "Python", mock_body=reflect_mock)
+    report.step(
+        "C29 reflect_topic Python → 產 Concepts/reflection_*.md",
+        rf.get("action") == "created" and (vault_root / rf.get("path", "")).exists(),
+        f"action={rf.get('action')}, path={rf.get('path')}",
+    )
+
+    # 10.8 — C30 USER.md vs Mid_Term 矛盾偵測 (mock)
+    from agent_memory.gap_analysis import scan_user_gaps_llm, load_pending_gaps
+    contra_mock = [{
+        "user_md_claim": "偏好簡潔技術回覆",
+        "midterm_evidence_entity": "async-io-r9",
+        "severity": "low",
+        "reason": "Mid_Term 高頻含 Python async 細節需要長說明",
+    }]
+    contra_result = scan_user_gaps_llm(vault_root, mock_response=contra_mock)
+    contradictions = [g for g in load_pending_gaps(vault_root) if g.get("kind") == "contradiction"]
+    report.step(
+        "C30 scan_user_gaps_llm (mock) → pending 含 kind=contradiction",
+        len(contradictions) >= 1,
+        f"contradictions_count = {len(contradictions)}",
+    )
+
     return report.summary()
 
 
