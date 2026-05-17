@@ -429,6 +429,36 @@ def run_chat_turn(
         except Exception:  # noqa: BLE001
             digest_shown = None
 
+    # R9 C32: Fresh chat 第一輪偵測 → prepend「📖 上次我們聊到 X」
+    # 只在 session 還沒寫過 turn 時觸發 (避免每輪都貼)
+    fresh_recall_shown: dict[str, Any] | None = None
+    if is_real_chat:
+        try:
+            from agent_memory.session_linker import (
+                is_fresh_session,
+                find_last_session_for_recall,
+                build_fresh_chat_recall_prepend,
+            )
+            # 注意: 此時本輪對話已經寫進 session_log (append_chat_turn 在前面),
+            # 所以 is_fresh_session 看的是「本輪是否是該 session 首輪」.
+            # 簡化: 用 history_tail 是否為空當「fresh」訊號 (本 session 開頭時 hist_note=None)
+            session_was_fresh = (hist_note is None)
+            if session_was_fresh:
+                recall = find_last_session_for_recall(
+                    adapter.vault_root,
+                    persona_id=persona,
+                    current_session_id=session,
+                )
+                if recall:
+                    prepend = build_fresh_chat_recall_prepend(recall)
+                    response_text = prepend + response_text.lstrip()
+                    fresh_recall_shown = {
+                        "session_path": recall.get("session_path"),
+                        "topics": recall.get("topics", []),
+                    }
+        except Exception:  # noqa: BLE001
+            fresh_recall_shown = None
+
     return {
         "persona": persona,
         "context": context,
@@ -452,4 +482,5 @@ def run_chat_turn(
         "gap_resolved": gap_resolved,  # R8 C24 (使用者 dismiss gap)
         "digest_shown": digest_shown,  # R8 C25 (weekly digest 開頭呈現)
         "cross_session_paths": cross_session_paths,  # R9 C31 (跨入口載入的 session 列表)
+        "fresh_recall_shown": fresh_recall_shown,  # R9 C32 (fresh chat 開頭「上次聊到」)
     }

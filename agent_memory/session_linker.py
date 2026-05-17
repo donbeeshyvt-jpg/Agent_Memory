@@ -27,7 +27,9 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Optional
 
+from agent_memory.entity_extract import extract_wikilinks
 from agent_memory.vault import ObsidianVaultAdapter
 
 SESSION_LOG_DIR_RELATIVE = "70_Active_Plans/Session_Logs"
@@ -151,3 +153,149 @@ def collect_recent_cross_session_context(
         "persona_id": persona_id,
         "recent_minutes": recent_minutes,
     }
+
+
+# ─── R9 C32: Fresh chat 「上次我們聊到」prepend ─────────────────────────────
+
+
+DEFAULT_FRESH_LOOKBACK_HOURS = 24
+DEFAULT_FRESH_TOPIC_COUNT = 5
+
+
+def find_last_session_for_recall(
+    vault_root: Path,
+    *,
+    persona_id: str,
+    current_session_id: str = "",
+    lookback_hours: int = DEFAULT_FRESH_LOOKBACK_HOURS,
+) -> Optional[dict]:
+    """找同 persona 最近 24h 內、排除當前 session 的「最後一個 session_log」.
+
+    給 R9 C32 fresh chat 開頭 prepend 用. Return None 表示沒可 recall 的歷史.
+    """
+
+    root = Path(vault_root).expanduser().resolve()
+    session_root = root / SESSION_LOG_DIR_RELATIVE
+    if not session_root.exists():
+        return None
+
+    cutoff = datetime.now().astimezone() - timedelta(hours=lookback_hours)
+    best: tuple[Path, datetime] | None = None
+    for date_dir in session_root.iterdir():
+        if not date_dir.is_dir():
+            continue
+        for log_path in date_dir.glob("*.md"):
+            if log_path.name.startswith("_"):
+                continue
+            if _persona_id_from_filename(log_path.name) != persona_id:
+                continue
+            if current_session_id and current_session_id in log_path.name:
+                continue
+            try:
+                mtime = datetime.fromtimestamp(log_path.stat().st_mtime).astimezone()
+            except OSError:
+                continue
+            if mtime < cutoff:
+                continue
+            if best is None or mtime > best[1]:
+                best = (log_path, mtime)
+
+    if best is None:
+        return None
+
+    log_path, mtime = best
+    rel = str(log_path.relative_to(root)).replace("\\", "/")
+    adapter = ObsidianVaultAdapter(root)
+    note = adapter.read_note(rel)
+    if note is None:
+        return None
+
+    # 抽 wikilinks 當「主題」(對應 R7 entity_extract pattern)
+    raw_topics = extract_wikilinks(note.body)
+    seen: set[str] = set()
+    topics: list[str] = []
+    for w in raw_topics:
+        wl = w.strip()
+        if wl and wl.lower() not in seen:
+            seen.add(wl.lower())
+            topics.append(wl)
+            if len(topics) >= DEFAULT_FRESH_TOPIC_COUNT:
+                break
+
+    # 抽 last user/agent block (倒序找 ## HH:MM:SS 後第一段)
+    body_lines = note.body.splitlines()
+    last_block_lines: list[str] = []
+    in_block = False
+    for line in reversed(body_lines):
+        if line.startswith("## "):
+            in_block = True
+            last_block_lines.insert(0, line)
+            break
+        if in_block:
+            last_block_lines.insert(0, line)
+        else:
+            last_block_lines.insert(0, line)
+            if len(last_block_lines) > 8:
+                break
+    last_tail = "\n".join(last_block_lines).strip()[:300]
+
+    return {
+        "session_path": rel,
+        "mtime": mtime.isoformat(),
+        "topics": topics,
+        "last_tail": last_tail,
+    }
+
+
+def build_fresh_chat_recall_prepend(recall: dict) -> str:
+    """Build「📖 上次我們聊到」prepend text. 給 chat response 開頭用."""
+
+    topics = recall.get("topics", [])
+    topics_str = " / ".join(f"`[[{t}]]`" for t in topics) if topics else "(無 wikilink 主題)"
+    mtime_str = recall.get("mtime", "")
+    try:
+        mt = datetime.fromisoformat(mtime_str)
+        time_label = mt.strftime("%m-%d %H:%M")
+    except (ValueError, TypeError):
+        time_label = mtime_str[:16]
+
+    return (
+        f"📖 上次我們聊到（{time_label}）：{topics_str}\n"
+        f"  完整紀錄：`{recall.get('session_path', '')}`\n"
+        "  要繼續這話題還是換新的？\n\n"
+    )
+
+
+def is_fresh_session(
+    vault_root: Path,
+    *,
+    persona_id: str,
+    context: str,
+    session_id: str,
+) -> bool:
+    """判斷當前 session 是否為「fresh」(還沒寫過任何 turn).
+
+    依 chat_session.session_note_path 規則: vault/70_Active_Plans/Session_Logs/<date>/<persona>__<context>__<session>.md
+    若該檔不存在或 size < 200 bytes (只 frontmatter) → fresh.
+    """
+
+    root = Path(vault_root).expanduser().resolve()
+    session_root = root / SESSION_LOG_DIR_RELATIVE
+    if not session_root.exists():
+        return True
+    # session_note_path 邏輯: <date>/<persona>__<context>__<session>.md
+    # 但 date_dir 名通常是 created 那天, fresh session 還沒檔
+    target_stem = f"{persona_id}__{context}__{session_id}"
+    for date_dir in session_root.iterdir():
+        if not date_dir.is_dir():
+            continue
+        candidate = date_dir / f"{target_stem}.md"
+        if candidate.exists():
+            # 已存在 — 看 size 判斷是否寫過 (純 frontmatter ~150-200 bytes)
+            try:
+                if candidate.stat().st_size > 250:
+                    return False
+            except OSError:
+                pass
+            return False
+    return True
