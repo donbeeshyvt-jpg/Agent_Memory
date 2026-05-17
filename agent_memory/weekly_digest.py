@@ -211,8 +211,73 @@ def _count_pending(vault_root: Path) -> dict[str, int]:
 # ─── Generate digest ──────────────────────────────────────────────────────────
 
 
-def generate_weekly_digest(vault_root: Path) -> dict[str, Any]:
-    """產出本週 digest, 寫 markdown + 更 state. 同週重跑會覆寫."""
+def _try_llm_narrative_insight(stats: dict[str, Any], new_entities: list[dict[str, Any]]) -> str | None:
+    """R9 C28: 可選 LLM narrative — 看本週統計 + 新建 entity → 給 1-2 段 narrative insight.
+
+    讀 promotion.yaml 內 weekly_digest.llm_insight_enabled (預設 False).
+    LLM 失敗 → 回 None (digest 不會崩).
+    """
+
+    # 簡單檢查 config: 沒打開就跳過
+    # 為了避免 import loop, lazy 讀 yaml
+    try:
+        import yaml as _yaml
+        from agent_memory.curator import PROMOTION_CONFIG_RELATIVE_PATH
+
+        # vault_root 由 caller 傳, 但 _try_llm_narrative_insight 沒拿到. 簡化:
+        # 改 caller 在 generate_weekly_digest 內判斷 config + 傳 enabled flag.
+        return None  # 預設不開, 由 caller 決定
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _call_llm_narrative(stats: dict[str, Any], new_entities: list[dict[str, Any]], *, mock_response: str | None = None) -> str | None:
+    """Real LLM call (or mock) — 回 narrative 字串 or None.
+
+    mock_response: e2e 用. 傳字串直接當輸出.
+    """
+
+    if mock_response is not None:
+        return mock_response
+
+    try:
+        from agent_memory.llm_client import LLMClient
+        client = LLMClient()
+        ents_lines = "\n".join(f"- `{e['entity_id']}` (state={e['lifecycle_state']}, mention={e['mention_count']})" for e in new_entities[:10])
+        prompt = (
+            "以下是本週統計 + 新建中期 entity 列表. "
+            "請給 1-2 段 narrative insight (中文, 限 150 字), 看出主題趨勢 / 興趣轉移 / 建議.\n"
+            "回應只給 narrative 文字, 不要其他格式.\n\n"
+            f"統計: {stats}\n\n"
+            f"新建 entity:\n{ents_lines}\n"
+        )
+        result = client.generate(prompt=prompt, temperature=0.4, timeout_s=30.0, max_tokens=300)
+        return result.content.strip() if hasattr(result, "content") else str(result).strip()
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _is_llm_narrative_enabled(vault_root: Path) -> bool:
+    """讀 promotion.yaml weekly_digest.llm_insight_enabled (預設 False)."""
+
+    root = Path(vault_root).expanduser().resolve()
+    cfg_path = root / "00_System/08_Runtime_Profiles/promotion.yaml"
+    if not cfg_path.exists():
+        return False
+    try:
+        import yaml as _yaml
+        payload = _yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+        wd = payload.get("weekly_digest", {}) if isinstance(payload, dict) else {}
+        return bool(wd.get("llm_insight_enabled", False))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def generate_weekly_digest(vault_root: Path, *, llm_mock_narrative: str | None = None) -> dict[str, Any]:
+    """產出本週 digest, 寫 markdown + 更 state. 同週重跑會覆寫.
+
+    R9 C28: 可選 LLM narrative (config flag 開或 llm_mock_narrative 傳).
+    """
 
     root = Path(vault_root).expanduser().resolve()
     now = _now_local()
@@ -265,10 +330,25 @@ def generate_weekly_digest(vault_root: Path) -> dict[str, Any]:
 
 ## 簡短結論
 {_build_narrative(flushes, len(new_entities), prom['promote_count'], len(skills), pending)}
-
----
-*產生時間：{now.isoformat()}*
 """
+
+    # R9 C28: 可選 LLM narrative insight 段 (預設 off, llm_insight_enabled=true 或 mock 才加)
+    stats_dict = {
+        "flushes": flushes,
+        "new_midterm_entities": len(new_entities),
+        "promote_events": prom["promote_count"],
+        "skill_promotions": len(skills),
+        "pending_skill_suggestions": pending["pending_skill_suggestions"],
+        "pending_user_gaps": pending["pending_user_gaps"],
+    }
+    llm_used = False
+    if llm_mock_narrative is not None or _is_llm_narrative_enabled(root):
+        narrative = _call_llm_narrative(stats_dict, new_entities, mock_response=llm_mock_narrative)
+        if narrative:
+            body += f"\n## LLM 觀察 (R9 C28)\n\n{narrative}\n"
+            llm_used = True
+
+    body += f"\n---\n*產生時間：{now.isoformat()}*\n"
     atomic_write(digest_path, body)
 
     state = load_digest_state(root)
@@ -290,6 +370,7 @@ def generate_weekly_digest(vault_root: Path) -> dict[str, Any]:
             "pending_skill_suggestions": pending["pending_skill_suggestions"],
             "pending_user_gaps": pending["pending_user_gaps"],
         },
+        "llm_narrative_used": llm_used,
     }
 
 
