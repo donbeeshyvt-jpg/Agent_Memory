@@ -797,6 +797,61 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"state_entries={entries_in_state}, second_run_summarized={len(ext_result_2.get('summarized', []))}, second_skipped={len(ext_result_2.get('skipped', []))}",
     )
 
+    # ─── Step 12 (R11): LLMClient interface 修 — 真實 LLM 路徑乾淨 fallback ──
+    report.section("Step 12 (R11): LLM helper 統一 + 真實 LLM 路徑 fallback (HANDOFF §4.3 技術債)")
+
+    # 12.1 — R11 C41 _extract_first_json_block strip ```json fence
+    from agent_memory.llm_text_helpers import _extract_first_json_block
+    fenced = '```json\n{"key": "val"}\n```'
+    bare = _extract_first_json_block(fenced, expect_array=False)
+    report.step(
+        "C41 _extract_first_json_block 自動 strip ```json fence",
+        bare.strip() == '{"key": "val"}',
+        f"input={fenced!r}, output={bare!r}",
+    )
+
+    # 12.2 — R11 C41 _extract_first_json_block list 模式
+    fenced_list = '```\n[{"a": 1}, {"b": 2}]\n```'
+    bare_list = _extract_first_json_block(fenced_list, expect_array=True)
+    report.step(
+        "C41 _extract_first_json_block expect_array=True 抓 [...] 塊",
+        bare_list.strip() == '[{"a": 1}, {"b": 2}]',
+        f"output={bare_list!r}",
+    )
+
+    # 12.3 — R11 C41 call_llm_for_text 沒 LLM env 拋 LLMClientError (不 TypeError)
+    from agent_memory.llm_text_helpers import call_llm_for_text
+    from agent_memory.llm_client import LLMClientError
+    exc_caught: Exception | None = None
+    try:
+        call_llm_for_text(vault_root, "smoke test prompt", timeout_s=2.0)
+    except Exception as exc:  # noqa: BLE001
+        exc_caught = exc
+    report.step(
+        "C41 call_llm_for_text 沒 LLM env → LLMClientError (不 TypeError)",
+        isinstance(exc_caught, LLMClientError),
+        f"exc_type={type(exc_caught).__name__ if exc_caught else 'None'}",
+    )
+
+    # 12.4 — R11 C41 真實 LLM 路徑 fallback: 5 模組裡挑 umbrella_llm 驗
+    # 不傳 mock_response → 進真 LLM 路徑 → 應該 result.error 含 'llm_call_failed' 不 TypeError
+    from agent_memory.umbrella_llm import consolidate_umbrella_with_llm
+    # 建多個同 prefix Mid_Term 讓 scan 有 candidate (sleep cycle 才會 trigger LLM)
+    mt = vault_root / "10_Permanent" / "Mid_Term"
+    mt.mkdir(parents=True, exist_ok=True)
+    for slug in ("python-async-r11", "python-deco-r11"):
+        (mt / f"{slug}.md").write_text(
+            "---\ntype: concept\nsource: agent\nlifecycle_state: mid\nmention_count: 3\ntags: [mid_term]\n---\n# stub",
+            encoding="utf-8",
+        )
+    real_llm_result = consolidate_umbrella_with_llm(vault_root)
+    report.step(
+        "C41 真實 LLM 路徑 fallback: result.error 含 'llm_call_failed' (不 TypeError 不爆)",
+        bool(real_llm_result.get("error", "")) and "llm_call_failed" in str(real_llm_result.get("error", ""))
+            and real_llm_result.get("llm_called") is False,
+        f"error={str(real_llm_result.get('error', ''))[:120]}, llm_called={real_llm_result.get('llm_called')}",
+    )
+
     return report.summary()
 
 
