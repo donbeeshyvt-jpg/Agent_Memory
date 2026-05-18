@@ -936,6 +936,58 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"key→{p1}/{m1}, explicit→{p2}/{m2}, bogus_raised={bogus_raised}",
     )
 
+    # ─── Step 14 (R13): Codex 第 8 輪 fix 驗證 ─────────────────────────────
+    report.section("Step 14 (R13): 假宣稱 disclaimer / wizard map / menu Read-Host null-safe")
+
+    # 14.1 — C48 chat_runtime 有 _strip_leading_reasoning_blocks 跟 fake_claim 偵測 (檢查 source)
+    import agent_memory.chat_runtime as _crt2
+    crt2_src = Path(_crt2.__file__).read_text(encoding="utf-8")
+    has_c48 = all(s in crt2_src for s in (
+        "fake_claim_detected",
+        "fake_claim_patterns",
+        "本回合無實際工具執行",
+        "fake_tool_claim_detected",
+    ))
+    report.step(
+        "C48 chat_runtime 含 fake_claim_detected disclaimer 邏輯",
+        has_c48,
+        f"check={has_c48}",
+    )
+
+    # 14.2 — C48 keyword 偵測涵蓋中英 + result payload 含 fake_tool_claim_detected flag
+    keyword_samples = ["已建立", "已寫入", "已執行", "successfully created", "i have created"]
+    keyword_in_source = all(k in crt2_src for k in keyword_samples)
+    report.step(
+        "C48 假宣稱 keyword 涵蓋中英 (5 樣本)",
+        keyword_in_source,
+        f"samples_in_source={keyword_in_source}",
+    )
+
+    # 14.3 — C49 persona-wizard Show-PersonaList 用 PSObject.Properties 攤平 map
+    wiz_src = (Path(_crt2.__file__).parent.parent / "scripts" / "persona-wizard.ps1").read_text(encoding="utf-8")
+    has_c49 = (
+        "PSObject.Properties" in wiz_src
+        and "personasMap" in wiz_src
+        and "fallback" in wiz_src.lower()  # display_name fallback to persona_id
+    )
+    report.step(
+        "C49 persona-wizard Show-PersonaList 改用 PSObject.Properties 處理 map",
+        has_c49,
+        f"check={has_c49}",
+    )
+
+    # 14.4 — C50 menu.ps1 Read-SafeTrim helper + 沒有殘留 (Read-Host).Trim()
+    menu_src = (Path(_crt2.__file__).parent.parent / "scripts" / "menu.ps1").read_text(encoding="utf-8")
+    import re as _re
+    legacy_pattern = _re.findall(r"\(Read-Host[^)]*\)\.Trim", menu_src)
+    helper_count = menu_src.count("Read-SafeTrim")
+    has_c50 = len(legacy_pattern) == 0 and helper_count >= 5 and "[Environment]::Exit(0)" in menu_src
+    report.step(
+        "C50 menu.ps1 全改 Read-SafeTrim + EOF Exit(0)",
+        has_c50,
+        f"legacy_calls={len(legacy_pattern)} (預期 0), helper_count={helper_count} (預期 ≥5), has_exit={'[Environment]::Exit(0)' in menu_src}",
+    )
+
     return report.summary()
 
 
