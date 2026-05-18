@@ -12,6 +12,7 @@ from agent_memory.llm_ledger import record_llm_route_event
 from agent_memory.local_tools import (
     build_agent_tools_prompt,
     execute_agent_tool_call,
+    count_unmatched_tool_attempts,
     parse_agent_tool_calls,
     render_agent_tool_summary,
     strip_agent_tool_blocks,
@@ -293,18 +294,27 @@ def run_chat_turn(
     raw_response_text = llm_result.content.strip()
 
     # Phase A C3 (A.5): parse + execute agent tool calls.
-    # LLM 若在回應中嵌入 [TOOL]memory{...}[/TOOL] -> 自動執行寫入第二大腦.
+    # LLM 若在回應中嵌入 [TOOL]memory{...}<closing> -> 自動執行寫入第二大腦.
+    # R12 C44: closing tag 支援多家族變體 ([/TOOL] / <tool_call|> / </tool_call> / <|tool_call|>)
+    # + 偵測 unmatched [TOOL] 開頭 (LLM 嘗試呼叫但格式不符) 加護欄, 避免「LLM 假宣稱已建立但實際沒執行」.
     agent_tool_results: list[dict[str, Any]] = []
+    unparsed_tool_attempts = 0
     if tools_enabled:
         tool_calls = parse_agent_tool_calls(raw_response_text)
         for call in tool_calls:
             res = execute_agent_tool_call(runtime, call, operator=persona)
             agent_tool_results.append(res)
+        unparsed_tool_attempts = count_unmatched_tool_attempts(raw_response_text, len(tool_calls))
         # 從顯示用 response 拿掉 [TOOL] block (避免使用者看到亂碼 JSON)
         response_text = strip_agent_tool_blocks(raw_response_text)
         # 附加執行摘要到 response 尾巴 (使用者要看到 agent 改了什麼)
         if agent_tool_results:
             response_text = response_text + render_agent_tool_summary(agent_tool_results)
+        # R12 C44 護欄: 有 [TOOL] 嘗試但 parse 不到 -> 警告使用者「未實際執行」
+        if unparsed_tool_attempts > 0:
+            response_text = response_text.rstrip() + (
+                f"\n\n⚠️ 偵測到 {unparsed_tool_attempts} 個工具呼叫格式異常 (closing tag 缺/變體)，**未實際執行**。請重試或切到穩定模型 (Qwen3-30B / Gemini Pro)。"
+            )
     else:
         response_text = raw_response_text
 
@@ -496,6 +506,7 @@ def run_chat_turn(
             "daily": daily_path,
         },
         "agent_tool_calls": agent_tool_results,  # Phase A C3 (A.5)
+        "unparsed_tool_attempts": unparsed_tool_attempts,  # R12 C44 — LLM 嘗試呼叫但格式不符的次數
         "memory_context_hits": memory_context_hits,  # Phase A C6 (dynamic fence)
         "auto_evolve": auto_evolve_status,  # Phase A C15
         "curator": curator_status,  # R7 C18

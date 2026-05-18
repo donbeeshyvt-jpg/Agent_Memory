@@ -417,16 +417,27 @@ def render_llm_switch_result(result: dict[str, Any]) -> str:
 #       禁止寫入 20/80/90 raw 區 + 限制在 vault 內.
 # ============================================================
 
-# Regex 抓 [TOOL]<name>{...json...}[/TOOL] block. multiline + non-greedy.
+# Regex 抓 [TOOL]<name>{...json...}<closing> block. multiline + non-greedy.
+# R12 C44: closing tag 支援多種模型家族變體 (Codex 第 7 輪 TOOL-002/004 GAP):
+#   - [/TOOL]            — 原始格式 (GLM / Llama style 偏好)
+#   - <tool_call|>       — Qwen / 部分開源模型尾碼
+#   - </tool_call>       — XML 結束 tag
+#   - <|tool_call|>      — chatml 變體
+# 任何一個都會被當成 block 結尾.
+_AGENT_TOOL_CLOSING = r"(?:\[/TOOL\]|<\s*/\s*tool_call\s*>|<\s*tool_call\s*\|\s*>|<\|\s*tool_call\s*\|\s*>)"
 _AGENT_TOOL_PATTERN = re.compile(
-    r"\[TOOL\]\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(\{.*?\})\s*\[/TOOL\]",
+    rf"\[TOOL\]\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*(\{{.*?\}})\s*{_AGENT_TOOL_CLOSING}",
     re.DOTALL,
 )
 
+# R12 C44: 偵測「有 [TOOL] 開頭但沒成功 parse」— 給 chat_runtime 加 unmatched attempts 護欄
+_AGENT_TOOL_OPEN_RE = re.compile(r"\[TOOL\]", re.IGNORECASE)
+
 
 def parse_agent_tool_calls(response_text: str) -> list[dict[str, Any]]:
-    """Parse `[TOOL]<name>{json}[/TOOL]` blocks from LLM response.
+    """Parse `[TOOL]<name>{json}<closing>` blocks from LLM response.
 
+    Supports multiple closing variants ([/TOOL] / <tool_call|> / </tool_call> / <|tool_call|>).
     Returns list of `{"tool": str, "args": dict, "raw": str}`.
     `raw` is the matched substring (used for stripping later).
     Invalid JSON entries are skipped with `args={"_parse_error": "..."}`.
@@ -448,8 +459,24 @@ def parse_agent_tool_calls(response_text: str) -> list[dict[str, Any]]:
     return out
 
 
+def count_unmatched_tool_attempts(response_text: str, parsed_count: int) -> int:
+    """R12 C44: 偵測「LLM 寫了 [TOOL] 但 parse 不到」的次數.
+
+    用於 chat_runtime 加護欄, 避免「使用者看到 LLM 宣稱已建立但實際沒執行」.
+    回 unmatched_attempts = (response 內 [TOOL] 開頭數) - (成功 parse 數).
+    若 >0 表示有 LLM 嘗試呼叫工具但格式不符 (closing tag 缺 / 變體) 被當文字.
+    """
+    if not response_text:
+        return 0
+    total_opens = len(_AGENT_TOOL_OPEN_RE.findall(response_text))
+    return max(0, total_opens - parsed_count)
+
+
 def strip_agent_tool_blocks(response_text: str) -> str:
-    """Remove `[TOOL]...[/TOOL]` blocks from response (for user-facing display)."""
+    """Remove `[TOOL]...<closing>` blocks from response (for user-facing display).
+
+    R12 C44: closing tag 已擴, strip 沿用同 pattern.
+    """
     if not response_text:
         return ""
     cleaned = _AGENT_TOOL_PATTERN.sub("", response_text)
