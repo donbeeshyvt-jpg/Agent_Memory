@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -833,8 +834,10 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"exc_type={type(exc_caught).__name__ if exc_caught else 'None'}",
     )
 
-    # 12.4 — R11 C41 真實 LLM 路徑 fallback: 5 模組裡挑 umbrella_llm 驗
-    # 不傳 mock_response → 進真 LLM 路徑 → 應該 result.error 含 'llm_call_failed' 不 TypeError
+    # 12.4 — R11 C41 真實 LLM 路徑: 5 模組裡挑 umbrella_llm 驗
+    # 不傳 mock_response → 進真 LLM 路徑。
+    # 無 LLM env: 應 graceful fallback (llm_call_failed)。
+    # 有 LLM env: 允許 llm_called=True 且 error 空字串（真實呼叫成功）。
     from agent_memory.umbrella_llm import consolidate_umbrella_with_llm
     # 建多個同 prefix Mid_Term 讓 scan 有 candidate (sleep cycle 才會 trigger LLM)
     mt = vault_root / "10_Permanent" / "Mid_Term"
@@ -845,11 +848,20 @@ def run_simulation(vault_root: Path, report: Report) -> int:
             encoding="utf-8",
         )
     real_llm_result = consolidate_umbrella_with_llm(vault_root)
+    real_error = str(real_llm_result.get("error", ""))
+    real_called = real_llm_result.get("llm_called") is True
+    fallback_ok = ("llm_call_failed" in real_error) and not real_called
+    live_ok = (real_error.strip() == "") and real_called
+    no_typeerror = "TypeError" not in real_error
+    has_google_key = bool(os.environ.get("GOOGLE_API_KEY", "").strip())
     report.step(
-        "C41 真實 LLM 路徑 fallback: result.error 含 'llm_call_failed' (不 TypeError 不爆)",
-        bool(real_llm_result.get("error", "")) and "llm_call_failed" in str(real_llm_result.get("error", ""))
-            and real_llm_result.get("llm_called") is False,
-        f"error={str(real_llm_result.get('error', ''))[:120]}, llm_called={real_llm_result.get('llm_called')}",
+        "C41 真實 LLM 路徑: 無 env fallback / 有 env 成功 (都不得 TypeError)",
+        (fallback_ok or live_ok) and no_typeerror,
+        (
+            f"has_google_key={has_google_key}, "
+            f"error={real_error[:120]}, "
+            f"llm_called={real_llm_result.get('llm_called')}"
+        ),
     )
 
     return report.summary()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from typing import Any
 
 from agent_memory.chat_session import append_chat_turn, append_daily_chat_digest, session_note_path
@@ -34,6 +35,26 @@ def _safe_snapshot(runtime: MemoryRuntime) -> str:
         return runtime.frozen_snapshot()
     except Exception:  # noqa: BLE001
         return "<USER_PROFILE_SNAPSHOT>\n(missing)\n</USER_PROFILE_SNAPSHOT>\n\n<AGENT_MEMORY_SNAPSHOT>\n(missing)\n</AGENT_MEMORY_SNAPSHOT>\n"
+
+
+def _strip_leading_reasoning_blocks(text: str) -> str:
+    """移除模型偶發輸出的前置內部推理區塊（<thought>/<think>）。"""
+    if not text:
+        return text
+    cleaned = re.sub(
+        r"^\s*(?:<\s*(?:thought|think)\b[^>]*>.*?<\s*/\s*(?:thought|think)\s*>\s*)+",
+        "",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    # 有些模型會漏閉合或殘留單獨標籤，額外清一次前置裸標籤。
+    cleaned = re.sub(
+        r"^\s*</?\s*(?:thought|think)\b[^>]*>\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    return cleaned.strip()
 
 
 def run_chat_turn(
@@ -286,6 +307,8 @@ def run_chat_turn(
             response_text = response_text + render_agent_tool_summary(agent_tool_results)
     else:
         response_text = raw_response_text
+
+    response_text = _strip_leading_reasoning_blocks(response_text)
 
     if not runtime.profile.can_write(hist_path):
         raise PermissionError(f"persona={persona} 無權寫入 session 路徑：{hist_path}")
