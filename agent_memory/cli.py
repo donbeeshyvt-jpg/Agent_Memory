@@ -689,10 +689,14 @@ def _build_parser() -> argparse.ArgumentParser:
     llm_set_default.add_argument("--json", action="store_true", help="Print updated values as JSON.")
     llm_set_default.set_defaults(func=_cmd_llm_set_default)
 
+    # R12 C46: llm-set-persona 加 --key preset alias (Codex T8.2 + persona-wizard 修, 對齊 Claude_驗收批次A §A3)
+    # --key 提供 7 個 preset (gemma4 / qwen9 / qwen30 / gemini / gemini-pro / gemma-31b / gemma-26b)
+    # --profile + --model 是進階手動指定; --key 跟 --profile/--model 二擇一
     llm_set_persona = sub.add_parser("llm-set-persona", help="Set persona-specific model override.")
     llm_set_persona.add_argument("--persona", required=True, help="Persona id.")
-    llm_set_persona.add_argument("--profile", required=True, help="Provider profile id.")
-    llm_set_persona.add_argument("--model", required=True, help="Model id.")
+    llm_set_persona.add_argument("--profile", default=None, help="Provider profile id (跟 --key 二擇一).")
+    llm_set_persona.add_argument("--model", default=None, help="Model id (跟 --key 二擇一).")
+    llm_set_persona.add_argument("--key", default=None, help="Preset alias: gemma4 / qwen9 / qwen30 / gemini / gemini-pro / gemma-31b / gemma-26b.")
     llm_set_persona.add_argument("--json", action="store_true", help="Print updated values as JSON.")
     llm_set_persona.set_defaults(func=_cmd_llm_set_persona)
 
@@ -2872,17 +2876,50 @@ def _cmd_llm_set_default(args: argparse.Namespace) -> int:
     return 0
 
 
+_LLM_PRESET_MAP: dict[str, tuple[str, str]] = {
+    # R12 C46 preset alias (對齊 persona-wizard.ps1 + STATUS doc 慣用名)
+    "gemma4":     ("llama_cpp_local", "../../0_Models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q8_0.gguf"),
+    "qwen9":      ("llama_cpp_local", "../../0_Models/Qwen3.5-9B-GGUF/Qwen3.5-9B-Q8_0.gguf"),
+    "qwen30":     ("llama_cpp_local", "../../0_Models/Qwen3-30B-A3B-UD-Q4_K_XL.gguf"),
+    "gemini":     ("gemini", "gemini-2.0-flash-exp"),
+    "gemini-pro": ("gemini", "gemini-1.5-pro"),
+    "gemma-31b":  ("gemini", "gemma-4-31b-it"),
+    "gemma-26b":  ("gemini", "gemma-4-26b-it"),
+}
+
+
+def _resolve_llm_preset_or_explicit(args: argparse.Namespace) -> tuple[str, str]:
+    """R12 C46: 解析 --key preset 或 --profile + --model 顯式. 回 (profile, model)."""
+    key = getattr(args, "key", None)
+    profile = getattr(args, "profile", None)
+    model = getattr(args, "model", None)
+    if key:
+        key_norm = str(key).strip().lower()
+        if key_norm not in _LLM_PRESET_MAP:
+            raise ValueError(
+                f"未知 preset key: '{key}'. 可用: {', '.join(sorted(_LLM_PRESET_MAP))}"
+            )
+        return _LLM_PRESET_MAP[key_norm]
+    if profile and model:
+        return (str(profile).strip(), str(model).strip())
+    raise ValueError(
+        "需指定 --key <preset> 或同時給 --profile <id> --model <id>. "
+        f"Preset 可用: {', '.join(sorted(_LLM_PRESET_MAP))}"
+    )
+
+
 def _cmd_llm_set_persona(args: argparse.Namespace) -> int:
     adapter = _build_adapter(args)
     cfg = load_llm_router_config(adapter.vault_root)
     persona = args.persona.strip()
     if not persona:
-        raise ValueError("persona 銝?箇征")
+        raise ValueError("persona 不可為空")
+    profile, model = _resolve_llm_preset_or_explicit(args)
     if not isinstance(cfg.get("persona_overrides"), dict):
         cfg["persona_overrides"] = {}
     cfg["persona_overrides"][persona] = {
-        "profile": args.profile.strip(),
-        "model": args.model.strip(),
+        "profile": profile,
+        "model": model,
     }
     save_llm_router_config(adapter.vault_root, cfg)
     payload = {

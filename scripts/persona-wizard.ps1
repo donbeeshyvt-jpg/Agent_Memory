@@ -31,10 +31,11 @@ $pythonExe = $env:PYTHON_EXE
 if (-not $pythonExe) { $pythonExe = "python" }
 
 function Invoke-PersonaCli {
-    param([string[]]$Args)
+    # R12 C46: param name 從 $Args 改 $CliArgs — 避免跟 PowerShell 自動變數衝突 (Codex T8.2 FAIL)
+    param([string[]]$CliArgs)
     $full = @("-X", "utf8", "-m", "agent_memory.cli")
     if ($VaultRoot) { $full += @("--vault-root", $VaultRoot) }
-    $full += $Args
+    $full += $CliArgs
     $full += "--json"
     Push-Location $projectRoot
     try {
@@ -60,7 +61,7 @@ function Invoke-PersonaCli {
 function Show-PersonaList {
     Write-Host ""
     Write-Host "  目前已啟用的人格 (registry.yaml):" -ForegroundColor Cyan
-    $r = Invoke-PersonaCli -Args @("persona-list")
+    $r = Invoke-PersonaCli -CliArgs @("persona-list")
     if (-not $r.ok) {
         Write-Host "  [ERR] persona-list 失敗: $($r.error)" -ForegroundColor Red
         Write-Host "  $($r.raw)" -ForegroundColor DarkGray
@@ -147,7 +148,7 @@ function Do-CreatePersona {
         return
     }
 
-    $r = Invoke-PersonaCli -Args $personaArgs
+    $r = Invoke-PersonaCli -CliArgs $personaArgs
     if ($r.ok) {
         Write-Host "  ✓ 已建立並核准." -ForegroundColor Green
         if ($r.data.persona_id) {
@@ -163,7 +164,7 @@ function Do-CreatePersona {
                 $modelKey = (Read-Host "  選一個 preset key (Enter 取消)").Trim()
                 if ($modelKey) {
                     $llmArgs = @("llm-set-persona", "--persona", $newId, "--key", $modelKey)
-                    $r2 = Invoke-PersonaCli -Args $llmArgs
+                    $r2 = Invoke-PersonaCli -CliArgs $llmArgs
                     if ($r2.ok) {
                         Write-Host "  ✓ 模型已綁定." -ForegroundColor Green
                     } else {
@@ -215,7 +216,7 @@ function Do-UpdatePersona {
         "4" { $updateArgs += @("--disable-tools") }
         default { Write-Host "  [取消]" -ForegroundColor Yellow; return }
     }
-    $r = Invoke-PersonaCli -Args $updateArgs
+    $r = Invoke-PersonaCli -CliArgs $updateArgs
     if ($r.ok) {
         Write-Host "  ✓ 更新成功." -ForegroundColor Green
     } else {
@@ -245,7 +246,7 @@ function Do-DisablePersona {
     if (-not $confirm) { Write-Host "  [取消]" -ForegroundColor Yellow; return }
     $disableArgs = @("persona-disable", "--persona", $target.persona_id)
     if ($reason) { $disableArgs += @("--reason", $reason) }
-    $r = Invoke-PersonaCli -Args $disableArgs
+    $r = Invoke-PersonaCli -CliArgs $disableArgs
     if ($r.ok) {
         Write-Host "  ✓ 已停用 (檔案仍保留, 可重新核准恢復)." -ForegroundColor Green
     } else {
@@ -271,7 +272,7 @@ function Do-SetModel {
     Write-Host "    本機: gemma4 / qwen9 / qwen30" -ForegroundColor DarkGray
     Write-Host "    雲端: gemini (Flash) / gemini-pro / gemma-31b / gemma-26b" -ForegroundColor DarkGray
     $modelKey = Read-NonEmpty -Prompt "  選 preset key"
-    $r = Invoke-PersonaCli -Args @("llm-set-persona", "--persona", $target.persona_id, "--key", $modelKey)
+    $r = Invoke-PersonaCli -CliArgs @("llm-set-persona", "--persona", $target.persona_id, "--key", $modelKey)
     if ($r.ok) {
         Write-Host "  ✓ 已綁定 $($target.persona_id) → $modelKey" -ForegroundColor Green
     } else {
