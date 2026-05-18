@@ -37,6 +37,48 @@ catch { }
 $projectRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $projectRoot
 
+# R13 C50: Read-Host null-safe helper (Codex ENV-006 GAP — EOF/自動化輸入下 Read-Host 回 null 對 .Trim() 爆).
+# 雙修:
+#   1. StrictMode + null reference 雙觸發 → try/catch + null check 保證回 string
+#   2. EOF (stdin 關閉 / pipe 結束) → 直接 [Environment]::Exit(0) 乾淨退出
+#      避免「不爆但無限迴圈」（菜單空輸入永遠不 match 任何選項 → loop forever）
+$script:_ReadSafeTrim_EmptyInputCount = 0
+function Read-SafeTrim {
+    param(
+        [string]$Prompt = "",
+        [switch]$Upper
+    )
+    $eof = $false
+    try {
+        if ($Prompt) {
+            $raw = Read-Host -Prompt $Prompt
+        } else {
+            $raw = Read-Host
+        }
+    } catch {
+        $raw = ""
+        $eof = $true
+    }
+    if ($null -eq $raw) {
+        $raw = ""
+        $eof = $true
+    }
+    $trimmed = ([string]$raw).Trim()
+    # 偵測 EOF / 自動化情境: 連續 3 次空輸入 → 視為非互動, 乾淨退出
+    if ($eof -or [string]::IsNullOrEmpty($trimmed)) {
+        $script:_ReadSafeTrim_EmptyInputCount++
+        if ($script:_ReadSafeTrim_EmptyInputCount -ge 3) {
+            Write-Host ""
+            Write-Host "[menu] 偵測非互動輸入 (連續 3 次空 / EOF), 乾淨退出." -ForegroundColor DarkGray
+            [Environment]::Exit(0)
+        }
+    } else {
+        $script:_ReadSafeTrim_EmptyInputCount = 0
+    }
+    if ($Upper) { return $trimmed.ToUpper() }
+    return $trimmed
+}
+
 # 自動載入 .env 把 GOOGLE_API_KEY / DISCORD_BOT_TOKEN_* 等灌進此 process
 # .env 放 <vault>/.env (跟著 brain 走)
 . (Join-Path $PSScriptRoot "_dotenv-helper.ps1")
@@ -309,7 +351,7 @@ function Read-MenuChoice {
         Write-Host -NoNewline "  請輸入 " -ForegroundColor $BorderColor
         Write-Host -NoNewline "[1-9/M/P/D/Q]" -ForegroundColor $AccentColor
         Write-Host -NoNewline ": " -ForegroundColor $BorderColor
-        $raw = (Read-Host).Trim().ToUpper()
+        $raw = Read-SafeTrim -Upper
         if ($raw -in @("1", "2", "3", "4", "5", "6", "7", "8", "9", "M", "P", "D", "Q")) {
             return $raw
         }
@@ -415,7 +457,7 @@ function Invoke-ClearUserData {
     Write-Host ""
     Write-Host "  確定要刪除 .env 並清掉這些 key?" -ForegroundColor $WarnColor
     Write-Host "  (Windows registry / setx 設過的 key 不會動,要 switch-llm.ps1 -RemoveKey 額外清)" -ForegroundColor $MutedColor
-    $confirm = (Read-Host "  打 yes 確認").Trim()
+    $confirm = Read-SafeTrim -Prompt "  打 yes 確認"
     if ($confirm -ne "yes") {
         Write-Host "  [INFO] 已取消,沒刪東西。" -ForegroundColor $MutedColor
         return
@@ -504,7 +546,7 @@ function Invoke-CliChat {
 
     while ($true) {
         Write-Host -NoNewline "  你 [$currentPersona] > " -ForegroundColor $AccentColor
-        $msg = (Read-Host).Trim()
+        $msg = Read-SafeTrim
         if (-not $msg) { continue }
         if ($msg -in @("/exit", "/quit", ":q", "exit", "quit")) {
             Write-Host "  [離開對話模式]" -ForegroundColor $MutedColor
@@ -658,7 +700,7 @@ function Invoke-DaemonManager {
     Write-Host ""
     Write-Host "    [B] 回主選單" -ForegroundColor DarkGray
     Write-Host ""
-    $sub = (Read-Host "  選 [C/4/5/S/M/O/U/T/G/N/1/2/3/B]").Trim().ToUpper()
+    $sub = Read-SafeTrim -Prompt "  選 [C/4/5/S/M/O/U/T/G/N/1/2/3/B]" -Upper
     switch ($sub) {
         "C" {
             $a = @("-m", "agent_memory", "curator-status")
