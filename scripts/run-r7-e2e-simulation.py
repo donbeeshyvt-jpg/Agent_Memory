@@ -673,6 +673,130 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"contradictions_count = {len(contradictions)}",
     )
 
+    # ─── Step 11 (R10): 管家收尾 (observability + Recent_Updates + 文獻吸收) ─────
+    report.section("Step 11 (R10): 管家收尾 — observability + Obsidian index + 文獻吸收 (mock LLM)")
+
+    # 11.1 — C36 pending_overview 結構正確 (沿用 Step 9/10 已產的 pending pool 真實狀態)
+    from agent_memory.observability_views import (
+        pending_overview,
+        list_user_gaps,
+        list_contradictions,
+        list_umbrella_suggestions,
+    )
+    overview = pending_overview(vault_root)
+    report.step(
+        "C36 pending_overview 回 4 pool dict + total_pending int",
+        all(k in overview for k in ("skill_suggestions", "umbrella", "procedure_tags", "user_gaps", "total_pending"))
+            and isinstance(overview["total_pending"], int),
+        f"total_pending={overview.get('total_pending')}, keys={sorted(overview.keys())}",
+    )
+
+    # 11.2 — C36 list_contradictions = gap-list kind=contradiction 子集 (跟 Step 10 一致)
+    contradictions_via_view = list_contradictions(vault_root)
+    contradictions_via_gap = list_user_gaps(vault_root, kind="contradiction")
+    report.step(
+        "C36 list_contradictions = list_user_gaps(kind=contradiction)",
+        len(contradictions_via_view) == len(contradictions_via_gap) == len(contradictions),
+        f"contra_view={len(contradictions_via_view)} contra_gap={len(contradictions_via_gap)} contra_step10={len(contradictions)}",
+    )
+
+    # 11.3 — C36 list_umbrella_suggestions 可看到 Step 10.5 mock 產的 1 個 merge
+    umbrella_pending = list_umbrella_suggestions(vault_root)
+    report.step(
+        "C36 list_umbrella_suggestions 含 Step 10.5 mock 產的 merge",
+        len(umbrella_pending) >= 1 and any("python-concurrency" in s.get("umbrella_id", "") for s in umbrella_pending),
+        f"umbrella_pending={len(umbrella_pending)}, ids={[s.get('umbrella_id') for s in umbrella_pending]}",
+    )
+
+    # 11.4 — C37 build_recent_updates_markdown 純函式產 markdown 不爆 + 5 sections
+    from agent_memory.recent_updates import build_recent_updates_markdown, write_recent_updates, RECENT_UPDATES_RELATIVE_PATH
+    md = build_recent_updates_markdown(vault_root, lookback_days=7)
+    sections_expected = [
+        "新增 / 更新的 Mid_Term entity",
+        "升降格事件",
+        "Skill 升格",
+        "本週 / 近期 Weekly digest",
+        "Curator 跑過幾輪",
+    ]
+    missing_sections = [s for s in sections_expected if s not in md]
+    report.step(
+        "C37 build_recent_updates_markdown 含 5 sections + frontmatter pinned=true",
+        not missing_sections and "pinned: true" in md and "lifecycle_state: long" in md,
+        f"len(md)={len(md)} bytes, missing_sections={missing_sections}",
+    )
+
+    # 11.5 — C37 write_recent_updates 落地 00_System/09_Index/03_Recent_Updates.md
+    ru_result = write_recent_updates(vault_root)
+    ru_path = vault_root / RECENT_UPDATES_RELATIVE_PATH
+    report.step(
+        "C37 write_recent_updates → 03_Recent_Updates.md atomic 寫入",
+        ru_path.exists()
+            and ru_result.get("path") == RECENT_UPDATES_RELATIVE_PATH
+            and ru_result.get("bytes_written", 0) > 500,
+        f"path={ru_result.get('path')}, bytes={ru_result.get('bytes_written')}",
+    )
+
+    # 11.6 — C37 落地檔 frontmatter pinned=true (避免被 curator archive)
+    ru_text = ru_path.read_text(encoding="utf-8")
+    report.step(
+        "C37 03_Recent_Updates.md frontmatter pinned=true + lifecycle_state=long",
+        "pinned: true" in ru_text and "lifecycle_state: long" in ru_text and "schema_version: 3" in ru_text,
+        f"ru_text head: {ru_text[:200]!r}",
+    )
+
+    # 11.7 — C38 summarize_external_ingest (mock LLM): 餵 3 個外部檔 → 3 個 Concept 落地
+    from agent_memory.external_ingest_summarize import summarize_external_ingest, load_state as load_ext_state
+    # 建假 external_ingest 檔 (text/md/帶 BOM 模擬)
+    ext_dir = vault_root / "11_AI_Mirror" / "external_ingest" / "discord_attachments" / "ch_e2e"
+    ext_dir.mkdir(parents=True, exist_ok=True)
+    (ext_dir / "rag_intro.md").write_text("# RAG 介紹\n\nRetrieval-Augmented Generation 結合檢索與生成的 NLP 技術.", encoding="utf-8")
+    (ext_dir / "py_async.txt").write_text("Python asyncio 提供 coroutine + event loop.", encoding="utf-8")
+    # BOM 檔測 strip
+    (ext_dir / "bom_doc.md").write_bytes("﻿# BOM 文檔\n\n含 BOM 的內容, 測 strip.".encode("utf-8"))
+
+    ext_mock = {
+        "title": "外部文獻 mock 摘要",
+        "summary": "Mock 摘要: RAG + Python asyncio. 給 C38 e2e 驗證寫 Concept 通暢.",
+        "key_concepts": ["RAG", "Python asyncio"],
+        "tags": ["rag", "python"],
+        "wikilinks_suggested": ["[[RAG]]", "[[Python asyncio]]"],
+    }
+    ext_result = summarize_external_ingest(vault_root, mock_response=ext_mock, max_files=5)
+    report.step(
+        "C38 mock LLM: 3 外部檔 → 3 Concept (含 BOM 自動 strip)",
+        len(ext_result.get("summarized", [])) == 3
+            and not ext_result.get("errors")
+            and ext_result.get("mock_used") is True,
+        f"summarized={len(ext_result.get('summarized', []))}, errors={len(ext_result.get('errors', []))}, skipped={len(ext_result.get('skipped', []))}",
+    )
+
+    # 11.8 — C38 Concept frontmatter 對齊 schema
+    if ext_result.get("summarized"):
+        first_concept_path = vault_root / ext_result["summarized"][0]["concept_path"]
+        concept_text = first_concept_path.read_text(encoding="utf-8") if first_concept_path.exists() else ""
+        report.step(
+            "C38 Concept frontmatter type=concept + source=promotion + extras.ingest_method",
+            "type: concept" in concept_text
+                and "source: promotion" in concept_text
+                and "llm_summarize_c38" in concept_text
+                and "lifecycle_state: long" in concept_text,
+            f"path={first_concept_path}, head={concept_text[:200]!r}",
+        )
+    else:
+        report.step("C38 Concept frontmatter (skipped - no summarized)", False, "no summarized files")
+
+    # 11.9 — C38 state 持久化 + cooldown skip
+    ext_state = load_ext_state(vault_root)
+    entries_in_state = len(ext_state.get("entries", {}))
+    # 第二次跑同 vault → 應該全 cooldown skip
+    ext_result_2 = summarize_external_ingest(vault_root, mock_response=ext_mock, max_files=5)
+    report.step(
+        "C38 state.json 持久化 + 第二輪 cooldown skip",
+        entries_in_state == 3 and len(ext_result_2.get("summarized", [])) == 0
+            and any("in_cooldown" in s.get("reason", "") for s in ext_result_2.get("skipped", [])),
+        f"state_entries={entries_in_state}, second_run_summarized={len(ext_result_2.get('summarized', []))}, second_skipped={len(ext_result_2.get('skipped', []))}",
+    )
+
     return report.summary()
 
 
