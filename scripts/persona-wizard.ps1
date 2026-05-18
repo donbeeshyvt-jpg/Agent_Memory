@@ -59,6 +59,10 @@ function Invoke-PersonaCli {
 }
 
 function Show-PersonaList {
+    # R13 C49: persona-list --json 回 `personas` 是 map (key=persona_id, value=metadata),
+    # 不是 array. 之前 foreach 出來是 key string, 沒欄位 → display 全空白 row.
+    # Fix: 用 .PSObject.Properties 攤平 map 成 record array.
+    # display_name 若 CLI 沒給 → fallback 用 persona_id.
     Write-Host ""
     Write-Host "  目前已啟用的人格 (registry.yaml):" -ForegroundColor Cyan
     $r = Invoke-PersonaCli -CliArgs @("persona-list")
@@ -68,23 +72,37 @@ function Show-PersonaList {
         return @()
     }
     $rows = @()
-    $personas = @($r.data.personas)
-    if ($personas.Count -eq 0) {
+    $personasMap = $r.data.personas
+    if (-not $personasMap) {
         Write-Host "  (尚無 persona)" -ForegroundColor DarkGray
         return @()
     }
-    foreach ($p in $personas) {
+    # personas 是 PSCustomObject (JSON object/map), 用 PSObject.Properties 攤平
+    $props = @($personasMap.PSObject.Properties)
+    if ($props.Count -eq 0) {
+        Write-Host "  (尚無 persona)" -ForegroundColor DarkGray
+        return @()
+    }
+    foreach ($prop in $props) {
+        $personaId = [string]$prop.Name
+        $meta = $prop.Value
+        $displayName = if ($meta.PSObject.Properties.Match('display_name').Count -and $meta.display_name) {
+            [string]$meta.display_name
+        } else {
+            $personaId  # fallback: CLI 沒回 display_name (V1 schema) → 用 persona_id
+        }
         $rows += [pscustomobject]@{
-            persona_id   = [string]$p.persona_id
-            display_name = [string]$p.display_name
-            status       = [string]$p.status
-            role_type    = [string]$p.role_type
+            persona_id   = $personaId
+            display_name = $displayName
+            status       = [string]$meta.status
+            role_type    = if ($meta.PSObject.Properties.Match('role_type').Count) { [string]$meta.role_type } else { "" }
         }
     }
     $idx = 1
     foreach ($p in $rows) {
         $statusLabel = if ($p.status -eq "active") { "✓" } else { "✗ ($($p.status))" }
-        Write-Host ("    [{0}] {1,-12} — {2,-20} {3}" -f $idx, $p.persona_id, $p.display_name, $statusLabel) -ForegroundColor White
+        $roleSuffix = if ($p.role_type) { " [$($p.role_type)]" } else { "" }
+        Write-Host ("    [{0}] {1,-12} — {2,-20} {3}{4}" -f $idx, $p.persona_id, $p.display_name, $statusLabel, $roleSuffix) -ForegroundColor White
         $idx++
     }
     return $rows
