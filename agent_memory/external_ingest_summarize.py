@@ -244,28 +244,13 @@ def _build_summarize_prompt(source_path: str, text: str) -> str:
 """
 
 
-def _default_call_llm(prompt: str) -> dict[str, Any]:
-    """Real LLM call — lazy import LLMClient. 不可用會拋 Exception."""
-    from agent_memory.llm_client import LLMClient  # lazy
+def _default_call_llm(prompt: str, vault_root: Path) -> dict[str, Any]:
+    """Real LLM call — R11 C41 走統一 helper (llm_text_helpers.call_llm_for_json).
 
-    client = LLMClient()
-    result = client.generate(
-        prompt=prompt,
-        temperature=0.2,
-        timeout_s=90.0,
-        max_tokens=1500,
-    )
-    text = result.content.strip() if hasattr(result, "content") else str(result)
-    # 抽 JSON (LLM 可能包 ```json ... ```)
-    if "```" in text:
-        for p in text.split("```"):
-            p = p.strip()
-            if p.startswith("json"):
-                p = p[4:].strip()
-            if p.startswith("{") and p.endswith("}"):
-                text = p
-                break
-    return json.loads(text)
+    LLM 不可用會拋 Exception, 由 caller fallback skip.
+    """
+    from agent_memory.llm_text_helpers import call_llm_for_json  # lazy
+    return call_llm_for_json(vault_root, prompt, temperature=0.2, timeout_s=90.0)
 
 
 # ─── Write Concept .md ──────────────────────────────────────────────────────
@@ -467,7 +452,7 @@ def summarize_external_ingest(
         else:
             try:
                 prompt = _build_summarize_prompt(sp, text)
-                llm_output = _default_call_llm(prompt)
+                llm_output = _default_call_llm(prompt, root)
                 result["llm_called"] = True
             except Exception as exc:  # noqa: BLE001
                 result["errors"].append({"source_path": sp, "error": f"llm_call_failed: {exc}"})

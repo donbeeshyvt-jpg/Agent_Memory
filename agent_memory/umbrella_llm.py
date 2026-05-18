@@ -162,34 +162,15 @@ def _build_consolidation_prompt(entries: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _default_call_llm(prompt: str) -> dict[str, Any]:
-    """Default LLM call — 用 LLMClient. Caller 不該直接 call, 用 consolidate_with_llm() 統一入口.
+def _default_call_llm(prompt: str, vault_root: Path) -> dict[str, Any]:
+    """Default LLM call — 透過 R11 C41 統一 helper.
 
-    若 LLMClient 不可用 → 拋 Exception 讓上層 fallback.
+    若 LLMClient 不可用 → 拋 Exception 讓上層 fallback skip.
     """
 
-    from agent_memory.llm_client import LLMClient  # lazy import
+    from agent_memory.llm_text_helpers import call_llm_for_json  # lazy import
 
-    client = LLMClient()
-    result = client.generate(
-        prompt=prompt,
-        temperature=0.1,  # 低溫度求一致 JSON
-        timeout_s=60.0,
-        max_tokens=1500,
-    )
-    text = result.content.strip() if hasattr(result, "content") else str(result)
-    # 抽 JSON (LLM 可能包 ```json ... ```)
-    if "```" in text:
-        # 抓第一個 ``` 塊內
-        parts = text.split("```")
-        for p in parts:
-            p = p.strip()
-            if p.startswith("json"):
-                p = p[4:].strip()
-            if p.startswith("{") and p.endswith("}"):
-                text = p
-                break
-    return json.loads(text)
+    return call_llm_for_json(vault_root, prompt, temperature=0.1, timeout_s=60.0)
 
 
 # ─── Main entry ──────────────────────────────────────────────────────────────
@@ -235,7 +216,7 @@ def consolidate_umbrella_with_llm(
     else:
         try:
             prompt = _build_consolidation_prompt(entries)
-            llm_output = _default_call_llm(prompt)
+            llm_output = _default_call_llm(prompt, root)
             result["llm_called"] = True
         except Exception as exc:  # noqa: BLE001
             result["error"] = f"llm_call_failed: {exc}"

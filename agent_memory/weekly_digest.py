@@ -231,18 +231,27 @@ def _try_llm_narrative_insight(stats: dict[str, Any], new_entities: list[dict[st
         return None
 
 
-def _call_llm_narrative(stats: dict[str, Any], new_entities: list[dict[str, Any]], *, mock_response: str | None = None) -> str | None:
+def _call_llm_narrative(
+    stats: dict[str, Any],
+    new_entities: list[dict[str, Any]],
+    *,
+    vault_root: Path | None = None,
+    mock_response: str | None = None,
+) -> str | None:
     """Real LLM call (or mock) — 回 narrative 字串 or None.
 
     mock_response: e2e 用. 傳字串直接當輸出.
+    vault_root: R11 C41 改用統一 helper, 從 caller 取得 vault_root.
     """
 
     if mock_response is not None:
         return mock_response
+    if vault_root is None:
+        # R11 C41: 沒給 vault_root 不能 call 真 LLM — caller 應該都傳, 沒傳就 fallback
+        return None
 
     try:
-        from agent_memory.llm_client import LLMClient
-        client = LLMClient()
+        from agent_memory.llm_text_helpers import call_llm_for_text  # lazy
         ents_lines = "\n".join(f"- `{e['entity_id']}` (state={e['lifecycle_state']}, mention={e['mention_count']})" for e in new_entities[:10])
         prompt = (
             "以下是本週統計 + 新建中期 entity 列表. "
@@ -251,8 +260,7 @@ def _call_llm_narrative(stats: dict[str, Any], new_entities: list[dict[str, Any]
             f"統計: {stats}\n\n"
             f"新建 entity:\n{ents_lines}\n"
         )
-        result = client.generate(prompt=prompt, temperature=0.4, timeout_s=30.0, max_tokens=300)
-        return result.content.strip() if hasattr(result, "content") else str(result).strip()
+        return call_llm_for_text(vault_root, prompt, temperature=0.4, timeout_s=30.0)
     except Exception:  # noqa: BLE001
         return None
 
@@ -343,7 +351,7 @@ def generate_weekly_digest(vault_root: Path, *, llm_mock_narrative: str | None =
     }
     llm_used = False
     if llm_mock_narrative is not None or _is_llm_narrative_enabled(root):
-        narrative = _call_llm_narrative(stats_dict, new_entities, mock_response=llm_mock_narrative)
+        narrative = _call_llm_narrative(stats_dict, new_entities, vault_root=root, mock_response=llm_mock_narrative)
         if narrative:
             body += f"\n## LLM 觀察 (R9 C28)\n\n{narrative}\n"
             llm_used = True

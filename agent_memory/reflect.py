@@ -108,14 +108,20 @@ def _build_reflection_prompt(topic: str, matches: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _call_llm_reflect(prompt: str, *, mock_body: str | None = None) -> str | None:
+def _call_llm_reflect(
+    prompt: str,
+    *,
+    vault_root: Path | None = None,
+    mock_body: str | None = None,
+) -> str | None:
+    """R11 C41: vault_root 走統一 helper, 不再用壞掉的 LLMClient() 無參呼叫."""
     if mock_body is not None:
         return mock_body
+    if vault_root is None:
+        return None
     try:
-        from agent_memory.llm_client import LLMClient
-        client = LLMClient()
-        result = client.generate(prompt=prompt, temperature=0.3, timeout_s=60.0, max_tokens=1200)
-        return result.content.strip() if hasattr(result, "content") else str(result).strip()
+        from agent_memory.llm_text_helpers import call_llm_for_text  # lazy
+        return call_llm_for_text(vault_root, prompt, temperature=0.3, timeout_s=60.0)
     except Exception:  # noqa: BLE001
         return None
 
@@ -138,7 +144,7 @@ def reflect_topic(
         return {"action": "no_matches", "topic": topic}
 
     prompt = _build_reflection_prompt(topic, matches)
-    body_text = _call_llm_reflect(prompt, mock_body=mock_body)
+    body_text = _call_llm_reflect(prompt, vault_root=root, mock_body=mock_body)
     if body_text is None:
         return {"action": "llm_failed", "topic": topic, "matches": len(matches)}
 

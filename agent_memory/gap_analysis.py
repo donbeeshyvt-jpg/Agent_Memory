@@ -325,30 +325,25 @@ def mark_gap_resolved(vault_root: Path, *, gap_id: str) -> dict[str, Any]:
 # ─── R9 C30: USER.md vs Mid_Term 矛盾偵測 (LLM) ──────────────────────────────
 
 
-def _call_llm_contradiction(prompt: str, *, mock_response: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+def _call_llm_contradiction(
+    prompt: str,
+    *,
+    vault_root: Path | None = None,
+    mock_response: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Real LLM call (or mock) — 回 contradictions list.
 
     mock_response: e2e 用. 傳 list 直接當輸出.
+    vault_root: R11 C41 改用統一 helper.
     """
 
     if mock_response is not None:
         return mock_response
+    if vault_root is None:
+        return []
     try:
-        from agent_memory.llm_client import LLMClient
-        import json as _json
-        client = LLMClient()
-        result = client.generate(prompt=prompt, temperature=0.1, timeout_s=45.0, max_tokens=600)
-        text = result.content.strip() if hasattr(result, "content") else str(result)
-        if "```" in text:
-            for p in text.split("```"):
-                p = p.strip()
-                if p.startswith("json"):
-                    p = p[4:].strip()
-                if p.startswith("[") and p.endswith("]"):
-                    text = p
-                    break
-        data = _json.loads(text)
-        return data if isinstance(data, list) else []
+        from agent_memory.llm_text_helpers import call_llm_for_json_list  # lazy
+        return call_llm_for_json_list(vault_root, prompt, temperature=0.1, timeout_s=45.0)
     except Exception:  # noqa: BLE001
         return []
 
@@ -403,7 +398,7 @@ def scan_user_gaps_llm(
         "Mid_Term 高頻 entry:\n"
         + "\n".join(f"- `{e['entity_id']}` x{e['mention']}: {e['summary']}" for e in entries)
     )
-    contradictions = _call_llm_contradiction(prompt, mock_response=mock_response)
+    contradictions = _call_llm_contradiction(prompt, vault_root=root, mock_response=mock_response)
 
     # 寫進 pending_user_gaps.json kind=contradiction
     pending = load_pending_gaps(root)
