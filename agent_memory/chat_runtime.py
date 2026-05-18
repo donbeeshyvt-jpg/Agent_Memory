@@ -336,6 +336,41 @@ def run_chat_turn(
     else:
         response_text = raw_response_text
 
+    # R13 C48: LLM 幻覺假宣稱 disclaimer (Codex 第 8 輪 TOOL-002/004 FAIL).
+    # 病因: 模型完全沒寫 [TOOL] 標籤, 純自然語言宣稱「我已建立 X 檔案」, agent_tool_calls=0, 檔案不存在.
+    # 我加的 C44 unparsed_tool_attempts 只抓「有 [TOOL] 但 parse 不到」, 抓不到「完全沒 [TOOL] 只說空話」.
+    # 修法: 偵測「假宣稱 keyword」, agent_tool_calls=0 時加 disclaimer 強制告訴使用者實際沒執行.
+    fake_claim_detected = False
+    if tools_enabled and not agent_tool_results and unparsed_tool_attempts == 0:
+        # keyword 偵測 — 列模型常用的「假宣稱已執行」短語. 不刪原文, 只加警告附在後面.
+        fake_claim_patterns = (
+            "已建立",  # 我已建立 / 建立了
+            "已寫入",
+            "已執行",
+            "已完成寫入",
+            "已產生",
+            "已成功",
+            "successfully created",
+            "successfully wrote",
+            "i have created",
+            "i've created",
+            "i created",
+            "i wrote",
+            "file written",
+            "file created",
+        )
+        lower_resp = response_text.lower()
+        for kw in fake_claim_patterns:
+            if kw.lower() in lower_resp:
+                fake_claim_detected = True
+                break
+        if fake_claim_detected:
+            response_text = response_text.rstrip() + (
+                "\n\nℹ️ **本回合無實際工具執行**（`agent_tool_calls=0`）。"
+                "上文若提到「已建立 / 已寫入 / 已執行」是模型推測，"
+                "請以實際 vault 檔案為準；如需真的寫入，請重試或切到穩定模型（Qwen3-30B / Gemini Pro）。"
+            )
+
     response_text = _strip_leading_reasoning_blocks(response_text)
 
     if not runtime.profile.can_write(hist_path):
@@ -525,6 +560,7 @@ def run_chat_turn(
         },
         "agent_tool_calls": agent_tool_results,  # Phase A C3 (A.5)
         "unparsed_tool_attempts": unparsed_tool_attempts,  # R12 C44 — LLM 嘗試呼叫但格式不符的次數
+        "fake_tool_claim_detected": fake_claim_detected,  # R13 C48 — agent_tool_calls=0 但 response 含假宣稱 keyword
         "prompt_chars": {  # R12 C45 — prompt budget observability (給 Codex LLM-002/003 重測)
             "system_prompt_total": len(system_prompt),
             "history_tail": len(history_tail),
