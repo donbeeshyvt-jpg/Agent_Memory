@@ -864,6 +864,78 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         ),
     )
 
+    # ─── Step 13 (R12): Codex 批次 A fix 驗證 ──────────────────────────────
+    report.section("Step 13 (R12): TOOL parser 擴 / prompt budget cap / persona-wizard preset")
+
+    # 13.1 — C44 TOOL parser 接 4 種 closing tag
+    from agent_memory.local_tools import parse_agent_tool_calls, count_unmatched_tool_attempts
+    samples_c44 = {
+        "[/TOOL]": '[TOOL]memory{"action":"add"}[/TOOL]',
+        "<tool_call|>": '[TOOL]memory{"action":"add"}<tool_call|>',
+        "</tool_call>": '[TOOL]memory{"action":"add"}</tool_call>',
+        "<|tool_call|>": '[TOOL]memory{"action":"add"}<|tool_call|>',
+    }
+    all_4_ok = all(len(parse_agent_tool_calls(t)) == 1 for t in samples_c44.values())
+    report.step(
+        "C44 parse_agent_tool_calls 接 4 種 closing tag 變體",
+        all_4_ok,
+        f"variants_tested={list(samples_c44.keys())}",
+    )
+
+    # 13.2 — C44 unmatched [TOOL] 護欄計數正確
+    mixed = '[TOOL]memory{"a":1}[/TOOL] xx [TOOL]broken_no_close{leftover'
+    parsed_mixed = parse_agent_tool_calls(mixed)
+    unmatched = count_unmatched_tool_attempts(mixed, len(parsed_mixed))
+    report.step(
+        "C44 count_unmatched_tool_attempts: 1 ok + 1 unmatched 偵測",
+        len(parsed_mixed) == 1 and unmatched == 1,
+        f"parsed={len(parsed_mixed)}, unmatched={unmatched}",
+    )
+
+    # 13.3 — C45 cross_session 預設 max_total_chars 從 chat_runtime 傳入 800
+    # 直接驗 chat_runtime module 內常數
+    import agent_memory.chat_runtime as _crt
+    crt_src = Path(_crt.__file__).read_text(encoding="utf-8")
+    has_caps = all(
+        s in crt_src
+        for s in ("HISTORY_TAIL_CAP = 2400", "CROSS_SESSION_CAP = 800", "SHARED_HISTORY_CAP = 1200", "MEMORY_CONTEXT_CAP = 3000")
+    )
+    report.step(
+        "C45 chat_runtime 四個 prompt budget 常數都在",
+        has_caps,
+        f"caps_check={has_caps} (HISTORY 2400 / CROSS 800 / SHARED 1200 / MEMORY 3000)",
+    )
+
+    # 13.4 — C46 _LLM_PRESET_MAP 含 7 preset
+    from agent_memory.cli import _LLM_PRESET_MAP, _resolve_llm_preset_or_explicit
+    expected_keys = {"gemma4", "qwen9", "qwen30", "gemini", "gemini-pro", "gemma-31b", "gemma-26b"}
+    actual_keys = set(_LLM_PRESET_MAP.keys())
+    report.step(
+        "C46 _LLM_PRESET_MAP 含 7 個 preset alias",
+        expected_keys == actual_keys,
+        f"missing={expected_keys - actual_keys}, extra={actual_keys - expected_keys}",
+    )
+
+    # 13.5 — C46 _resolve_llm_preset_or_explicit 解析
+    import argparse as _argparse
+    ns_key = _argparse.Namespace(key="gemma-31b", profile=None, model=None)
+    ns_explicit = _argparse.Namespace(key=None, profile="gemini", model="gemini-1.5-pro")
+    try:
+        ns_bogus = _argparse.Namespace(key="bogus", profile=None, model=None)
+        _resolve_llm_preset_or_explicit(ns_bogus)
+        bogus_raised = False
+    except ValueError:
+        bogus_raised = True
+    p1, m1 = _resolve_llm_preset_or_explicit(ns_key)
+    p2, m2 = _resolve_llm_preset_or_explicit(ns_explicit)
+    report.step(
+        "C46 _resolve 解析: preset → (profile,model) / explicit / bogus 拋 ValueError",
+        p1 == "gemini" and m1 == "gemma-4-31b-it"
+            and p2 == "gemini" and m2 == "gemini-1.5-pro"
+            and bogus_raised,
+        f"key→{p1}/{m1}, explicit→{p2}/{m2}, bogus_raised={bogus_raised}",
+    )
+
     return report.summary()
 
 
