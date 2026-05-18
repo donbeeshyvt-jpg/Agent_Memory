@@ -128,6 +128,19 @@ def run_chat_turn(
     except Exception:  # noqa: BLE001
         gap_resolved = {}
 
+    # R12 C45: prompt budget (Codex LLM-002/LLM-003 GAP — local 4096-token 多 session 第 6 回爆窗)
+    # 對應 Claude_驗收批次A §A2「先做 token budget, 再決定注入 cross_session/history/shared 的量」.
+    # 各段獨立 cap, 不重構整個 system_prompt 組裝:
+    #   - history_tail   : 2400 chars (保留, 本 session 連續性最重要)
+    #   - cross_session  : 800 chars  (砍 1/3, 從 2400; LLM-003 主要 token 爆源)
+    #   - shared_history : 1200 chars (砍 1/2, 從 2400)
+    #   - memory_context : 動態 RAG 後 cap 3000 chars (避免單回 hit 過多)
+    # 中文 ~ 1.5 chars/token, local 4096 token model 留 ~6500 chars budget for system prompt.
+    HISTORY_TAIL_CAP = 2400
+    CROSS_SESSION_CAP = 800
+    SHARED_HISTORY_CAP = 1200
+    MEMORY_CONTEXT_CAP = 3000
+
     hist_path = session_note_path(
         adapter,
         persona_id=persona,
@@ -135,7 +148,7 @@ def run_chat_turn(
         session_id=session,
     )
     hist_note = adapter.read_note(hist_path) if runtime.profile.can_read(hist_path) else None
-    history_tail = _tail_excerpt(hist_note.body if hist_note else "", max_chars=2400)
+    history_tail = _tail_excerpt(hist_note.body if hist_note else "", max_chars=HISTORY_TAIL_CAP)
     skill_context = ""
     selected_skills: list[dict[str, Any]] = []
     try:
@@ -168,6 +181,7 @@ def run_chat_turn(
         system_prompt += "\n以下是本 session 最近對話摘錄（供延續語境）：\n" + history_tail + "\n"
 
     # R9 C31: cross-channel session linking — 同 persona 最近 30 分鐘其他 session_log
+    # R12 C45: max_total_chars 從預設 2400 砍到 CROSS_SESSION_CAP=800 (LLM-003 token 爆源主修)
     cross_session_paths: list[str] = []
     try:
         from agent_memory.session_linker import collect_recent_cross_session_context
@@ -176,13 +190,14 @@ def run_chat_turn(
             persona_id=persona,
             current_session_id=session,
             recent_minutes=30,
+            max_total_chars=CROSS_SESSION_CAP,
         )
         if cross_ctx.get("text_block"):
             system_prompt += "\n" + cross_ctx["text_block"] + "\n"
             cross_session_paths = list(cross_ctx.get("session_paths", []))
     except Exception:  # noqa: BLE001
         cross_session_paths = []
-    shared_history = _tail_excerpt(str(shared_channel_history or ""), max_chars=2400)
+    shared_history = _tail_excerpt(str(shared_channel_history or ""), max_chars=SHARED_HISTORY_CAP)
     if shared_history:
         system_prompt += "\n以下是共通頻道近期摘錄（跨角色共享）：\n" + shared_history + "\n"
 
@@ -253,6 +268,9 @@ def run_chat_turn(
                         lines.append(f"- [{nb}]")
             lines.append("</memory-context>")
             memory_context_block = "\n".join(lines) + "\n"
+            # R12 C45: memory_context cap (避免單回 RAG hit 過多 + GraphRAG 爆 token)
+            if len(memory_context_block) > MEMORY_CONTEXT_CAP:
+                memory_context_block = memory_context_block[: MEMORY_CONTEXT_CAP - 50] + "\n…(memory_context 過長截斷)…\n</memory-context>\n"
             system_prompt += memory_context_block
     except Exception:  # noqa: BLE001
         memory_context_block = ""
@@ -507,6 +525,19 @@ def run_chat_turn(
         },
         "agent_tool_calls": agent_tool_results,  # Phase A C3 (A.5)
         "unparsed_tool_attempts": unparsed_tool_attempts,  # R12 C44 — LLM 嘗試呼叫但格式不符的次數
+        "prompt_chars": {  # R12 C45 — prompt budget observability (給 Codex LLM-002/003 重測)
+            "system_prompt_total": len(system_prompt),
+            "history_tail": len(history_tail),
+            "cross_session_paths_count": len(cross_session_paths),
+            "shared_history": len(shared_history),
+            "memory_context": len(memory_context_block),
+            "caps": {
+                "history_tail": HISTORY_TAIL_CAP,
+                "cross_session": CROSS_SESSION_CAP,
+                "shared_history": SHARED_HISTORY_CAP,
+                "memory_context": MEMORY_CONTEXT_CAP,
+            },
+        },
         "memory_context_hits": memory_context_hits,  # Phase A C6 (dynamic fence)
         "auto_evolve": auto_evolve_status,  # Phase A C15
         "curator": curator_status,  # R7 C18
