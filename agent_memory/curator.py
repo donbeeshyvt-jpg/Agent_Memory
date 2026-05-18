@@ -629,6 +629,26 @@ def run_weekly_deep(vault_root: Path, *, dry_run: bool = False) -> dict[str, Any
     except Exception as exc:  # noqa: BLE001
         result["steps"]["recent_updates"] = {"error": str(exc)}
 
+    # Step 9 (R10 C38): external_ingest → Concepts 自動 summarize (MISSION §3.6 文獻吸收)
+    # LLM 不可用 fallback skip (對齊 §5.4 紅線, e2e 走 mock)
+    try:
+        from agent_memory.external_ingest_summarize import summarize_external_ingest
+        if not dry_run:
+            es_result = summarize_external_ingest(root)
+            result["steps"]["external_ingest_summarize"] = {
+                "scanned": es_result.get("scanned_files", 0),
+                "candidates": len(es_result.get("candidates", [])),
+                "summarized": len(es_result.get("summarized", [])),
+                "skipped": len(es_result.get("skipped", [])),
+                "errors": len(es_result.get("errors", [])),
+                "llm_called": es_result.get("llm_called", False),
+                "mock_used": es_result.get("mock_used", False),
+            }
+        else:
+            result["steps"]["external_ingest_summarize"] = {"skipped": "dry_run"}
+    except Exception as exc:  # noqa: BLE001
+        result["steps"]["external_ingest_summarize"] = {"error": str(exc)}
+
     result["ended_at"] = _now_local_iso()
     _append_curator_log(root, result)
     return result
