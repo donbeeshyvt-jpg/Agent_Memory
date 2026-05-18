@@ -30,7 +30,7 @@ from typing import Any
 from agent_memory.security.atomic import atomic_write
 from agent_memory.security.locks import file_lock
 
-RECENT_UPDATES_RELATIVE_PATH = "00_System/09_Index/Recent_Updates.md"
+RECENT_UPDATES_RELATIVE_PATH = "00_System/09_Index/03_Recent_Updates.md"
 DEFAULT_LOOKBACK_DAYS = 7
 DEFAULT_MAX_ENTRIES_PER_SECTION = 20
 
