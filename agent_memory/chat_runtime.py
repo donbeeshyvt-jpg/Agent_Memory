@@ -334,15 +334,43 @@ def run_chat_turn(
                 f"\n\n⚠️ 偵測到 {unparsed_tool_attempts} 個工具呼叫格式異常 (closing tag 缺/變體)，**未實際執行**。請重試或切到穩定模型 (Qwen3-30B / Gemini Pro)。"
             )
     else:
-        # R14 C54 (Codex T7.2 GAP): tools_disabled persona 仍可能輸出 [TOOL] 片段
-        # (從訓練資料 leak / session log 模仿). 之前直接 raw 給使用者看 → 誤判已執行.
-        # 修: 強制 strip [TOOL] block + 偵測 raw 含 [TOOL] 時加 disclaimer.
-        had_tool_attempt_when_disabled = "[TOOL]" in raw_response_text.upper()
+        # R14 C54 + R14.1 C57 (Codex T7.2 漏網補修): tools_disabled persona 最終輸出守門.
+        # 第 10 輪重測發現 C54 只 strip [TOOL] block 不夠 — 模型可能:
+        #   (a) 在 ```code fence``` 內寫 [TOOL] 片段 → strip_agent_tool_blocks 抓不到 (regex 只匹配標準 [TOOL]...<closing>)
+        #   (b) 純自然語言「已執行 / 已寫入」假宣稱沒 [TOOL] 標籤 → had_tool_attempt_when_disabled=False 不觸發
+        # 修法 (Codex 守門 3 條):
+        #   1. 強化 strip — 額外清 code fence 內殘留 [TOOL] 變體 (regex)
+        #   2. 偵測「假宣稱 keyword」(沿用 C48 的 14 keyword 中英) → 視為工具意圖
+        #   3. 任何意圖偵測 → 一律 disclaimer + payload flag (不再條件性)
+        import re as _re_c57
+        # Step 1: 標準 strip
         response_text = strip_agent_tool_blocks(raw_response_text)
+        # Step 2: 清 code fence 內殘留 [TOOL] 變體 (model 可能輸出 ```...\n[TOOL]xxx[/TOOL]\n```)
+        # 也清裸 [TOOL] / [/TOOL] / <tool_call|> / </tool_call> / <|tool_call|> 開閉合 token
+        _LEFTOVER_TAGS = _re_c57.compile(
+            r"\[/?TOOL\]|<\s*/?\s*tool_call\s*\|?\s*>|<\|\s*/?\s*tool_call\s*\|?\s*>",
+            _re_c57.IGNORECASE,
+        )
+        response_text = _LEFTOVER_TAGS.sub("", response_text)
+        response_text = _re_c57.sub(r"\n{3,}", "\n\n", response_text).strip()
+
+        # Step 3: 偵測工具意圖 — [TOOL] 出現 (含 code fence 內) OR 假宣稱 keyword
+        had_tool_token = "[TOOL]" in raw_response_text.upper()
+        _TOOLS_DISABLED_FAKE_CLAIM_KW = (
+            "已建立", "已寫入", "已執行", "已完成寫入", "已產生", "已成功",
+            "successfully created", "successfully wrote", "i have created",
+            "i've created", "i created", "i wrote", "file written", "file created",
+        )
+        lower_raw = raw_response_text.lower()
+        had_fake_claim_when_disabled = any(kw.lower() in lower_raw for kw in _TOOLS_DISABLED_FAKE_CLAIM_KW)
+        had_tool_attempt_when_disabled = had_tool_token or had_fake_claim_when_disabled
+
+        # Step 4: 任何意圖偵測 → 一律加 disclaimer
         if had_tool_attempt_when_disabled:
             response_text = response_text.rstrip() + (
-                "\n\n⚠️ **tools_disabled persona**：偵測到模型嘗試輸出工具呼叫片段，"
-                "**已過濾且未執行**（此 persona governance.tools_enabled=False）。"
+                "\n\n⚠️ **tools_disabled persona**：偵測到模型嘗試輸出工具呼叫片段或宣稱已執行，"
+                "**未實際執行任何工具**（此 persona governance.tools_enabled=False）。"
+                "上文若提到「已建立 / 已寫入 / 已執行」皆為模型推測，請以實際 vault 檔案為準。"
                 "如需工具能力請切換到 tools_enabled persona（例如 steward / coder）。"
             )
 
@@ -600,7 +628,15 @@ def run_chat_turn(
         "unparsed_tool_attempts": unparsed_tool_attempts,  # R12 C44 — LLM 嘗試呼叫但格式不符的次數
         "fake_tool_claim_detected": fake_claim_detected,  # R13 C48 — agent_tool_calls=0 但 response 含假宣稱 keyword
         "scanner_block_reason": scanner_block_reason,  # R14 C52 — scanner 命中時的 reason (None 表沒命中)
-        "tools_disabled_tool_attempt": (not tools_enabled) and ("[TOOL]" in raw_response_text.upper()),  # R14 C54 — tools_disabled persona 仍嘗試輸出 [TOOL]
+        # R14 C54 + R14.1 C57: tools_disabled persona 工具意圖偵測 — [TOOL] 標籤 OR 假宣稱 keyword OR code fence 內殘留
+        "tools_disabled_tool_attempt": (not tools_enabled) and (
+            "[TOOL]" in raw_response_text.upper()
+            or any(kw.lower() in raw_response_text.lower() for kw in (
+                "已建立", "已寫入", "已執行", "已完成寫入", "已產生", "已成功",
+                "successfully created", "successfully wrote", "i have created",
+                "i've created", "i created", "i wrote", "file written", "file created",
+            ))
+        ),
         "prompt_chars": {  # R12 C45 — prompt budget observability (給 Codex LLM-002/003 重測)
             "system_prompt_total": len(system_prompt),
             "history_tail": len(history_tail),

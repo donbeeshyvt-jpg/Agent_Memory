@@ -1035,7 +1035,7 @@ def run_simulation(vault_root: Path, report: Report) -> int:
     has_c54 = all(s in crt2_src for s in (
         "had_tool_attempt_when_disabled",
         "tools_disabled persona",
-        "已過濾且未執行",
+        "未實際執行任何工具",  # R14.1 C57: disclaimer 文案微調, 涵蓋 fake_claim 場景
         "tools_disabled_tool_attempt",
     ))
     report.step(
