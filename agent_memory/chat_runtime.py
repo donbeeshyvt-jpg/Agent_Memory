@@ -376,29 +376,57 @@ def run_chat_turn(
     if not runtime.profile.can_write(hist_path):
         raise PermissionError(f"persona={persona} 無權寫入 session 路徑：{hist_path}")
 
-    session_path = append_chat_turn(
-        adapter,
-        persona_id=persona,
-        context_id=context,
-        session_id=session,
-        user_message=message,
-        assistant_message=response_text,
-    )
-    runtime.search_manager.index_path(session_path)
-
-    daily_path = None
-    if memory_mode == "session_and_daily":
-        daily_preview = adapter.resolve_path(MemoryType.SHORT_TERM, datetime.now().strftime("%Y-%m-%d"))
-        if not runtime.profile.can_write(daily_preview):
-            raise PermissionError(f"persona={persona} 無權寫入 daily 路徑：{daily_preview}")
-        daily_path, _ = append_daily_chat_digest(
+    # R14 C52: scanner block soft-degrade (Codex T5.1/T5.2/T5.4 FAIL).
+    # 病因: 使用者訊息含「忽略之前所有指令 / DAN / ZWSP 不可見字元」→ vault.write_note 內
+    #       scan_memory_content 偵測到 → ValueError → chat 整個 exit 1.
+    # 修法: 不阻擋對話, scanner 命中時 (a) session_log 不寫 (b) response 末加警告 footer
+    #       (c) payload 加 scanner_block_reason flag 給 transport/log 觀察.
+    scanner_block_reason: str | None = None
+    session_path: str | None = None
+    try:
+        session_path = append_chat_turn(
             adapter,
             persona_id=persona,
+            context_id=context,
             session_id=session,
             user_message=message,
             assistant_message=response_text,
         )
-        runtime.search_manager.index_path(daily_path)
+        runtime.search_manager.index_path(session_path)
+    except ValueError as exc:
+        msg = str(exc)
+        if "blocked by scanner" in msg:
+            scanner_block_reason = msg.split("blocked by scanner:", 1)[-1].strip()
+        else:
+            raise
+
+    daily_path = None
+    if memory_mode == "session_and_daily" and not scanner_block_reason:
+        daily_preview = adapter.resolve_path(MemoryType.SHORT_TERM, datetime.now().strftime("%Y-%m-%d"))
+        if not runtime.profile.can_write(daily_preview):
+            raise PermissionError(f"persona={persona} 無權寫入 daily 路徑：{daily_preview}")
+        try:
+            daily_path, _ = append_daily_chat_digest(
+                adapter,
+                persona_id=persona,
+                session_id=session,
+                user_message=message,
+                assistant_message=response_text,
+            )
+            runtime.search_manager.index_path(daily_path)
+        except ValueError as exc:
+            msg = str(exc)
+            if "blocked by scanner" in msg:
+                scanner_block_reason = msg.split("blocked by scanner:", 1)[-1].strip()
+            else:
+                raise
+
+    if scanner_block_reason:
+        response_text = response_text.rstrip() + (
+            f"\n\n⚠️ **Scanner 警示**：偵測到 `{scanner_block_reason}`。"
+            "本回合對話**未寫入 session log**（避免污染 vault），但對話本身保留，"
+            "請使用者確認是否要繼續類似話題或調整措辭。"
+        )
 
     for item in selected_skills:
         sid = str(item.get("skill_id", "")).strip()
@@ -561,6 +589,7 @@ def run_chat_turn(
         "agent_tool_calls": agent_tool_results,  # Phase A C3 (A.5)
         "unparsed_tool_attempts": unparsed_tool_attempts,  # R12 C44 — LLM 嘗試呼叫但格式不符的次數
         "fake_tool_claim_detected": fake_claim_detected,  # R13 C48 — agent_tool_calls=0 但 response 含假宣稱 keyword
+        "scanner_block_reason": scanner_block_reason,  # R14 C52 — scanner 命中時的 reason (None 表沒命中)
         "prompt_chars": {  # R12 C45 — prompt budget observability (給 Codex LLM-002/003 重測)
             "system_prompt_total": len(system_prompt),
             "history_tail": len(history_tail),
