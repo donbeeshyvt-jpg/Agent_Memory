@@ -988,6 +988,78 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"legacy_calls={len(legacy_pattern)} (預期 0), helper_count={helper_count} (預期 ≥5), has_exit={'[Environment]::Exit(0)' in menu_src}",
     )
 
+    # ─── Step 15 (R14): Codex 第 7 輪 Gate 3+4+5 補修驗證 ─────────────────
+    report.section("Step 15 (R14): scanner soft / raw-zone deny / min_score / tools_disabled / persona-list")
+
+    # 15.1 — C52 chat_runtime scanner block soft-degrade 邏輯
+    has_c52 = all(s in crt2_src for s in (
+        "scanner_block_reason",
+        "blocked by scanner",
+        "未寫入 session log",  # disclaimer 內中文片段
+        "Scanner 警示",
+    ))
+    report.step(
+        "C52 chat_runtime scanner soft-degrade (T5.1/5.2/5.4)",
+        has_c52,
+        f"check={has_c52}",
+    )
+
+    # 15.2 — C53 runtime.memory_search 加 raw zones hardcoded exclude + min_score
+    from agent_memory.runtime import RuntimeProfile  # noqa: F401
+    import agent_memory.runtime as _rt
+    rt_src = Path(_rt.__file__).read_text(encoding="utf-8")
+    has_c53_retrieval = all(s in rt_src for s in (
+        "_RAW_ZONES_EXCLUDE",
+        "20_Literature/",
+        "80_Fleeting/",
+        "90_Daily_Journal/",
+        "min_score",
+    ))
+    report.step(
+        "C53 runtime.memory_search 加 raw zones exclude + min_score 門檻 (T6.3+T6.4)",
+        has_c53_retrieval,
+        f"check={has_c53_retrieval}",
+    )
+
+    # 15.3 — C53 local_tools.files.read_file 加 raw zones path guard
+    from agent_memory import local_tools as _lt
+    lt_src = Path(_lt.__file__).read_text(encoding="utf-8")
+    has_c53_tools = "raw zone 不可透過 agent tool 讀取" in lt_src
+    report.step(
+        "C53 local_tools.files.read_file 加 raw zones path guard (T6.3 tool 層)",
+        has_c53_tools,
+        f"check={has_c53_tools}",
+    )
+
+    # 15.4 — C54 chat_runtime tools_disabled persona strip + disclaimer
+    has_c54 = all(s in crt2_src for s in (
+        "had_tool_attempt_when_disabled",
+        "tools_disabled persona",
+        "已過濾且未執行",
+        "tools_disabled_tool_attempt",
+    ))
+    report.step(
+        "C54 chat_runtime tools_disabled strip [TOOL] + disclaimer (T7.2)",
+        has_c54,
+        f"check={has_c54}",
+    )
+
+    # 15.5 — C55 persona_factory.list_personas disabled invariant guard
+    # 用 source-level check 確認 normalized loop + disabled_at fallback 邏輯存在
+    import agent_memory.persona_factory as _pf
+    pf_src = Path(_pf.__file__).read_text(encoding="utf-8")
+    has_c55 = all(s in pf_src for s in (
+        "Invariant guard",  # docstring
+        "disabled 時這幾個欄位該存在",
+        "normalized[pid] = copy",
+        "if k not in copy:",  # disabled_at/by fallback
+    ))
+    report.step(
+        "C55 persona_factory.list_personas disabled invariant guard (T8.5)",
+        has_c55,
+        f"check={has_c55}",
+    )
+
     return report.summary()
 
 
