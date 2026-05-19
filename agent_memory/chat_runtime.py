@@ -317,6 +317,8 @@ def run_chat_turn(
     # + 偵測 unmatched [TOOL] 開頭 (LLM 嘗試呼叫但格式不符) 加護欄, 避免「LLM 假宣稱已建立但實際沒執行」.
     agent_tool_results: list[dict[str, Any]] = []
     unparsed_tool_attempts = 0
+    # R14.2 C58: hoist tools_disabled intent flag to module-level scope, payload can reuse
+    had_tool_attempt_when_disabled = False
     if tools_enabled:
         tool_calls = parse_agent_tool_calls(raw_response_text)
         for call in tool_calls:
@@ -354,24 +356,48 @@ def run_chat_turn(
         response_text = _LEFTOVER_TAGS.sub("", response_text)
         response_text = _re_c57.sub(r"\n{3,}", "\n\n", response_text).strip()
 
-        # Step 3: 偵測工具意圖 — [TOOL] 出現 (含 code fence 內) OR 假宣稱 keyword
+        # Step 3: 偵測工具意圖 — [TOOL] 出現 (含 code fence 內) OR 假宣稱 keyword OR 假宣稱 phrase pattern
+        # R14.2 C58: Codex 第 11 輪反饋 — C57 14 keyword 太死, 沒涵蓋:
+        #   - 「我已為您生成」「為您生成」「為你已準備好」  ← 「為您/為你」前綴
+        #   - 「已準備好執行」「已準備建立」「準備執行」     ← 「準備」family
+        #   - 「已生成」「已產出」「已新增」「已儲存」        ← keyword 變體
+        # 修法: 擴大 keyword list + 加 regex pattern 偵測通用 phrase
         had_tool_token = "[TOOL]" in raw_response_text.upper()
         _TOOLS_DISABLED_FAKE_CLAIM_KW = (
-            "已建立", "已寫入", "已執行", "已完成寫入", "已產生", "已成功",
-            "successfully created", "successfully wrote", "i have created",
-            "i've created", "i created", "i wrote", "file written", "file created",
+            # 完成式 — 中文
+            "已建立", "已寫入", "已執行", "已完成", "已產生", "已產出",
+            "已成功", "已生成", "已新增", "已儲存", "已存", "已存到",
+            "已為您", "已為你", "已幫您", "已幫你", "已替您", "已替你",
+            "建立了", "寫入了", "新增了", "產生了", "生成了", "儲存了",
+            # 準備式 — 中文 (Codex 第 11 輪「已準備好執行」)
+            "已準備", "準備好", "準備執行", "準備建立", "準備寫入",
+            # 完成式 — 英文
+            "successfully created", "successfully wrote", "successfully saved",
+            "i have created", "i've created", "i created", "i wrote",
+            "file written", "file created", "saved to", "written to",
+            "i have generated", "i've generated", "i generated",
         )
         lower_raw = raw_response_text.lower()
         had_fake_claim_when_disabled = any(kw.lower() in lower_raw for kw in _TOOLS_DISABLED_FAKE_CLAIM_KW)
-        had_tool_attempt_when_disabled = had_tool_token or had_fake_claim_when_disabled
+        # 加 regex pattern 偵測 — 涵蓋 keyword 沒列到的變體 (「我...生成」「為您...建立」等動詞片語)
+        _FAKE_CLAIM_PATTERNS = _re_c57.compile(
+            r"我[已也].{0,10}(生成|建立|寫入|儲存|產生|新增|完成|準備)"
+            r"|"
+            r"為(您|你).{0,10}(生成|建立|寫入|儲存|產生|新增|完成|準備)"
+            r"|"
+            r"(生成|建立|寫入|儲存|產生|新增|完成|準備).{0,5}(檔|文件|程式|file|note)",
+            _re_c57.IGNORECASE,
+        )
+        had_fake_claim_pattern = bool(_FAKE_CLAIM_PATTERNS.search(raw_response_text))
+        had_tool_attempt_when_disabled = had_tool_token or had_fake_claim_when_disabled or had_fake_claim_pattern
 
         # Step 4: 任何意圖偵測 → 一律加 disclaimer
         if had_tool_attempt_when_disabled:
             response_text = response_text.rstrip() + (
                 "\n\n⚠️ **tools_disabled persona**：偵測到模型嘗試輸出工具呼叫片段或宣稱已執行，"
                 "**未實際執行任何工具**（此 persona governance.tools_enabled=False）。"
-                "上文若提到「已建立 / 已寫入 / 已執行」皆為模型推測，請以實際 vault 檔案為準。"
-                "如需工具能力請切換到 tools_enabled persona（例如 steward / coder）。"
+                "上文若提到「已建立 / 已寫入 / 已生成 / 已準備 / 為您建立」等皆為模型推測，"
+                "請以實際 vault 檔案為準。如需工具能力請切換到 tools_enabled persona（例如 steward / coder）。"
             )
 
     # R13 C48: LLM 幻覺假宣稱 disclaimer (Codex 第 8 輪 TOOL-002/004 FAIL).
@@ -628,15 +654,9 @@ def run_chat_turn(
         "unparsed_tool_attempts": unparsed_tool_attempts,  # R12 C44 — LLM 嘗試呼叫但格式不符的次數
         "fake_tool_claim_detected": fake_claim_detected,  # R13 C48 — agent_tool_calls=0 但 response 含假宣稱 keyword
         "scanner_block_reason": scanner_block_reason,  # R14 C52 — scanner 命中時的 reason (None 表沒命中)
-        # R14 C54 + R14.1 C57: tools_disabled persona 工具意圖偵測 — [TOOL] 標籤 OR 假宣稱 keyword OR code fence 內殘留
-        "tools_disabled_tool_attempt": (not tools_enabled) and (
-            "[TOOL]" in raw_response_text.upper()
-            or any(kw.lower() in raw_response_text.lower() for kw in (
-                "已建立", "已寫入", "已執行", "已完成寫入", "已產生", "已成功",
-                "successfully created", "successfully wrote", "i have created",
-                "i've created", "i created", "i wrote", "file written", "file created",
-            ))
-        ),
+        # R14 C54 / R14.1 C57 / R14.2 C58: tools_disabled persona 工具意圖偵測
+        # 直接 reuse hoisted had_tool_attempt_when_disabled (else 分支內 keyword + regex 全套已算)
+        "tools_disabled_tool_attempt": (not tools_enabled) and had_tool_attempt_when_disabled,
         "prompt_chars": {  # R12 C45 — prompt budget observability (給 Codex LLM-002/003 重測)
             "system_prompt_total": len(system_prompt),
             "history_tail": len(history_tail),
