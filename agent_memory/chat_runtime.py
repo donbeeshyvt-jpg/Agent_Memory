@@ -334,7 +334,17 @@ def run_chat_turn(
                 f"\n\n⚠️ 偵測到 {unparsed_tool_attempts} 個工具呼叫格式異常 (closing tag 缺/變體)，**未實際執行**。請重試或切到穩定模型 (Qwen3-30B / Gemini Pro)。"
             )
     else:
-        response_text = raw_response_text
+        # R14 C54 (Codex T7.2 GAP): tools_disabled persona 仍可能輸出 [TOOL] 片段
+        # (從訓練資料 leak / session log 模仿). 之前直接 raw 給使用者看 → 誤判已執行.
+        # 修: 強制 strip [TOOL] block + 偵測 raw 含 [TOOL] 時加 disclaimer.
+        had_tool_attempt_when_disabled = "[TOOL]" in raw_response_text.upper()
+        response_text = strip_agent_tool_blocks(raw_response_text)
+        if had_tool_attempt_when_disabled:
+            response_text = response_text.rstrip() + (
+                "\n\n⚠️ **tools_disabled persona**：偵測到模型嘗試輸出工具呼叫片段，"
+                "**已過濾且未執行**（此 persona governance.tools_enabled=False）。"
+                "如需工具能力請切換到 tools_enabled persona（例如 steward / coder）。"
+            )
 
     # R13 C48: LLM 幻覺假宣稱 disclaimer (Codex 第 8 輪 TOOL-002/004 FAIL).
     # 病因: 模型完全沒寫 [TOOL] 標籤, 純自然語言宣稱「我已建立 X 檔案」, agent_tool_calls=0, 檔案不存在.
@@ -590,6 +600,7 @@ def run_chat_turn(
         "unparsed_tool_attempts": unparsed_tool_attempts,  # R12 C44 — LLM 嘗試呼叫但格式不符的次數
         "fake_tool_claim_detected": fake_claim_detected,  # R13 C48 — agent_tool_calls=0 但 response 含假宣稱 keyword
         "scanner_block_reason": scanner_block_reason,  # R14 C52 — scanner 命中時的 reason (None 表沒命中)
+        "tools_disabled_tool_attempt": (not tools_enabled) and ("[TOOL]" in raw_response_text.upper()),  # R14 C54 — tools_disabled persona 仍嘗試輸出 [TOOL]
         "prompt_chars": {  # R12 C45 — prompt budget observability (給 Codex LLM-002/003 重測)
             "system_prompt_total": len(system_prompt),
             "history_tail": len(history_tail),
