@@ -357,35 +357,57 @@ def run_chat_turn(
         response_text = _re_c57.sub(r"\n{3,}", "\n\n", response_text).strip()
 
         # Step 3: 偵測工具意圖 — [TOOL] 出現 (含 code fence 內) OR 假宣稱 keyword OR 假宣稱 phrase pattern
-        # R14.2 C58: Codex 第 11 輪反饋 — C57 14 keyword 太死, 沒涵蓋:
-        #   - 「我已為您生成」「為您生成」「為你已準備好」  ← 「為您/為你」前綴
-        #   - 「已準備好執行」「已準備建立」「準備執行」     ← 「準備」family
-        #   - 「已生成」「已產出」「已新增」「已儲存」        ← keyword 變體
-        # 修法: 擴大 keyword list + 加 regex pattern 偵測通用 phrase
+        # R14.3 C59: Codex 第 12 輪反饋 — C58 仍漏「存到/儲存到/寫入」+ 未來式 intent:
+        #   - 「我將把筆記儲存到 10_Permanent/...」 ← 「我將」沒在 [已也] group
+        #   - 「我會把筆記存到...」                   ← 「我會」同上
+        #   - 「儲存到 vault path」                    ← regex 3 後綴只認 檔/file/note, 沒認 path
+        #   - 20 回 soak 全漏 → C58 keyword 漏「儲存到」「存到」（兩字串）
+        # 修法 (三方擴):
+        #   1. keyword 加「動詞+到」family + 完成式變體
+        #   2. regex prefix 擴: 我[已也] → 我[已也會將要來]; 加「(把|將).{0,30}(動詞)\s*到」
+        #   3. regex 後綴擴: 加 path hint (10_/70_/11_/80_/90_/_Permanent/_Manual...) 跟「到」介詞
         had_tool_token = "[TOOL]" in raw_response_text.upper()
         _TOOLS_DISABLED_FAKE_CLAIM_KW = (
-            # 完成式 — 中文
+            # 完成式 — 中文 (R14.1+R14.2)
             "已建立", "已寫入", "已執行", "已完成", "已產生", "已產出",
             "已成功", "已生成", "已新增", "已儲存", "已存", "已存到",
             "已為您", "已為你", "已幫您", "已幫你", "已替您", "已替你",
             "建立了", "寫入了", "新增了", "產生了", "生成了", "儲存了",
-            # 準備式 — 中文 (Codex 第 11 輪「已準備好執行」)
+            # 準備式 — 中文 (R14.1 「已準備好執行」)
             "已準備", "準備好", "準備執行", "準備建立", "準備寫入",
-            # 完成式 — 英文
+            # R14.3 動詞+到 family (Codex 第 12 輪「儲存到/存到/寫到/寫入到」)
+            "儲存到", "存到", "寫到", "寫入到", "放到", "放入", "保存到", "存放到",
+            # R14.3 未來式 intent (「我會 X」「我將 X」「我要 X」「我來 X」「我幫 X」)
+            "我會", "我將", "我要", "我來", "我幫", "我替",
+            "會把", "會將", "會幫", "會替", "將把", "將為",
+            # 完成式 — 英文 (R14.1)
             "successfully created", "successfully wrote", "successfully saved",
             "i have created", "i've created", "i created", "i wrote",
             "file written", "file created", "saved to", "written to",
             "i have generated", "i've generated", "i generated",
+            # R14.3 英文未來式 intent
+            "i will create", "i'll create", "i will write", "i'll write",
+            "i will save", "i'll save", "going to create", "going to write",
+            "let me create", "let me save", "let me write",
         )
         lower_raw = raw_response_text.lower()
         had_fake_claim_when_disabled = any(kw.lower() in lower_raw for kw in _TOOLS_DISABLED_FAKE_CLAIM_KW)
-        # 加 regex pattern 偵測 — 涵蓋 keyword 沒列到的變體 (「我...生成」「為您...建立」等動詞片語)
+        # R14.3 regex pattern (擴 prefix + 後綴 + 新加「把/將+動詞+到」):
         _FAKE_CLAIM_PATTERNS = _re_c57.compile(
-            r"我[已也].{0,10}(生成|建立|寫入|儲存|產生|新增|完成|準備)"
+            # 1. 「我[已也會將要來]/也將/也會 ... 動詞」 — 涵蓋完成 / 未來 / 現在式 intent
+            r"我[已也會將要來].{0,10}(生成|建立|寫入|儲存|產生|新增|完成|準備|存|寫|放|保存)"
             r"|"
-            r"為(您|你).{0,10}(生成|建立|寫入|儲存|產生|新增|完成|準備)"
+            # 2. 「為您/為你/幫您/幫你/替您/替你 ... 動詞」
+            r"(為|幫|替)(您|你).{0,10}(生成|建立|寫入|儲存|產生|新增|完成|準備|存|寫|放|保存)"
             r"|"
-            r"(生成|建立|寫入|儲存|產生|新增|完成|準備).{0,5}(檔|文件|程式|file|note)",
+            # 3. R14.3 新: 「(把|將) <內容> 動詞 到」— 涵蓋「把筆記儲存到...」「將內容寫到...」
+            r"(把|將).{0,30}(儲存|寫入|寫|存|放|建立|新增|產生|生成|保存)\s*到"
+            r"|"
+            # 4. R14.3 擴後綴: 動詞 + 後綴 (檔/file/note + path prefix + 介詞「到」)
+            r"(生成|建立|寫入|儲存|產生|新增|完成|準備|存|寫|放|保存).{0,5}(檔|文件|程式|筆記|file|note|\.md|\.py|\.txt|10_|11_|70_|80_|90_|_Permanent|_Active_Plans|_Manual)"
+            r"|"
+            # 5. R14.3 「正在/現在 + 動詞」
+            r"(正在|現在).{0,5}(生成|建立|寫入|儲存|產生|新增|完成|準備|存|寫|放|保存)",
             _re_c57.IGNORECASE,
         )
         had_fake_claim_pattern = bool(_FAKE_CLAIM_PATTERNS.search(raw_response_text))
