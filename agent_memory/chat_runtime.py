@@ -369,8 +369,12 @@ def run_chat_turn(
         had_tool_token = "[TOOL]" in raw_response_text.upper()
         _TOOLS_DISABLED_FAKE_CLAIM_KW = (
             # 完成式 — 中文 (R14.1+R14.2)
-            "已建立", "已寫入", "已執行", "已完成", "已產生", "已產出",
+            # R14.6 C62 移除「已完成」單獨 keyword (Codex 第 14b B-4 誤殺):
+            #   「已完成的狀態更新」「作為一個已完成的事實」 — 形容詞 vs 動詞歧義
+            #   保留雙詞綁定「已完成寫入/已完成建立」(下方新加, 已綁寫檔動詞)
+            "已建立", "已寫入", "已執行", "已產生", "已產出",
             "已成功", "已生成", "已新增", "已儲存", "已存", "已存到",
+            "已完成寫入", "已完成建立", "已完成儲存",  # R14.6: 雙詞綁定保留
             "已為您", "已為你", "已幫您", "已幫你", "已替您", "已替你",
             "建立了", "寫入了", "新增了", "產生了", "生成了", "儲存了",
             # 準備式 — 中文 (R14.1 「已準備好執行」)
@@ -399,22 +403,31 @@ def run_chat_turn(
         )
         lower_raw = raw_response_text.lower()
         had_fake_claim_when_disabled = any(kw.lower() in lower_raw for kw in _TOOLS_DISABLED_FAKE_CLAIM_KW)
-        # R14.3 regex pattern (擴 prefix + 後綴 + 新加「把/將+動詞+到」):
+        # R14.3 → R14.6 regex pattern:
+        # - regex 4 後綴 R14.6 收斂: 拿掉普通名詞「檔/文件/程式/筆記/file/note」,
+        #   只保留 file ext + vault path prefix (避免「撰寫程式碼」「建立筆記」誤觸發)
+        # - regex 4 距離 R14.6 從 .{0,5} 擴到 .{0,10} (抓「建立一個 test.md」)
+        # - regex 6 R14.6 新加: 「(將|要)(在|到)...動詞...(ext|path)」
+        #   抓「將在 Vault 中建立 test.md」「準備在 70_Active_Plans/ 目錄下建立 README」
         _FAKE_CLAIM_PATTERNS = _re_c57.compile(
-            # 1. 「我[已也會將要來]/也將/也會 ... 動詞」 — 涵蓋完成 / 未來 / 現在式 intent
+            # 1. 「我[已也會將要來] ... 動詞」 — 完成/未來/現在式 intent
             r"我[已也會將要來].{0,10}(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存)"
             r"|"
             # 2. 「為您/為你/幫您/幫你/替您/替你 ... 動詞」
             r"(為|幫|替)(您|你).{0,10}(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存)"
             r"|"
-            # 3. R14.3 新: 「(把|將) <內容> 動詞 到」— 涵蓋「把筆記儲存到...」「將內容寫到...」
+            # 3. 「(把|將) <內容> 動詞 到」— 「把筆記儲存到...」「將內容寫到...」
             r"(把|將).{0,30}(儲存|寫入|寫|存|放|建立|新增|產生|生成|保存)\s*到"
             r"|"
-            # 4. R14.3 擴後綴: 動詞 + 後綴 (檔/file/note + path prefix + 介詞「到」)
-            r"(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存).{0,5}(檔|文件|程式|筆記|file|note|\.md|\.py|\.txt|10_|11_|70_|80_|90_|_Permanent|_Active_Plans|_Manual)"
+            # 4. R14.6 收斂: 動詞 + (ext|path prefix), 拿掉普通名詞後綴避誤觸發
+            r"(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存).{0,10}(\.md|\.py|\.txt|10_|11_|70_|80_|90_|_Permanent|_Active_Plans|_Manual)"
             r"|"
-            # 5. R14.3 「正在/現在 + 動詞」
-            r"(正在|現在).{0,5}(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存)",
+            # 5. 「正在/現在 + 動詞」
+            r"(正在|現在).{0,5}(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存)"
+            r"|"
+            # 6. R14.6 新加: 「(將|要|準備)(在|到)...動詞...(ext|path)」
+            #    抓 Codex 第 14b C-3「將在 Vault 中建立 test.md」C-5「準備在 70_Active_Plans/ 目錄下建立 README」
+            r"(將|要|準備).{0,5}(在|到).{0,30}(建立|新增|生成|寫入|產生|儲存|存|寫|放|保存).{0,15}(\.md|\.py|\.txt|test|hello|README|10_|11_|70_|80_|90_|_Permanent|_Active_Plans|_Manual)",
             _re_c57.IGNORECASE,
         )
         had_fake_claim_pattern = bool(_FAKE_CLAIM_PATTERNS.search(raw_response_text))
