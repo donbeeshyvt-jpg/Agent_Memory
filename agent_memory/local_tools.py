@@ -659,6 +659,15 @@ def _execute_files_tool(runtime: Any, args: dict[str, Any], operator: str, resul
             result["error"] = f"permission denied: 寫入越界或唯讀路徑 — {path}"
             return result
 
+    # R14 C53 T6.3: read 動作也要擋 raw zones (使用者私人區, AI 不該主動讀)
+    # 跟寫入 deny 同邊界但 read 之前漏掉 → Codex 觀察「`files.read_file` 觸發讀 raw 檔」
+    if action == "read_file":
+        normalized_path = path.replace("\\", "/").lstrip("/")
+        _RAW_ZONES = ("20_Literature/", "80_Fleeting/", "90_Daily_Journal/")
+        if any(normalized_path.startswith(prefix) for prefix in _RAW_ZONES):
+            result["error"] = f"permission denied: raw zone 不可透過 agent tool 讀取 — {path}"
+            return result
+
     # 強制 vault target (agent 沙盒)
     request_with_target = dict(args)
     request_with_target["target"] = "vault"

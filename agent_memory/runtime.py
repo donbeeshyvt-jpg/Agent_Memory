@@ -305,8 +305,22 @@ class MemoryRuntime:
         strategy: str = "hybrid",
         use_mmr: bool | None = None,
         mmr_lambda: float | None = None,
+        min_score: float = 0.1,
     ) -> list[SearchHit]:
-        """Run scoped retrieval with path-first filtering."""
+        """Run scoped retrieval with path-first filtering.
+
+        R14 C53 修補:
+        - raw zones (20/80/90) hardcoded exclude — 即使 profile.read_include 含, retrieval 也不該命中
+          (使用者私人區, AI 不該透過 RAG 引用; 但單檔直接讀仍 OK 由 files.read_file 另外控制)
+        - min_score 門檻 (預設 0.1) — 低於門檻 hits 不回, 避免 no-hit 查詢仍回 top-k 灌爆 prompt
+        """
+
+        # R14 C53 T6.3: 永遠把 raw zones 從 retrieval 排除 (避免 RAG 污染 prompt)
+        retrieval_exclude = list(self.profile.read_exclude or [])
+        _RAW_ZONES_EXCLUDE = ("20_Literature/", "80_Fleeting/", "90_Daily_Journal/")
+        for prefix in _RAW_ZONES_EXCLUDE:
+            if prefix not in retrieval_exclude:
+                retrieval_exclude.append(prefix)
 
         if auto_reindex:
             self.reindex_search(sync_views=False)
@@ -314,12 +328,15 @@ class MemoryRuntime:
             query=query,
             max_results=max_results,
             include_prefixes=self.profile.read_include,
-            exclude_prefixes=self.profile.read_exclude,
+            exclude_prefixes=retrieval_exclude,
             include_archived=include_archived,
             strategy=strategy,
             use_mmr=use_mmr,
             mmr_lambda=mmr_lambda,
         )
+        # R14 C53 T6.4: min_score 門檻 — 過濾雜訊 hit
+        if min_score > 0 and hits:
+            hits = [h for h in hits if float(getattr(h, "score", 0.0)) >= min_score]
         if hits:
             try:
                 record_recall_hits(self.adapter.vault_root, query=query, hits=hits, phase="light")
