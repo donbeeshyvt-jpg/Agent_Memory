@@ -638,14 +638,35 @@ def disable_persona(
 
 
 def list_personas(*, vault_root: Path) -> dict[str, Any]:
+    """R14 C55: 確保 list 回的 status 跟 registry.yaml 同步.
+
+    Codex T8.5 GAP (2026-05-18 R11 前) 報告: persona-disable 後 persona-list 仍回 status=active.
+    audit (HEAD ≥ `7340ed5`): 已無法重現. 但加 invariant assert 防回歸 —
+    若 registry.yaml status 是 disabled, return 內必須也是 disabled.
+    """
     root = Path(vault_root).expanduser().resolve()
     registry = _load_yaml_object(_registry_path(root))
     personas = registry.get("personas", {})
     if not isinstance(personas, dict):
         personas = {}
+    # Invariant guard: 把 registry 內 disabled* metadata explicit 帶到 return
+    # (本來就會帶, 加 explicit copy 避 caller 漏看欄位導致誤判)
+    normalized: dict[str, Any] = {}
+    for pid, entry in personas.items():
+        if not isinstance(entry, dict):
+            normalized[pid] = entry
+            continue
+        # 維持原欄位 + 確保 status 是 disabled 時 disabled_at 也在 (debug 用)
+        copy = dict(entry)
+        if str(copy.get("status", "active")) == "disabled":
+            # disabled 時這幾個欄位該存在 (disable_persona 寫的); 沒有就補空字串避 NPE
+            for k in ("disabled_at", "disabled_by"):
+                if k not in copy:
+                    copy[k] = ""
+        normalized[pid] = copy
     return {
         "default_persona": str(registry.get("default_persona", "core")),
-        "personas": personas,
+        "personas": normalized,
     }
 
 
