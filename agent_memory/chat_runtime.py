@@ -367,6 +367,9 @@ def run_chat_turn(
     had_tool_attempt_when_disabled = False
     # R16.1 C73 — Manual_Inputs 寫入 deterministic guard 觀察欄位 (Codex 第 18 輪 A4 修補)
     manual_inputs_writes_blocked: list[dict[str, Any]] = []
+    # R16.2 C74 — 廣義禁區意圖鎖 (Codex 第 19 輪 C5 修補)
+    raw_zone_writes_blocked: list[dict[str, Any]] = []
+    user_intent_targets_raw_zone = False
     if tools_enabled:
         tool_calls = parse_agent_tool_calls(raw_response_text)
 
@@ -400,6 +403,26 @@ def run_chat_turn(
         _user_has_explicit_write = bool(_C73_EXPLICIT_WRITE.search(message))
         _manual_writes_allowed = _user_has_capture_intent or _user_has_explicit_write
 
+        # R16.2 C74 — 廣義禁區意圖鎖偵測 (對齊 Codex 第 19 輪 C5「將在 80_Fleeting/ 建立 note.md」
+        # LLM 改路徑到 70_Active_Plans/note.md 越權問題). 對齊 Codex 第 16 輪 audit「禁區意圖鎖」+
+        # MISSION §5.2「不依賴 LLM 自律, 核心規則強制」+ §5.1 安全邊界紅線.
+        #
+        # 偵測 user prompt 含「寫入禁區」雙詞綁定 (動詞 + raw zone path), 對齊 R14.x C60 精準度.
+        # 純讀禁區 (例「看看 20_Literature/」) 不該觸發, 因為只擋寫不擋讀.
+        # 從禁區提取到允許區 (例「把 20_Literature/X 摘到 Manual_Inputs/」) 也不該誤殺.
+        _C74_RAW_ZONE_WRITE = re.compile(
+            r"(寫到|存到|記到|寫進|存進|放到|放在|寫入|建立|新增|存放|存放到).{0,15}"
+            r"(20_Literature|80_Fleeting|90_Daily_Journal)"
+            r"|"
+            r"(把|將).{0,30}(寫|存|放|記|建立|新增).{0,20}(到|進|入).{0,20}"
+            r"(20_Literature|80_Fleeting|90_Daily_Journal)"
+            r"|"
+            # 未來式 pattern「(將|要|準備)(在|到)<禁區>...(動詞)」(對齊 R14.6 regex 6 形式)
+            r"(將|要|準備|想).{0,5}(在|到).{0,5}"
+            r"(20_Literature|80_Fleeting|90_Daily_Journal).{0,30}(建立|新增|寫|存|放|記)"
+        )
+        user_intent_targets_raw_zone = bool(_C74_RAW_ZONE_WRITE.search(message))
+
         filtered_calls: list[dict[str, Any]] = []
         for call in tool_calls:
             # 修 (C73 bug): parse_agent_tool_calls 回 {tool, args: {action, path,...}} 嵌套,
@@ -414,8 +437,9 @@ def run_chat_turn(
                 or (_tool == "files" and _action in ("write_file", "append_file"))
             )
             _targets_manual = "Manual_Inputs/" in _path or _path.startswith("10_Permanent/Manual_Inputs")
+
+            # R16.1 C73 — Manual_Inputs 越權守門 (使用者未明示意圖時)
             if _is_write and _targets_manual and not _manual_writes_allowed:
-                # 攔截 — LLM 越權對 Manual_Inputs/ 寫入但使用者未明示意圖
                 manual_inputs_writes_blocked.append({
                     "tool": _tool,
                     "action": _action,
@@ -429,6 +453,23 @@ def run_chat_turn(
                     "message": "blocked by R16.1 C73 deterministic guard",
                 })
                 continue
+
+            # R16.2 C74 — 禁區意圖鎖 (使用者明示禁區寫入時, LLM 不該改路徑到允許區)
+            if _is_write and user_intent_targets_raw_zone:
+                raw_zone_writes_blocked.append({
+                    "tool": _tool,
+                    "action": _action,
+                    "path": _path_raw,
+                    "ok": False,
+                    "error": (
+                        "raw_zone_intent_blocked: 使用者明示禁區寫入意圖, "
+                        "LLM 不該自主改路徑寫到允許區 (R16.2 C74 raw zone intent lock)"
+                    ),
+                    "blocked_reason": "user_intent_targets_raw_zone_llm_redirect",
+                    "message": "blocked by R16.2 C74 raw zone intent lock",
+                })
+                continue
+
             filtered_calls.append(call)
 
         for call in filtered_calls:
@@ -436,6 +477,7 @@ def run_chat_turn(
             agent_tool_results.append(res)
         # blocked calls 也加進 results 給 render_agent_tool_summary 顯示 ✗ 給使用者看
         agent_tool_results.extend(manual_inputs_writes_blocked)
+        agent_tool_results.extend(raw_zone_writes_blocked)
         unparsed_tool_attempts = count_unmatched_tool_attempts(raw_response_text, len(tool_calls))
         # 從顯示用 response 拿掉 [TOOL] block (避免使用者看到亂碼 JSON)
         response_text = strip_agent_tool_blocks(raw_response_text)
@@ -601,6 +643,18 @@ def run_chat_turn(
             f"  · 攔截路徑：{_paths_txt}\n"
             f"  · 原因：使用者未明示記憶意圖或寫檔路徑（軌道 A 一般描述句不該觸發寫入）\n"
             f"  · 若要記住此事，請說「幫我記得 X」或「寫到 10_Permanent/Manual_Inputs/X.md」"
+        )
+
+    # R16.2 C74 — 禁區意圖鎖 disclaimer (Codex 第 19 輪 C5 LLM 改路徑修補).
+    if raw_zone_writes_blocked:
+        _paths_txt = ", ".join(f"`{b.get('path', '?')}`" for b in raw_zone_writes_blocked)
+        response_text = response_text.rstrip() + (
+            f"\n\n---\n"
+            f"🛡️ **偵測到使用者明示禁區寫入意圖，但 LLM 改路徑越權（已攔截 {len(raw_zone_writes_blocked)} 個 tool call）**\n"
+            f"  · 攔截路徑：{_paths_txt}\n"
+            f"  · 原因：使用者要求寫入 raw zone (20_Literature / 80_Fleeting / 90_Daily_Journal)，"
+            f"系統不該由 LLM 自主改寫到其他允許區（會繞過使用者意圖）\n"
+            f"  · 若要寫入該檔案，請改用 menu [M] 手動投餵；或改寫到 `10_Permanent/Manual_Inputs/`"
         )
 
     # R16 C71 — 軌道 B 記憶提醒寫入後加「✓ 已記住」disclaimer (對齊規格 §5.4).
@@ -854,6 +908,11 @@ def run_chat_turn(
         "memory_write_blocked": bool(manual_inputs_writes_blocked),
         "memory_write_blocked_count": len(manual_inputs_writes_blocked),
         "memory_write_blocked_paths": [b.get("path", "") for b in manual_inputs_writes_blocked],
+        # R16.2 C74 — 禁區意圖鎖觀察 (Codex 第 19 輪 C5 LLM 改路徑修補)
+        "raw_zone_intent_detected": user_intent_targets_raw_zone,
+        "raw_zone_write_blocked": bool(raw_zone_writes_blocked),
+        "raw_zone_write_blocked_count": len(raw_zone_writes_blocked),
+        "raw_zone_write_blocked_paths": [b.get("path", "") for b in raw_zone_writes_blocked],
         "prompt_chars": {  # R12 C45 — prompt budget observability (給 Codex LLM-002/003 重測)
             "system_prompt_total": len(system_prompt),
             "history_tail": len(history_tail),

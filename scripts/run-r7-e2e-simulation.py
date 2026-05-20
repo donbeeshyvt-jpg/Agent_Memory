@@ -1388,6 +1388,107 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"C_pass={_c1_not_blocked} C_file={_c1_file_exists}",
     )
 
+    # 18.3 — C74 chat_runtime 禁區意圖鎖 source check
+    has_c74_src = all(s in crt2_src for s in (
+        "R16.2 C74",  # 標記
+        "raw_zone_writes_blocked",  # local list
+        "_C74_RAW_ZONE_WRITE",  # regex
+        "user_intent_targets_raw_zone",  # detect flag
+        "raw_zone_intent_blocked",  # error 訊息
+        "raw_zone_intent_detected",  # payload flag
+        "raw_zone_write_blocked",  # payload flag
+        "禁區意圖鎖",  # 註解或 disclaimer
+        "禁區寫入意圖",  # disclaimer
+    ))
+    report.step(
+        "C74 chat_runtime 禁區意圖鎖 source check (regex + payload + disclaimer)",
+        has_c74_src,
+        f"src={has_c74_src}",
+    )
+
+    # 18.4 — C74 functional smoke: Codex 第 19 輪 C5 LLM 改路徑越權重現 + 攔截
+    import tempfile as _tmpf4, json as _json4
+    from unittest.mock import MagicMock as _MM4
+    with _tmpf4.TemporaryDirectory() as _td4:
+        from pathlib import Path as _P4
+        _v4 = _P4(_td4) / "vault"
+        _v4.mkdir(parents=True)
+        from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA4
+        from agent_memory.runtime import MemoryRuntime as _MR4, RuntimeProfile as _RP4
+        from agent_memory.llm_client import LLMGenerateResult as _LGR4
+        from agent_memory.chat_runtime import run_chat_turn as _rct4
+        from agent_memory.persona_governance import (
+            ensure_persona_governance_file as _epgf4,
+            load_persona_governance as _lpg4,
+            save_persona_governance as _spg4,
+            _now_iso as _ni4,
+        )
+
+        _ad4 = _OVA4(_v4)
+        _ad4.ensure_skeleton()
+        _epgf4(_v4, overwrite=True)
+        _gov4 = _lpg4(_v4)
+        _gov4["persona_overrides"]["steward"] = {
+            "status": "active",
+            "supervision": {"enabled": True, "reviewer_persona": "core", "arbiter_persona": "core"},
+            "capabilities": {
+                "tools_enabled": True, "code_write_enabled": True,
+                "shell_enabled": False, "persona_management_enabled": False,
+                "memory_capture_enabled": True,
+            },
+            "source": "step18_c74", "created_at": _ni4(), "updated_at": _ni4(), "updated_by": "step18",
+        }
+        _spg4(_v4, _gov4)
+        _rt4 = _MR4(_ad4, profile=_RP4(name="steward"))
+
+        def _mk_tc4(_p, _c):
+            _b = _json4.dumps({"action": "add", "path": _p, "content": _c, "reason": "t"}, ensure_ascii=False)
+            return "[TOOL]memory" + _b + "[/TOOL]"
+
+        _mc4 = _MM4()
+        # C5 case 重現: user 說「將在 80_Fleeting/ 建立 note.md」, LLM 改路徑到 70_Active_Plans/note.md
+        _mc4.generate.return_value = _LGR4(
+            content="ok.\n" + _mk_tc4("70_Active_Plans/note.md", "x"),
+            profile="m", model="m", provider_kind="openai_compatible", base_url="m", attempts=[],
+        )
+        _r_c5 = _rct4(
+            adapter=_ad4, runtime=_rt4, client=_mc4,
+            persona="steward", context="cli", session="step18-c5",
+            message="將在 80_Fleeting/ 下建立 note.md",
+            temperature=0.0, timeout_s=30.0, memory_mode="session_only",
+            transport="cli", channel_id="cli", user_id="u",
+        )
+        _c5_intent = bool(_r_c5.get("raw_zone_intent_detected"))
+        _c5_blocked = bool(_r_c5.get("raw_zone_write_blocked"))
+        _c5_file_absent = not (_v4 / "70_Active_Plans/note.md").exists()
+        _c5_disclaimer = "禁區寫入意圖" in _r_c5.get("response", "")
+
+        # Sanity: B 軌道「幫我記得明天還書」C74 不該誤殺
+        _mc4.generate.return_value = _LGR4(
+            content="ok.\n" + _mk_tc4("10_Permanent/Manual_Inputs/return_book.md", "y"),
+            profile="m", model="m", provider_kind="openai_compatible", base_url="m", attempts=[],
+        )
+        _r_b = _rct4(
+            adapter=_ad4, runtime=_rt4, client=_mc4,
+            persona="steward", context="cli", session="step18-b-c74",
+            message="幫我記得明天還書",
+            temperature=0.0, timeout_s=30.0, memory_mode="session_only",
+            transport="cli", channel_id="cli", user_id="u",
+        )
+        _b_no_raw_intent = not bool(_r_b.get("raw_zone_intent_detected"))
+        _b_no_block = not bool(_r_b.get("raw_zone_write_blocked"))
+
+    c74_functional = (
+        _c5_intent and _c5_blocked and _c5_file_absent and _c5_disclaimer
+        and _b_no_raw_intent and _b_no_block
+    )
+    report.step(
+        "C74 functional: C5 LLM 改路徑攔截 + B 軌道不誤殺 (Codex 第 19 輪修補主驗)",
+        c74_functional,
+        f"C5_intent={_c5_intent} C5_block={_c5_blocked} C5_no_file={_c5_file_absent} "
+        f"C5_disc={_c5_disclaimer} B_no_intent={_b_no_raw_intent} B_no_block={_b_no_block}",
+    )
+
     return report.summary()
 
 
