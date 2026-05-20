@@ -365,11 +365,77 @@ def run_chat_turn(
     unparsed_tool_attempts = 0
     # R14.2 C58: hoist tools_disabled intent flag to module-level scope, payload can reuse
     had_tool_attempt_when_disabled = False
+    # R16.1 C73 — Manual_Inputs 寫入 deterministic guard 觀察欄位 (Codex 第 18 輪 A4 修補)
+    manual_inputs_writes_blocked: list[dict[str, Any]] = []
     if tools_enabled:
         tool_calls = parse_agent_tool_calls(raw_response_text)
+
+        # R16.1 C73 — 「一般描述句」LLM 越權寫入 Manual_Inputs/ 攔截 (Codex 第 18 輪 A4 焦點).
+        # 病因: A4「我會記得吃飯」 detect_memory_capture_intent → MISS (正確), 但 LLM 看了
+        # tools_prompt 仍自主 [TOOL]memory.add path=10_Permanent/Manual_Inputs/reminder_eat.md
+        # → 越權代寫. 對齊 Codex「一般描述句不可走 memory.add/replace」+ MISSION §5.2
+        # 「不依賴 LLM 自律, 用核心規則強制」.
+        #
+        # 放行 2 條件 (OR):
+        #   (a) user_message 命中 C69 detect_memory_capture_intent (capture 意圖)
+        #       → LLM 額外 memory.add 仍允許 (B 軌 + LLM 雙重寫沒關係, 同筆事實)
+        #   (b) user_message 含明示寫檔 keyword + path/ext (軌道 C 寫檔意圖)
+        #       → 使用者明示要寫到 Manual_Inputs/X.md 之類, 允許 LLM 走 [TOOL]memory.add
+        # 都不命中 → 攔截 (memory_write_blocked).
+        try:
+            from agent_memory.memory_capture import detect_memory_capture_intent
+            _ci = detect_memory_capture_intent(message)
+            _user_has_capture_intent = bool(_ci.detected)
+        except Exception:  # noqa: BLE001
+            _user_has_capture_intent = False
+        # 軌道 C 明示寫檔意圖 (簡化, 不重複 R14.x T7.2 全套, 只抓 path/ext 雙詞綁定)
+        # 用 module-level `re` (line 6 已 import), 避用 line 454 才 local import 的 _re_c57
+        _C73_EXPLICIT_WRITE = re.compile(
+            r"(寫到|存到|記到|寫進|存進|放到|放在|寫入|建立|新增|存放).{0,15}"
+            r"(\.md|\.py|\.txt|Manual_Inputs|10_|11_|70_|Profiles|Facts|Concepts)"
+            r"|"
+            r"(把|將).{0,30}(寫|存|放|記|建立|新增).{0,20}(到|進|入).{0,20}"
+            r"(\.md|\.py|\.txt|Manual_Inputs|10_|11_|70_)"
+        )
+        _user_has_explicit_write = bool(_C73_EXPLICIT_WRITE.search(message))
+        _manual_writes_allowed = _user_has_capture_intent or _user_has_explicit_write
+
+        filtered_calls: list[dict[str, Any]] = []
         for call in tool_calls:
+            # 修 (C73 bug): parse_agent_tool_calls 回 {tool, args: {action, path,...}} 嵌套,
+            # action/path 在 call["args"] 內, 不在 call 頂層.
+            _tool = str(call.get("tool", "")).strip().lower()
+            _args = call.get("args", {}) if isinstance(call.get("args"), dict) else {}
+            _action = str(_args.get("action", "")).strip().lower()
+            _path_raw = str(_args.get("path", "")).strip()
+            _path = _path_raw.replace("\\", "/")
+            _is_write = (
+                (_tool == "memory" and _action in ("add", "replace"))
+                or (_tool == "files" and _action in ("write_file", "append_file"))
+            )
+            _targets_manual = "Manual_Inputs/" in _path or _path.startswith("10_Permanent/Manual_Inputs")
+            if _is_write and _targets_manual and not _manual_writes_allowed:
+                # 攔截 — LLM 越權對 Manual_Inputs/ 寫入但使用者未明示意圖
+                manual_inputs_writes_blocked.append({
+                    "tool": _tool,
+                    "action": _action,
+                    "path": _path_raw,
+                    "ok": False,
+                    "error": (
+                        "memory_write_blocked: 使用者未明示記憶意圖或寫檔路徑, "
+                        "LLM 越權對 Manual_Inputs/ 寫入已被攔截 (R16.1 C73 guard)"
+                    ),
+                    "blocked_reason": "no_capture_intent_no_explicit_write",
+                    "message": "blocked by R16.1 C73 deterministic guard",
+                })
+                continue
+            filtered_calls.append(call)
+
+        for call in filtered_calls:
             res = execute_agent_tool_call(runtime, call, operator=persona)
             agent_tool_results.append(res)
+        # blocked calls 也加進 results 給 render_agent_tool_summary 顯示 ✗ 給使用者看
+        agent_tool_results.extend(manual_inputs_writes_blocked)
         unparsed_tool_attempts = count_unmatched_tool_attempts(raw_response_text, len(tool_calls))
         # 從顯示用 response 拿掉 [TOOL] block (避免使用者看到亂碼 JSON)
         response_text = strip_agent_tool_blocks(raw_response_text)
@@ -524,6 +590,18 @@ def run_chat_turn(
             )
 
     response_text = _strip_leading_reasoning_blocks(response_text)
+
+    # R16.1 C73 — Manual_Inputs 越權寫入攔截 disclaimer (Codex 第 18 輪 A4 焦點).
+    # 對使用者透明: 告訴他 LLM 嘗試寫但被守門攔了, 並提示正確的明示方式.
+    if manual_inputs_writes_blocked:
+        _paths_txt = ", ".join(f"`{b.get('path', '?')}`" for b in manual_inputs_writes_blocked)
+        response_text = response_text.rstrip() + (
+            f"\n\n---\n"
+            f"⚠️ **偵測到 LLM 越權寫入 Manual_Inputs/（已攔截 {len(manual_inputs_writes_blocked)} 個 tool call）**\n"
+            f"  · 攔截路徑：{_paths_txt}\n"
+            f"  · 原因：使用者未明示記憶意圖或寫檔路徑（軌道 A 一般描述句不該觸發寫入）\n"
+            f"  · 若要記住此事，請說「幫我記得 X」或「寫到 10_Permanent/Manual_Inputs/X.md」"
+        )
 
     # R16 C71 — 軌道 B 記憶提醒寫入後加「✓ 已記住」disclaimer (對齊規格 §5.4).
     # 「真實寫入 + 可追蹤證據」: 含 path + summary 給使用者一眼確認.
@@ -772,6 +850,10 @@ def run_chat_turn(
         "memory_capture_summary": memory_capture_summary,
         "memory_capture_error": memory_capture_error,
         "memory_capture_enabled": memory_capture_enabled,  # persona capability 觀察
+        # R16.1 C73 — Manual_Inputs 越權寫入攔截觀察 (Codex 第 18 輪 A4 修補)
+        "memory_write_blocked": bool(manual_inputs_writes_blocked),
+        "memory_write_blocked_count": len(manual_inputs_writes_blocked),
+        "memory_write_blocked_paths": [b.get("path", "") for b in manual_inputs_writes_blocked],
         "prompt_chars": {  # R12 C45 — prompt budget observability (給 Codex LLM-002/003 重測)
             "system_prompt_total": len(system_prompt),
             "history_tail": len(history_tail),

@@ -1267,6 +1267,127 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"check={has_c71}",
     )
 
+    # ─── Step 18 (R16.1): C73 Manual_Inputs deterministic guard 驗證 ──────────
+    report.section("Step 18 (R16.1): Manual_Inputs 越權寫入 deterministic guard")
+
+    # 18.1 — C73 chat_runtime source-level check (5 處)
+    has_c73_src = all(s in crt2_src for s in (
+        "R16.1 C73",  # 標記
+        "manual_inputs_writes_blocked",  # local list
+        "_user_has_capture_intent",  # 放行條件 (a)
+        "_user_has_explicit_write",  # 放行條件 (b)
+        "_C73_EXPLICIT_WRITE",  # 軌道 C regex
+        "memory_write_blocked: 使用者未明示記憶意圖",  # error 訊息
+        "memory_write_blocked",  # payload flag
+        "memory_write_blocked_count",
+        "memory_write_blocked_paths",
+        "越權寫入 Manual_Inputs",  # disclaimer
+    ))
+    report.step(
+        "C73 chat_runtime Manual_Inputs guard source check (5 element + payload + disclaimer)",
+        has_c73_src,
+        f"src={has_c73_src}",
+    )
+
+    # 18.2 — C73 functional smoke: Codex 第 18 輪 A4 case 重現 + 攔截驗證
+    import tempfile as _tmpf3, json as _json3
+    from unittest.mock import MagicMock as _MM
+    with _tmpf3.TemporaryDirectory() as _td3:
+        from pathlib import Path as _P3
+        _v3 = _P3(_td3) / "vault"
+        _v3.mkdir(parents=True)
+        from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA3
+        from agent_memory.runtime import MemoryRuntime as _MR3, RuntimeProfile as _RP3
+        from agent_memory.llm_client import LLMGenerateResult as _LGR3
+        from agent_memory.chat_runtime import run_chat_turn as _rct3
+        from agent_memory.persona_governance import (
+            ensure_persona_governance_file as _epgf3,
+            load_persona_governance as _lpg3,
+            save_persona_governance as _spg3,
+            _now_iso as _ni3,
+        )
+
+        _ad3 = _OVA3(_v3)
+        _ad3.ensure_skeleton()
+        _epgf3(_v3, overwrite=True)
+        _gov3 = _lpg3(_v3)
+        _gov3["persona_overrides"]["steward"] = {
+            "status": "active",
+            "supervision": {"enabled": True, "reviewer_persona": "core", "arbiter_persona": "core"},
+            "capabilities": {
+                "tools_enabled": True, "code_write_enabled": True,
+                "shell_enabled": False, "persona_management_enabled": False,
+                "memory_capture_enabled": True,
+            },
+            "source": "test_e2e_step18", "created_at": _ni3(), "updated_at": _ni3(), "updated_by": "step18",
+        }
+        _spg3(_v3, _gov3)
+        _rt3 = _MR3(_ad3, profile=_RP3(name="steward"))
+
+        def _mk_tc(_p, _c):
+            _b = _json3.dumps({"action": "add", "path": _p, "content": _c, "reason": "t"}, ensure_ascii=False)
+            return "[TOOL]memory" + _b + "[/TOOL]"
+
+        _mc3 = _MM()
+        # A4 case — 「我會記得吃飯」LLM 越權寫 Manual_Inputs/ → C73 應攔
+        _mc3.generate.return_value = _LGR3(
+            content="好的。\n" + _mk_tc("10_Permanent/Manual_Inputs/reminder_eat.md", "x"),
+            profile="m", model="m", provider_kind="openai_compatible", base_url="m", attempts=[],
+        )
+        _r_a4 = _rct3(
+            adapter=_ad3, runtime=_rt3, client=_mc3,
+            persona="steward", context="cli", session="step18-a4",
+            message="我會記得吃飯",
+            temperature=0.0, timeout_s=30.0, memory_mode="session_only",
+            transport="cli", channel_id="cli", user_id="u",
+        )
+        _a4_blocked = bool(_r_a4.get("memory_write_blocked"))
+        _a4_file_absent = not (_v3 / "10_Permanent/Manual_Inputs/reminder_eat.md").exists()
+        _a4_disclaimer = "越權" in _r_a4.get("response", "")
+
+        # B 軌道 capture intent + LLM 額外 → C73 不該攔
+        _mc3.generate.return_value = _LGR3(
+            content="已記住。\n" + _mk_tc("10_Permanent/Manual_Inputs/return_book_followup.md", "y"),
+            profile="m", model="m", provider_kind="openai_compatible", base_url="m", attempts=[],
+        )
+        _r_b1 = _rct3(
+            adapter=_ad3, runtime=_rt3, client=_mc3,
+            persona="steward", context="cli", session="step18-b1",
+            message="幫我記得明天還書",
+            temperature=0.0, timeout_s=30.0, memory_mode="session_only",
+            transport="cli", channel_id="cli", user_id="u",
+        )
+        _b1_not_blocked = not bool(_r_b1.get("memory_write_blocked"))
+        _b1_followup_exists = (_v3 / "10_Permanent/Manual_Inputs/return_book_followup.md").exists()
+
+        # C 軌道明示 path → C73 不該攔
+        _mc3.generate.return_value = _LGR3(
+            content="好的。\n" + _mk_tc("10_Permanent/Manual_Inputs/explicit_note.md", "z"),
+            profile="m", model="m", provider_kind="openai_compatible", base_url="m", attempts=[],
+        )
+        _r_c1 = _rct3(
+            adapter=_ad3, runtime=_rt3, client=_mc3,
+            persona="steward", context="cli", session="step18-c1",
+            message="把這個寫到 10_Permanent/Manual_Inputs/explicit_note.md",
+            temperature=0.0, timeout_s=30.0, memory_mode="session_only",
+            transport="cli", channel_id="cli", user_id="u",
+        )
+        _c1_not_blocked = not bool(_r_c1.get("memory_write_blocked"))
+        _c1_file_exists = (_v3 / "10_Permanent/Manual_Inputs/explicit_note.md").exists()
+
+    c73_functional = (
+        _a4_blocked and _a4_file_absent and _a4_disclaimer
+        and _b1_not_blocked and _b1_followup_exists
+        and _c1_not_blocked and _c1_file_exists
+    )
+    report.step(
+        "C73 functional: A4 攔截 + B 放行 + C 明示放行 (Codex 第 18 輪修補主驗)",
+        c73_functional,
+        f"A4_block={_a4_blocked} A4_no_file={_a4_file_absent} A4_disc={_a4_disclaimer} "
+        f"B_pass={_b1_not_blocked} B_file={_b1_followup_exists} "
+        f"C_pass={_c1_not_blocked} C_file={_c1_file_exists}",
+    )
+
     return report.summary()
 
 
