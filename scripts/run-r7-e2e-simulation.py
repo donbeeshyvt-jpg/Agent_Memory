@@ -1060,6 +1060,95 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"check={has_c55}",
     )
 
+    # ─── Step 16 (R15+R15a): Codex 第 16+17 輪 4 FAIL 補修驗證 ─────────────────
+    report.section("Step 16 (R15+R15a): auto_evolve log / USER.md fallback / 5xx wrap / 多步工具鏈")
+
+    # 16.1 — C63 auto_evolve trigger 瞬間寫 phase=started placeholder log
+    import agent_memory.auto_evolve as _ae
+    ae_src = Path(_ae.__file__).read_text(encoding="utf-8")
+    has_c63 = all(s in ae_src for s in (
+        "phase",  # log entry 加 phase 欄位
+        '"started"',  # placeholder phase
+        '"completed"',  # subprocess 跑完後
+        "trigger_ts",  # 同筆 log 對應 trigger 瞬間 timestamp
+        "C63",  # 註解標記
+    ))
+    # 真實 functional smoke: 跑 10 次 maybe_trigger 第 10 次 trigger 瞬間 log 立即落地
+    import tempfile as _tmpf
+    with _tmpf.TemporaryDirectory() as _td:
+        from pathlib import Path as _P
+        _v = _P(_td)
+        from agent_memory.auto_evolve import maybe_trigger_promotion as _mtp
+        for _i in range(9):
+            _mtp(_v, threshold=10)
+        _r10 = _mtp(_v, threshold=10)
+        _log_p = _v / "11_AI_Mirror/ingestion_logs/auto_evolve_runs.jsonl"
+        c63_functional = (
+            _r10.get("triggered") is True
+            and _log_p.exists()
+            and "phase" in _log_p.read_text(encoding="utf-8")
+        )
+    report.step(
+        "C63 auto_evolve trigger 瞬間 placeholder log (T15.1, 對齊 Codex 第 16/16b)",
+        has_c63 and c63_functional,
+        f"src={has_c63} func={c63_functional}",
+    )
+
+    # 16.2 — C64 build_agent_tools_prompt 加 vault structure hint + _execute_files_tool fallback
+    has_c64_prompt = all(s in lt_src for s in (
+        "常用檔位置",  # vault hint section heading
+        "10_Permanent/Profiles/USER.md",
+        "不要用相對檔名",  # 明示 LLM 不用純檔名
+    ))
+    has_c64_fallback = all(s in lt_src for s in (
+        "_COMMON_READ_LOOKUPS",
+        "10_Permanent/Profiles/",
+        "10_Permanent/Manual_Inputs/",
+        "10_Permanent/Facts/",
+        "C64",  # 註解標記
+    ))
+    report.step(
+        "C64 USER.md path fallback + tools_prompt vault hint (T3.3, 對齊 Codex 第 16)",
+        has_c64_prompt and has_c64_fallback,
+        f"prompt={has_c64_prompt} fallback={has_c64_fallback}",
+    )
+
+    # 16.3 — C65 LLMClient transient 5xx retry + chat CLI default degraded wrap
+    import agent_memory.llm_client as _lc
+    lc_src = Path(_lc.__file__).read_text(encoding="utf-8")
+    has_c65_retry = all(s in lc_src for s in (
+        "HTTP\\s+5\\d\\d",  # transient 5xx regex
+        "Internal error",  # Gemini "Internal error" 命中
+        "internal_error",  # OpenRouter 變體
+        "is_transient",
+        "time.sleep(1.0)",  # 1s retry 間隔
+    ))
+    import agent_memory.cli as _cli
+    cli_src = Path(_cli.__file__).read_text(encoding="utf-8")
+    has_c65_cli = all(s in cli_src for s in (
+        "--strict-llm-fail",  # 新 opt-out flag
+        "allow_degraded = not bool(args.strict_llm_fail)",  # 預設 True
+    ))
+    report.step(
+        "C65 chat 5xx retry + 預設 degraded wrap (T3.2/T12.3, 對齊 Codex 第 16 焦點)",
+        has_c65_retry and has_c65_cli,
+        f"retry={has_c65_retry} cli={has_c65_cli}",
+    )
+
+    # 16.4 — C66 tools_prompt 加「同回合多步工具鏈」教學
+    has_c66 = all(s in lt_src for s in (
+        "範例 3",
+        "同回合「先讀後寫」多步工具鏈",
+        "一個 turn 內必須把全部需要的",
+        "user_name_akai.md",  # 範例 USER.md + 阿凱
+        "同 turn 多步工具鏈",  # 重要原則第 5 條
+    ))
+    report.step(
+        "C66 tools_prompt 加同 turn 多 tool 教學 (T3.3 第 17 輪主驗, 對齊 Codex 快檢)",
+        has_c66,
+        f"check={has_c66}",
+    )
+
     return report.summary()
 
 
