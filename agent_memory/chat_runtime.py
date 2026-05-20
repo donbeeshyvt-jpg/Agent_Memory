@@ -286,9 +286,15 @@ def run_chat_turn(
         if not isinstance(_caps, dict):
             _caps = {}
         tools_enabled = bool(_caps.get("tools_enabled", False))
+        # R16 C70: memory_capture_enabled 跟 tools_enabled 獨立. 對齊規格 §5.2
+        # D2 — tools_disabled persona 也能聰明接住「幫我記得 X」記憶提醒.
+        # backward-compat: 舊 schema 沒這欄位 → C68 _normalize_capabilities
+        # 自動補 True, 所以這裡讀 _caps 即可.
+        memory_capture_enabled = bool(_caps.get("memory_capture_enabled", True))
     except Exception:  # noqa: BLE001
-        # governance 讀取失敗 → 安全預設 False (deny 為主)
+        # governance 讀取失敗 → 安全預設 (tools=False deny; capture=True 對話功能優先)
         tools_enabled = False
+        memory_capture_enabled = True
     tools_prompt = build_agent_tools_prompt(
         write_allow=list(runtime.profile.write_allow),
         write_deny=list(runtime.profile.write_deny),
@@ -310,6 +316,46 @@ def run_chat_turn(
     )
 
     raw_response_text = llm_result.content.strip()
+
+    # R16 C70 — 軌道 B 記憶提醒意圖偵測 + 落地寫入 (對齊 V2_Round15 §4.2 + §5).
+    # 順序拍板: 軌道 B 偵測**先於** T7.2 假宣稱偵測 (line 374+) — 正當記憶意圖優先,
+    # 假宣稱次優先 (規格 §4 + R16 D 拍板 #4). 這樣使用者講「幫我記得 X」會直接被
+    # 接住寫進 Manual_Inputs/captures/, 不會誤觸發 T7.2 disclaimer.
+    #
+    # 對齊 MISSION:
+    #   §3.1 全對話驅動 — 使用者不需 menu / 不指定路徑
+    #   §3.3 雙向投餵 — 對話形式的「使用者投餵」延伸 (跟 menu [M] 同性質)
+    #   §5.2 安全邊界不破 — 跟 tools_enabled 獨立, 仍走 governance (capability flag)
+    memory_capture_detected = False
+    memory_capture_saved = False
+    memory_capture_path: str | None = None
+    memory_capture_summary: str | None = None
+    memory_capture_error: str | None = None
+    if memory_capture_enabled:
+        try:
+            from agent_memory.memory_capture import (
+                detect_memory_capture_intent,
+                record_memory_capture,
+            )
+            _det = detect_memory_capture_intent(message)
+            if _det.detected:
+                memory_capture_detected = True
+                memory_capture_summary = _det.summary
+                _capture_result = record_memory_capture(
+                    adapter=adapter,
+                    user_message=message,
+                    detection=_det,
+                    persona_id=persona,
+                    context_id=str(context or ""),
+                    session_id=str(session or ""),
+                )
+                memory_capture_saved = bool(_capture_result.saved)
+                memory_capture_path = _capture_result.path
+                memory_capture_error = _capture_result.error
+                # index update 走既有 adapter 管線, 不需這層額外觸發
+        except Exception as exc:  # noqa: BLE001 — 不阻擋 chat 流程
+            memory_capture_detected = False
+            memory_capture_error = f"{type(exc).__name__}: {exc}"
 
     # Phase A C3 (A.5): parse + execute agent tool calls.
     # LLM 若在回應中嵌入 [TOOL]memory{...}<closing> -> 自動執行寫入第二大腦.
@@ -478,6 +524,26 @@ def run_chat_turn(
             )
 
     response_text = _strip_leading_reasoning_blocks(response_text)
+
+    # R16 C71 — 軌道 B 記憶提醒寫入後加「✓ 已記住」disclaimer (對齊規格 §5.4).
+    # 「真實寫入 + 可追蹤證據」: 含 path + summary 給使用者一眼確認.
+    # 跟 tools_disabled disclaimer 性質不同 (那是警示, 這是正面確認).
+    # 加在 response 結尾 (跟其他 footer 一致), 不 prepend 避免擠掉 LLM 主回應.
+    if memory_capture_detected:
+        if memory_capture_saved and memory_capture_path:
+            response_text = response_text.rstrip() + (
+                f"\n\n---\n"
+                f"✓ **已記住此提醒** — 寫入 `{memory_capture_path}`"
+            )
+            if memory_capture_summary:
+                response_text += f"\n  · 摘要：{memory_capture_summary}"
+        elif memory_capture_error:
+            # detected 但 saved 失敗 — 提示使用者不要假宣稱
+            response_text = response_text.rstrip() + (
+                f"\n\n---\n"
+                f"⚠️ **記憶提醒偵測到但寫入失敗** — {memory_capture_error}"
+                f"\n  · 可用 menu [M] 手動投餵備援"
+            )
 
     if not runtime.profile.can_write(hist_path):
         raise PermissionError(f"persona={persona} 無權寫入 session 路徑：{hist_path}")
@@ -699,6 +765,13 @@ def run_chat_turn(
         # R14 C54 / R14.1 C57 / R14.2 C58: tools_disabled persona 工具意圖偵測
         # 直接 reuse hoisted had_tool_attempt_when_disabled (else 分支內 keyword + regex 全套已算)
         "tools_disabled_tool_attempt": (not tools_enabled) and had_tool_attempt_when_disabled,
+        # R16 C70 — 軌道 B 記憶提醒意圖捕捉 (對齊 V2_Round15 §5.3 3 個 payload flag)
+        "memory_capture_detected": memory_capture_detected,
+        "memory_capture_saved": memory_capture_saved,
+        "memory_capture_path": memory_capture_path,
+        "memory_capture_summary": memory_capture_summary,
+        "memory_capture_error": memory_capture_error,
+        "memory_capture_enabled": memory_capture_enabled,  # persona capability 觀察
         "prompt_chars": {  # R12 C45 — prompt budget observability (給 Codex LLM-002/003 重測)
             "system_prompt_total": len(system_prompt),
             "history_tail": len(history_tail),
