@@ -793,7 +793,12 @@ def _build_parser() -> argparse.ArgumentParser:
     chat.add_argument(
         "--allow-llm-degraded",
         action="store_true",
-        help="Allow degraded response when all LLM routes fail.",
+        help="(legacy) Force degraded wrap even when --strict-llm-fail given. R15 C65 後預設行為已含 degraded wrap, 不需此 flag.",
+    )
+    chat.add_argument(
+        "--strict-llm-fail",
+        action="store_true",
+        help="R15 C65 — opt-out: 拒絕 degraded wrap, 讓 LLMClientError 直接 propagate (Codex 第 16 輪舊行為). 預設 False = 走 degraded.",
     )
     chat.add_argument(
         "--require-nondegraded",
@@ -3122,6 +3127,12 @@ def _cmd_chat(args: argparse.Namespace) -> int:
     if session_override == "default":
         session_override = ""
 
+    # R15 C65 (Codex 第 16 焦點 T3.2/T12.3): chat CLI 預設 allow_llm_degraded=True,
+    # 讓 Gemini/OpenRouter 5xx 等 transient error 走 _degraded_reply user-friendly wrap,
+    # 不再讓 raw {"error":{"code":500,"status":"INTERNAL"}} 從 stdout 漏給 Codex 解析.
+    # opt-out 用 --strict-llm-fail (舊 mainline gate check 行為);
+    # legacy --allow-llm-degraded 仍接受但已是預設, 保留向下相容.
+    allow_degraded = not bool(args.strict_llm_fail)
     result = run_transport_event(
         vault_root=resolve_vault_root(args.vault_root),
         transport=transport,
@@ -3135,7 +3146,7 @@ def _cmd_chat(args: argparse.Namespace) -> int:
         temperature=float(args.temperature),
         timeout_s=float(args.timeout),
         memory_mode=args.memory_mode,
-        allow_llm_degraded=bool(args.allow_llm_degraded),
+        allow_llm_degraded=allow_degraded,
     )
     degraded = bool(result.get("degraded", False))
 

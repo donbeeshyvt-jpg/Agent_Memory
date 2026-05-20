@@ -6,6 +6,7 @@ import json
 import os
 import re
 import threading
+import time
 import gc
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -213,19 +214,41 @@ class LLMClient:
                     failures.append(LLMAttemptFailure(profile=profile, model=model, reason="missing base_url"))
                     continue
 
-                try:
-                    content = self._dispatch_generate(
-                        kind=kind,
-                        base_url=base_url,
-                        model=model,
-                        api_key=api_key,
-                        provider_cfg=provider_cfg,
-                        messages=clean_messages,
-                        temperature=temperature,
-                        timeout_s=timeout_s,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    failures.append(LLMAttemptFailure(profile=profile, model=model, reason=str(exc)))
+                # R15 C65 (Codex 第 16 焦點 T3.2/T12.3 Gemini 500):
+                # 對同一 provider 試一次 retry, 只在 transient 5xx (HTTP 5..) 或
+                # "Internal error" 字串時. 一般 4xx / network / json 錯誤直接 fallback
+                # 走 chain 下一個 provider, 不再 retry 同一個.
+                content: str | None = None
+                last_exc_msg: str = ""
+                for attempt_idx in range(2):
+                    try:
+                        content = self._dispatch_generate(
+                            kind=kind,
+                            base_url=base_url,
+                            model=model,
+                            api_key=api_key,
+                            provider_cfg=provider_cfg,
+                            messages=clean_messages,
+                            temperature=temperature,
+                            timeout_s=timeout_s,
+                        )
+                        break
+                    except Exception as exc:  # noqa: BLE001
+                        msg = str(exc)
+                        last_exc_msg = msg
+                        # 5xx (HTTP 5\d\d) 或 Gemini "Internal error" — transient, retry 同 provider 一次
+                        is_transient = bool(
+                            re.search(r"HTTP\s+5\d\d", msg)
+                            or "Internal error" in msg
+                            or "internal_error" in msg
+                        )
+                        if is_transient and attempt_idx == 0:
+                            time.sleep(1.0)
+                            continue
+                        break
+
+                if content is None:
+                    failures.append(LLMAttemptFailure(profile=profile, model=model, reason=last_exc_msg or "unknown error"))
                     continue
 
                 if not content.strip():
