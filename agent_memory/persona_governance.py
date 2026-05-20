@@ -63,7 +63,9 @@ def _dump_yaml(payload: dict[str, Any]) -> str:
 def _default_payload() -> dict[str, Any]:
     now = _now_iso()
     return {
-        "schema_version": 1,
+        # R16 C68: schema_version 1 → 2 (加 memory_capture_enabled capability,
+        # 對齊 MISSION §3.3 對話驅動雙向投餵 + V2_Round15 規格 §5.2)
+        "schema_version": 2,
         "description": "人格治理策略：監督關係 + 工具能力。",
         "defaults": {
             "supervision": {
@@ -76,6 +78,9 @@ def _default_payload() -> dict[str, Any]:
                 "code_write_enabled": False,
                 "shell_enabled": False,
                 "persona_management_enabled": False,
+                # R16 C68: memory_capture 跟 tools_enabled 獨立, 預設 True 即使
+                # tools_disabled persona 也能「記住記憶提醒」(對齊規格 §5.2 D2 拍板)
+                "memory_capture_enabled": True,
             },
         },
         "first_persona_defaults": {
@@ -84,6 +89,7 @@ def _default_payload() -> dict[str, Any]:
                 "code_write_enabled": True,
                 "shell_enabled": True,
                 "persona_management_enabled": True,
+                "memory_capture_enabled": True,
             }
         },
         "persona_overrides": {
@@ -99,6 +105,7 @@ def _default_payload() -> dict[str, Any]:
                     "code_write_enabled": True,
                     "shell_enabled": True,
                     "persona_management_enabled": True,
+                    "memory_capture_enabled": True,
                 },
                 "source": "system_core",
                 "created_at": now,
@@ -135,6 +142,12 @@ def _normalize_capabilities(raw: Any, fallback: dict[str, Any]) -> dict[str, boo
         "shell_enabled": bool(data.get("shell_enabled", fallback.get("shell_enabled", False))),
         "persona_management_enabled": bool(
             data.get("persona_management_enabled", fallback.get("persona_management_enabled", False))
+        ),
+        # R16 C68: memory_capture_enabled — backward-compat default True 即使 raw
+        # / fallback 兩邊都沒這欄位 (舊 schema_version=1 vault 升級時自動補 True).
+        # 對應規格 §5.2「除非 persona 顯式禁用」+ §3.1 對話驅動不需 menu.
+        "memory_capture_enabled": bool(
+            data.get("memory_capture_enabled", fallback.get("memory_capture_enabled", True))
         ),
     }
 
@@ -216,6 +229,8 @@ def resolve_persona_governance(config: dict[str, Any], *, persona_id: str) -> di
         capabilities["code_write_enabled"] = False
         capabilities["shell_enabled"] = False
         capabilities["persona_management_enabled"] = False
+        # R16 C68: memory_capture_enabled **不**在這 block — 跟 tools_enabled 獨立.
+        # tools_disabled persona 也能聰明接住「幫我記得 X」記憶提醒 (規格 §5.2 D2).
     return {
         "persona_id": pid,
         "status": str(entry.get("status", "active")),
