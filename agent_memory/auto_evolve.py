@@ -52,8 +52,15 @@ def _log_entry(vault_root: Path, entry: dict[str, Any]) -> None:
         fh.write(line + "\n")
 
 
-def _spawn_promote_in_background(vault_root: Path) -> None:
-    """Fire-and-forget promote-cycle. 不阻擋 chat. 出錯靜默 log."""
+def _spawn_promote_in_background(vault_root: Path, *, trigger_ts: str) -> None:
+    """Fire-and-forget promote-cycle. 不阻擋 chat. 出錯靜默 log.
+
+    R15 C63 修補 T15.1 (Codex 第 16/16b 輪): 原本 `_log_entry` 在 subprocess.run 跑完
+    才寫, 但 daemon thread 在主 chat 結束 → CLI exit 時被 kill, subprocess.run
+    + _log_entry 都沒機會跑完. 修法: caller (maybe_trigger_promotion) 已在 trigger
+    瞬間先寫一筆 `phase=started` placeholder, 這個 thread 跑完只是補 `phase=completed`
+    append. 如果 thread 被 kill, 至少 started log 已落地, 證明 trigger 發生過.
+    """
 
     def _run() -> None:
         try:
@@ -75,6 +82,8 @@ def _spawn_promote_in_background(vault_root: Path) -> None:
             _log_entry(vault_root, {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "trigger": "auto_after_chat_threshold",
+                "trigger_ts": trigger_ts,
+                "phase": "completed",
                 "exit_code": int(proc.returncode),
                 "stdout_tail": (proc.stdout or "")[-400:],
                 "stderr_tail": (proc.stderr or "")[-200:],
@@ -83,6 +92,8 @@ def _spawn_promote_in_background(vault_root: Path) -> None:
             _log_entry(vault_root, {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "trigger": "auto_after_chat_threshold",
+                "trigger_ts": trigger_ts,
+                "phase": "completed",
                 "exit_code": -1,
                 "error": "timeout 120s",
             })
@@ -91,6 +102,8 @@ def _spawn_promote_in_background(vault_root: Path) -> None:
                 _log_entry(vault_root, {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "trigger": "auto_after_chat_threshold",
+                    "trigger_ts": trigger_ts,
+                    "phase": "completed",
                     "exit_code": -2,
                     "error": f"{type(exc).__name__}: {exc}",
                 })
@@ -120,8 +133,29 @@ def maybe_trigger_promotion(
         count = _read_counter(vault_root) + 1
         if count >= max(1, int(threshold)):
             _write_counter(vault_root, 0)
-            _spawn_promote_in_background(vault_root)
-            return {"counter": 0, "threshold": int(threshold), "triggered": True, "previous_count": count}
+            # R15 C63 (修 T15.1): trigger 瞬間先寫 placeholder log, 確保即使 daemon
+            # thread + subprocess 在 CLI exit 時被 kill, 也至少證據已落地.
+            # 對齊 Codex 第 16/16b 焦點: 「auto_evolve 觸發後 jsonl 未落地」.
+            trigger_ts = datetime.now(timezone.utc).isoformat()
+            try:
+                _log_entry(vault_root, {
+                    "timestamp": trigger_ts,
+                    "trigger": "auto_after_chat_threshold",
+                    "trigger_ts": trigger_ts,
+                    "phase": "started",
+                    "previous_count": count,
+                    "threshold": int(threshold),
+                })
+            except Exception:  # noqa: BLE001
+                pass
+            _spawn_promote_in_background(vault_root, trigger_ts=trigger_ts)
+            return {
+                "counter": 0,
+                "threshold": int(threshold),
+                "triggered": True,
+                "previous_count": count,
+                "trigger_ts": trigger_ts,
+            }
         _write_counter(vault_root, count)
         return {"counter": count, "threshold": int(threshold), "triggered": False}
     except Exception as exc:  # noqa: BLE001
