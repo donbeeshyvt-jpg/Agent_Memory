@@ -534,6 +534,16 @@ def build_agent_tools_prompt(
         f"{allow_lines}\n\n"
         "## 禁區 (永遠不能寫)\n\n"
         f"{deny_lines}\n\n"
+        "## 常用檔位置 (R15 C64 — 不要用相對檔名, 用完整 vault 路徑)\n\n"
+        "- `USER.md` → `10_Permanent/Profiles/USER.md`（使用者個人檔）\n"
+        "- `BLUEPRINT.md` → `10_Permanent/Profiles/BLUEPRINT.md`（藍圖, 若存在）\n"
+        "- 使用者偏好/事實 → `10_Permanent/Manual_Inputs/<topic>.md`\n"
+        "- 跨對話通用知識 → `10_Permanent/Facts/` 或 `10_Permanent/Concepts/`\n"
+        "- 計畫 / Active task → `70_Active_Plans/<name>.md`\n"
+        "- 系統檔 → `00_System/`（謹慎寫入）\n"
+        "- 「想讀 USER.md」直接呼叫 `files.read_file` path=`10_Permanent/Profiles/USER.md`,\n"
+        "   **不要**呼叫 path=`USER.md`（vault root 沒這檔, 會報 not found；若真不知道完整路徑也可給純檔名,\n"
+        "   系統有 fallback 會試常用區, 但完整路徑優先）.\n\n"
         "## 寫入規則\n\n"
         "- **使用者偏好 / 個人事實** → `memory.add` 到 `10_Permanent/Manual_Inputs/<topic>.md`\n"
         "- **跨對話通用知識** → `memory.add` 到 `10_Permanent/Facts/` 或 `10_Permanent/Concepts/`\n"
@@ -667,6 +677,32 @@ def _execute_files_tool(runtime: Any, args: dict[str, Any], operator: str, resul
         if any(normalized_path.startswith(prefix) for prefix in _RAW_ZONES):
             result["error"] = f"permission denied: raw zone 不可透過 agent tool 讀取 — {path}"
             return result
+
+        # R15 C64 (Codex 第 16 焦點 T3.3): 純檔名 fallback 搜常用 path.
+        # LLM 常給 "USER.md" 而非 "10_Permanent/Profiles/USER.md" (tools_prompt
+        # 沒明示 vault 結構). vault root 找不到時試常用 path, 找到就替換成 canonical.
+        # 只對 read_file 動作 + 純檔名 (無 / 或 \) 做; 寫入動作走精確 path 不 fallback.
+        if "/" not in normalized_path and "\\" not in path:
+            try:
+                vault_root = Path(runtime.adapter.vault_root)
+                if not (vault_root / normalized_path).exists():
+                    _COMMON_READ_LOOKUPS = (
+                        "10_Permanent/Profiles/",
+                        "10_Permanent/Manual_Inputs/",
+                        "10_Permanent/Facts/",
+                        "10_Permanent/Concepts/",
+                        "00_System/",
+                    )
+                    for prefix in _COMMON_READ_LOOKUPS:
+                        candidate = vault_root / (prefix + normalized_path)
+                        if candidate.exists() and candidate.is_file():
+                            args = dict(args)
+                            args["path"] = prefix + normalized_path
+                            path = args["path"]
+                            break
+            except Exception:  # noqa: BLE001
+                # fallback 失敗就走原邏輯, 由下面 try/except FileNotFoundError 統一回錯
+                pass
 
     # 強制 vault target (agent 沙盒)
     request_with_target = dict(args)
