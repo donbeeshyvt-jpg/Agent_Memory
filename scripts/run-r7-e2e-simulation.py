@@ -1149,6 +1149,124 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"check={has_c66}",
     )
 
+    # ─── Step 17 (R16): memory_capture 雙軌系統驗證 ─────────────────────────
+    report.section("Step 17 (R16): memory_capture schema / detect / record / chat_runtime 整合")
+
+    # 17.1 — C68 persona_governance schema v2 加 memory_capture_enabled capability
+    import agent_memory.persona_governance as _pg
+    pg_src = Path(_pg.__file__).read_text(encoding="utf-8")
+    has_c68_src = all(s in pg_src for s in (
+        "memory_capture_enabled",  # 新 capability key
+        "schema_version 1 → 2",  # 升版註解
+        "規格 §5.2 D2",  # 拍板 reference
+    ))
+    # functional: backward-compat default True
+    from agent_memory.persona_governance import _normalize_capabilities
+    cap = _normalize_capabilities({"tools_enabled": True}, {})  # 舊 schema 沒 memory_capture 欄
+    c68_backward_compat = cap.get("memory_capture_enabled") is True
+    # functional: tools_disabled 仍 memory_capture=True (R16 D2)
+    cap2 = _normalize_capabilities({"tools_enabled": False}, {"memory_capture_enabled": True})
+    c68_independent = cap2.get("memory_capture_enabled") is True and cap2.get("tools_enabled") is False
+    report.step(
+        "C68 persona_governance schema v2 + memory_capture_enabled capability (R16 D2)",
+        has_c68_src and c68_backward_compat and c68_independent,
+        f"src={has_c68_src} bc={c68_backward_compat} indep={c68_independent}",
+    )
+
+    # 17.2 — C69 memory_capture.py 意圖偵測 (雙詞綁定, R14.4 C60 精準度規矩)
+    from agent_memory.memory_capture import detect_memory_capture_intent
+    # 軌道 B 應 TRIGGER
+    b_positives = [
+        "幫我記得我等一下要吃飯",
+        "提醒我明天 10 點開會",
+        "幫我記一下這件事",
+        "請你幫我記住 R14 已修完",
+        "麻煩記下這個重點",
+    ]
+    b_trigger_count = sum(1 for p in b_positives if detect_memory_capture_intent(p).detected)
+    # 軌道 A/C 不該觸發 (含 R14.4 C60 教訓 case)
+    a_c_negatives = [
+        "你好",
+        "我會記得吃飯",  # 我會記得 ≠ 幫我記得
+        "我自己會記得",
+        "幫我寫 hello.py 到 70_Active_Plans/",  # 軌道 C 寫檔
+        "晚餐我準備了義大利麵",
+    ]
+    a_c_miss_count = sum(1 for n in a_c_negatives if not detect_memory_capture_intent(n).detected)
+    c69_detect_ok = b_trigger_count == 5 and a_c_miss_count == 5
+    report.step(
+        "C69 memory_capture detect_intent 雙詞綁定 (軌道 B 5/5 TRIGGER + 軌道 A/C 5/5 精準放過)",
+        c69_detect_ok,
+        f"B_trigger={b_trigger_count}/5 A_C_miss={a_c_miss_count}/5",
+    )
+
+    # 17.3 — C69 record_memory_capture 真實寫入 Manual_Inputs/captures/
+    import tempfile as _tmpf2
+    with _tmpf2.TemporaryDirectory() as _td2:
+        from pathlib import Path as _P2
+        _v2 = _P2(_td2) / "vault"
+        _v2.mkdir(parents=True)
+        from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA
+        _ad = _OVA(_v2)
+        _ad.ensure_skeleton()
+        from agent_memory.memory_capture import record_memory_capture
+        _det = detect_memory_capture_intent("幫我記得明天還書")
+        _res = record_memory_capture(
+            adapter=_ad, user_message="幫我記得明天還書", detection=_det,
+            persona_id="steward", context_id="cli", session_id="step17",
+        )
+        c69_record_ok = (
+            _res.saved is True
+            and _res.path is not None
+            and _res.path.startswith("10_Permanent/Manual_Inputs/captures/")
+            and (_v2 / _res.path).exists()
+        )
+        if c69_record_ok:
+            _content = (_v2 / _res.path).read_text(encoding="utf-8")
+            c69_record_ok = all(s in _content for s in (
+                "chat_capture",  # frontmatter tags
+                "幫我記得",  # body 原話
+                "capture_kind: chat_capture",  # extras
+                "type: user_profile",  # frontmatter type
+            ))
+    report.step(
+        "C69 record_memory_capture 寫入 Manual_Inputs/captures/ (frontmatter + body 完整)",
+        c69_record_ok,
+        f"record_ok={c69_record_ok}",
+    )
+
+    # 17.4 — C70 chat_runtime 軌道 B 接入 (5 個 payload flag + 順序先於 T7.2)
+    has_c70 = all(s in crt2_src for s in (
+        "memory_capture_enabled",  # capability load
+        "memory_capture_detected",  # payload flag
+        "memory_capture_saved",
+        "memory_capture_path",
+        "from agent_memory.memory_capture import",  # lazy import
+        "R16 C70",  # 標記
+    ))
+    # 順序: B 偵測 (line ~318+) 必須在 T7.2 偵測 (had_tool_attempt_when_disabled
+    # 計算, line ~370+) 之前
+    _b_pos = crt2_src.find("R16 C70 — 軌道 B 記憶提醒")
+    _t72_pos = crt2_src.find("had_tool_token = \"[TOOL]\" in raw_response_text.upper()")
+    c70_order_ok = 0 <= _b_pos < _t72_pos if _b_pos >= 0 and _t72_pos >= 0 else False
+    report.step(
+        "C70 chat_runtime 軌道 B 整合 + 順序先於 T7.2 (R16 D #4 拍板)",
+        has_c70 and c70_order_ok,
+        f"src={has_c70} order_B<T72={c70_order_ok}",
+    )
+
+    # 17.5 — C71 response「✓ 已記住此提醒」disclaimer + 路徑證據
+    has_c71 = all(s in crt2_src for s in (
+        "已記住此提醒",  # 正面 disclaimer
+        "memory_capture_summary",  # disclaimer 含 summary
+        "menu [M] 手動投餵備援",  # 寫入失敗 fallback 提示
+    ))
+    report.step(
+        "C71 response「✓ 已記住此提醒」disclaimer + 路徑證據 (規格 §5.4)",
+        has_c71,
+        f"check={has_c71}",
+    )
+
     return report.summary()
 
 
