@@ -393,12 +393,20 @@ def run_chat_turn(
             _user_has_capture_intent = False
         # 軌道 C 明示寫檔意圖 (簡化, 不重複 R14.x T7.2 全套, 只抓 path/ext 雙詞綁定)
         # 用 module-level `re` (line 6 已 import), 避用 line 454 才 local import 的 _re_c57
+        # R16.3 C75 GAP 2 (Codex 第 20 輪修): 加 alt 3「(把|將)…(動詞)…(進去/起來/下來/上去)」
+        # 純動詞補語片語, 抓 T3.3「把我叫阿凱這事實寫進去」之類使用者明示寫入但未給 path 的場景,
+        # 避免 C73 過度攔截 R15 拍板 T3.3 多步工具鏈場景.
         _C73_EXPLICIT_WRITE = re.compile(
             r"(寫到|存到|記到|寫進|存進|放到|放在|寫入|建立|新增|存放).{0,15}"
             r"(\.md|\.py|\.txt|Manual_Inputs|10_|11_|70_|Profiles|Facts|Concepts)"
             r"|"
             r"(把|將).{0,30}(寫|存|放|記|建立|新增).{0,20}(到|進|入).{0,20}"
             r"(\.md|\.py|\.txt|Manual_Inputs|10_|11_|70_)"
+            r"|"
+            # alt 3 (C75): (把|將)+(中間 1-20 字)+(動詞)+(進去/起來/下來/上去) 純片語綁定
+            # T3.3 命中: 「把」+「我叫阿凱這事實」+「寫」+「進去」
+            # 不誤殺軌道 A: 「我會記得吃飯」沒「把|將」前綴 → miss
+            r"(把|將).{1,20}(寫|存|記|放|加|新增|存放).{0,5}(進去|起來|下來|上去|起來|進入)"
         )
         _user_has_explicit_write = bool(_C73_EXPLICIT_WRITE.search(message))
         _manual_writes_allowed = _user_has_capture_intent or _user_has_explicit_write
@@ -420,6 +428,15 @@ def run_chat_turn(
             # 未來式 pattern「(將|要|準備)(在|到)<禁區>...(動詞)」(對齊 R14.6 regex 6 形式)
             r"(將|要|準備|想).{0,5}(在|到).{0,5}"
             r"(20_Literature|80_Fleeting|90_Daily_Journal).{0,30}(建立|新增|寫|存|放|記)"
+            r"|"
+            # alt 4 (R16.3 C75 GAP 1, 修 Codex 第 20 輪): 抓「動詞 + (任意中文/word 0-12 字) + 到 + raw_zone」
+            # C2 重現命中:「寫一個檔到 20_Literature/sneak.md」
+            #   = 「寫」+「一個檔」(3字) +「到」+「20_Literature」
+            # 不誤殺:
+            #   - 「20_Literature 是放原始文獻的地方」: 沒「到」+ raw_zone 結尾 → miss
+            #   - 「我寫了一份報告」: 沒「到 raw_zone」結尾 → miss
+            r"(寫|建立|存|新增|放|記|存放|擺)[一-鿿\w]{0,12}到\s*"
+            r"(20_Literature|80_Fleeting|90_Daily_Journal)"
         )
         user_intent_targets_raw_zone = bool(_C74_RAW_ZONE_WRITE.search(message))
 

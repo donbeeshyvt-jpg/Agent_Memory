@@ -1489,6 +1489,75 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"C5_disc={_c5_disclaimer} B_no_intent={_b_no_raw_intent} B_no_block={_b_no_block}",
     )
 
+    # 18.5 — C75 GAP 1 修 (Codex 第 20 輪): C74 regex alt 4 抓「動詞 + 量詞+名詞 + 到 + raw_zone」
+    # 重現 C2「寫一個檔到 20_Literature/sneak.md」應命中 raw_zone_intent
+    import re as _re_c75
+    _c74_regex_c75 = _re_c75.compile(
+        r"(寫到|存到|記到|寫進|存進|放到|放在|寫入|建立|新增|存放|存放到).{0,15}"
+        r"(20_Literature|80_Fleeting|90_Daily_Journal)"
+        r"|"
+        r"(把|將).{0,30}(寫|存|放|記|建立|新增).{0,20}(到|進|入).{0,20}"
+        r"(20_Literature|80_Fleeting|90_Daily_Journal)"
+        r"|"
+        r"(將|要|準備|想).{0,5}(在|到).{0,5}"
+        r"(20_Literature|80_Fleeting|90_Daily_Journal).{0,30}(建立|新增|寫|存|放|記)"
+        r"|"
+        r"(寫|建立|存|新增|放|記|存放|擺)[一-鿿\w]{0,12}到\s*"
+        r"(20_Literature|80_Fleeting|90_Daily_Journal)"
+    )
+    c75_alt4_hits = [
+        "寫一個檔到 20_Literature/sneak.md",
+        "建立一份報告到 20_Literature/",
+        "新增一個檔案到 90_Daily_Journal/",
+        "寫一個檔到 80_Fleeting/note.md",
+    ]
+    c75_alt4_negatives = [
+        "20_Literature 是放原始文獻的地方",  # 純說明
+        "我寫了一份報告",  # 沒到 raw_zone 結尾
+        "你好",  # 軌道 A
+    ]
+    _alt4_pos = all(bool(_c74_regex_c75.search(p)) for p in c75_alt4_hits)
+    _alt4_neg = all(not bool(_c74_regex_c75.search(n)) for n in c75_alt4_negatives)
+    # source 含 alt 4 標記
+    has_c75_alt4_src = all(s in crt2_src for s in (
+        "R16.3 C75",  # 標記
+        "GAP 1",  # 對應 Codex 第 20 輪修補
+        "[一-鿿\\w]{0,12}到",  # alt 4 regex 片段
+    ))
+    report.step(
+        "C75 GAP 1: C74 alt 4「動詞+量詞+名詞+到+raw_zone」C2 重現 (Codex 第 20 輪)",
+        _alt4_pos and _alt4_neg and has_c75_alt4_src,
+        f"alt4_pos={_alt4_pos} alt4_neg={_alt4_neg} src={has_c75_alt4_src}",
+    )
+
+    # 18.6 — C75 GAP 2 修 (Codex 第 20 輪): C73 regex alt 3「(把|將)+動詞+進去」純片語
+    # T3.3「先讀 USER.md, 然後把我叫阿凱這事實寫進去」C73 不該過度攔
+    _c73_regex_c75 = _re_c75.compile(
+        r"(寫到|存到|記到|寫進|存進|放到|放在|寫入|建立|新增|存放).{0,15}"
+        r"(\.md|\.py|\.txt|Manual_Inputs|10_|11_|70_|Profiles|Facts|Concepts)"
+        r"|"
+        r"(把|將).{0,30}(寫|存|放|記|建立|新增).{0,20}(到|進|入).{0,20}"
+        r"(\.md|\.py|\.txt|Manual_Inputs|10_|11_|70_)"
+        r"|"
+        r"(把|將).{1,20}(寫|存|記|放|加|新增|存放).{0,5}(進去|起來|下來|上去|起來|進入)"
+    )
+    c75_t33_hit = bool(_c73_regex_c75.search("先讀 USER.md, 然後把我叫阿凱這事實寫進去"))
+    c75_alt3_negatives = [
+        "我會記得吃飯",  # 沒「把|將」前綴
+        "我自己會記得",
+        "你好",
+    ]
+    _alt3_neg = all(not bool(_c73_regex_c75.search(n)) for n in c75_alt3_negatives)
+    has_c75_alt3_src = all(s in crt2_src for s in (
+        "GAP 2",  # 對應 Codex 第 20 輪修補
+        "(把|將).{1,20}(寫|存|記|放|加|新增|存放).{0,5}(進去|起來|下來|上去|起來|進入)",  # alt 3 regex
+    ))
+    report.step(
+        "C75 GAP 2: C73 alt 3「(把|將)+動詞+進去」T3.3 不過度攔 (Codex 第 20 輪)",
+        c75_t33_hit and _alt3_neg and has_c75_alt3_src,
+        f"T33_hit={c75_t33_hit} alt3_no_falsepos={_alt3_neg} src={has_c75_alt3_src}",
+    )
+
     return report.summary()
 
 
