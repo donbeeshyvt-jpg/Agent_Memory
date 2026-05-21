@@ -36,19 +36,46 @@ _INVISIBLE_CHARS = {
     "᠎",  # mongolian vowel separator
 }
 
+# R17 C76: public utility — 對齊 external_ingest_summarize._strip_invisible 同功能,
+# 提到 scanner.py 讓 vault/obsidian + local_tools 都 import 用 (避免 BOM 等不可見
+# 字元從 vault 既有檔讀出後污染 chat response → session log → 下輪 history fence
+# → scanner 誤報). 對齊 Codex 第 21 輪 GAP3 audit + MISSION §3.2 Obsidian-native.
+_INVISIBLE_CHARS_RE = re.compile("[" + "".join(re.escape(ch) for ch in _INVISIBLE_CHARS) + "]")
+
+
+def strip_invisible_chars(text: str) -> str:
+    """移除 BOM / ZWSP / RLO / 其他不可見字元.
+
+    用途:
+      - obsidian.read_note / write_note 防止 vault 既有檔的 BOM 污染下游
+      - local_tools.files.read_file 讀完 strip, LLM 不會看到 \\ufeff
+      - 任何 vault → LLM → session log 管線都該 strip 一遍
+
+    跟 scan_memory_content 互補:
+      - strip_invisible_chars: 主動清理 (vault → response 流向)
+      - scan_memory_content: 嚴格攔截 (user input → memory write 流向)
+    """
+    if not text:
+        return text
+    return _INVISIBLE_CHARS_RE.sub("", text)
+
 
 def scan_memory_content(text: str) -> Optional[str]:
-    """Return rejection reason if content is unsafe (used for memory writes — strict reject)."""
+    """Return rejection reason if content is unsafe (used for memory writes — strict reject).
+
+    R17 C76 (Codex 第 21 輪 GAP3): scan 前先 strip 不可見字元再 scan threat pattern.
+    這樣 vault read_file 帶回的 BOM 不再因「不可見字元」單獨被攔, 但真正的 prompt
+    injection (注入指令類 / DAN / system prompt 外洩) 仍嚴格攔截.
+    """
 
     if not text:
         return None
 
-    for ch in _INVISIBLE_CHARS:
-        if ch in text:
-            return "偵測到不可見字元，疑似注入或混淆內容"
+    # R17 C76: 先 strip 不可見字元, 不再單獨因 BOM/ZWSP 攔 (vault 內部流量寬鬆化)
+    cleaned = strip_invisible_chars(text)
 
     for pattern, reason in _THREAT_PATTERNS:
-        if pattern.search(text):
+        if pattern.search(cleaned):
             return reason
 
     return None

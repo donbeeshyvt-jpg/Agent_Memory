@@ -514,6 +514,12 @@ class ObsidianVaultAdapter(VaultAdapter):
         if not absolute.exists() or absolute.is_dir():
             return None
         content = absolute.read_text(encoding="utf-8")
+        # R17 C76 (Codex 第 21 輪 GAP3): strip BOM 等不可見字元, 避免 vault 既有檔
+        # 含 BOM (例 USER.md 開頭 ﻿) 讀出後污染 → chat response → session log
+        # → 下輪 history fence → scanner 誤報「偵測到不可見字元」.
+        # 對齊 MISSION §3.2 Obsidian-native (vault 內容對 LLM 乾淨呈現).
+        from agent_memory.security.scanner import strip_invisible_chars
+        content = strip_invisible_chars(content)
         metadata, body = self.parse_frontmatter(content)
         frontmatter = self._dict_to_frontmatter(metadata)
         return MemoryNote(path=normalized, frontmatter=frontmatter, body=body)

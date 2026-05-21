@@ -154,6 +154,11 @@ def execute_tool_request(
         if not path.is_file():
             raise ValueError(f"not a file: {path}")
         text = path.read_text(encoding=encoding)
+        # R17 C76 (Codex 第 21 輪 GAP3): strip BOM 等不可見字元, 避 vault 既有
+        # 檔含 BOM 讀回 LLM → response → session log → scanner 誤報.
+        # 對齊 obsidian.read_note 同處理 + scanner.scan_memory_content 寬鬆化.
+        from agent_memory.security.scanner import strip_invisible_chars as _strip_inv
+        text = _strip_inv(text)
         clipped = text[:max_chars]
         payload["encoding"] = encoding
         payload["content"] = clipped
