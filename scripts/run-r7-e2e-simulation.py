@@ -1701,6 +1701,14 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         _rt6 = _MR6(_ad6, profile=_RP6(name="steward"))
         _mc6 = _MM6()
         _mc6.generate.side_effect = RuntimeError("should be skipped for /reflect")
+        # Monkey-patch reflect_topic 注入 mock_body 跳真實 LLM call (e2e 無 LLM env)
+        # chat_runtime 內 lazy import `from agent_memory.reflect import reflect_topic`,
+        # 在 module attribute 改後 lazy import 拿到 patched.
+        import agent_memory.reflect as _reflect_mod  # noqa: PLC0415
+        _orig_reflect = _reflect_mod.reflect_topic
+        def _patched_reflect(vault_root, topic, *, mock_body=None, max_match=10):
+            return _orig_reflect(vault_root, topic, mock_body="e2e step20 mock reflection body", max_match=max_match)
+        _reflect_mod.reflect_topic = _patched_reflect
         _r_reflect = _rct6(
             adapter=_ad6, runtime=_rt6, client=_mc6,
             persona="steward", context="cli", session="step20-reflect",
@@ -1727,6 +1735,8 @@ def run_simulation(vault_root: Path, report: Report) -> int:
             transport="cli", channel_id="cli", user_id="u",
         )
         _c78_normal_skip = not bool(_r_normal.get("reflect_invoked"))
+        # 還原 reflect_topic, 不影響其他 step / 後續測試
+        _reflect_mod.reflect_topic = _orig_reflect
     c78_functional = (
         _c78_invoked and _c78_topic and _c78_path and _c78_main_skipped and _c78_disclaimer and _c78_normal_skip
     )
