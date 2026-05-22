@@ -3262,7 +3262,63 @@ def _cmd_tool_schema(args: argparse.Namespace) -> int:
     return 0
 
 
+def _patch_argv_for_windows_console_encoding() -> None:
+    """R18 C77 (Path C, Codex 第 25 輪 T27.2/T27.3/T30.3 編碼污染修補).
+
+    Windows PowerShell + Python CLI 在某些環境下 (即使 chcp 65001) sys.argv 收到
+    中文 prompt 時會被 cp950 layer 轉成 '?' (典型 case: Codex 跑 chat --json "中文"
+    → 進 LLM 變成 "??" → 行為完全不對, 影響 T27.2/T27.3/T30.3).
+
+    修法: 用 ctypes 直接拿 Win32 API GetCommandLineW 的 wide-char (UTF-16) 命令列,
+    重 parse 後**只替換 sys.argv 內含 '?' 的污染條目**(保守: 不動其他 arg, 避免
+    多餘風險). 同 daily_flush '?????' 議題的核心修補.
+
+    對齊 MISSION §3.2 Obsidian-native (vault 內容對 LLM 乾淨呈現, 不含 cp950 噪).
+    """
+    import sys as _sys
+    if _sys.platform != "win32":
+        return
+    # 沒可疑 '?' 就不動 (避免不必要的 ctypes call)
+    suspicious_indices = [i for i, a in enumerate(_sys.argv) if "?" in str(a)]
+    if not suspicious_indices:
+        return
+
+    try:
+        import ctypes  # noqa: PLC0415
+        from ctypes import wintypes  # noqa: PLC0415
+
+        GetCommandLineW = ctypes.windll.kernel32.GetCommandLineW
+        GetCommandLineW.restype = wintypes.LPCWSTR
+        CommandLineToArgvW = ctypes.windll.shell32.CommandLineToArgvW
+        CommandLineToArgvW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_int)]
+        CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+
+        cmd_line = GetCommandLineW()
+        argc = ctypes.c_int(0)
+        argv_w_ptr = CommandLineToArgvW(cmd_line, ctypes.byref(argc))
+        if not argv_w_ptr or argc.value <= 0:
+            return
+        full_wide = [argv_w_ptr[i] for i in range(argc.value)]
+
+        # 從尾段對齊 sys.argv[1:] (sys.argv[0] 是 script path Python 已設定)
+        argv_tail = _sys.argv[1:]
+        if len(full_wide) >= len(argv_tail) and argv_tail:
+            wide_tail = full_wide[-len(argv_tail):]
+            new_argv = list(_sys.argv)
+            for i, suspect in enumerate(argv_tail):
+                wide_val = wide_tail[i] if i < len(wide_tail) else suspect
+                # 只替換含 ? 的條目, 且新值不含 ? (證明 wide-char 比較乾淨)
+                if "?" in str(suspect) and "?" not in str(wide_val):
+                    new_argv[i + 1] = wide_val
+            _sys.argv = new_argv
+    except Exception:  # noqa: BLE001
+        # 失敗就保留原 sys.argv, 不阻擋 CLI 跑
+        pass
+
+
 def main() -> int:
+    # R18 C77: Windows console cp950 sys.argv 中文污染修補 (Codex 第 25 輪)
+    _patch_argv_for_windows_console_encoding()
     parser = _build_parser()
     args = parser.parse_args()
     try:

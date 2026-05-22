@@ -303,17 +303,63 @@ def run_chat_turn(
     if tools_prompt:
         system_prompt += tools_prompt
 
-    llm_result = client.generate(
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": message},
-        ],
-        persona_id=persona,
-        override_profile=override_profile,
-        override_model=override_model,
-        temperature=float(temperature),
-        timeout_s=float(timeout_s),
-    )
+    # R18 C78 (Path C, Codex 第 25 輪 T29.2): /reflect <topic> slash command 偵測
+    # 對齊 reflect.py docstring 規格「對話: 偵測 /reflect <topic> keyword (chat_runtime parse)」
+    # + R9 C29 reflect-on-demand 設計 + MISSION §3.1 全對話驅動.
+    # 命中時 skip main LLM call (省 token), 直接走 reflect_topic API; 結果 disclaimer
+    # 放在 _strip_leading_reasoning_blocks 之後 (跟 memory_capture C71 disclaimer 同層).
+    reflect_invoked: bool = False
+    reflect_topic_str: str | None = None
+    reflect_path: str | None = None
+    reflect_action: str | None = None
+    reflect_error: str | None = None
+    reflect_matches_count: int = 0
+    _msg_stripped = message.strip()
+    _is_reflect_request = False
+    if _msg_stripped.startswith("/reflect "):
+        _topic_raw = _msg_stripped[len("/reflect "):].strip().split("\n", 1)[0].strip()
+        if _topic_raw:
+            reflect_topic_str = _topic_raw
+            _is_reflect_request = True
+
+    if _is_reflect_request:
+        # Skip main LLM call (reflect_topic 內部會 call LLM 一次, 不要 chat 主 LLM 重複)
+        from agent_memory.llm_client import LLMGenerateResult as _LGR_reflect
+        llm_result = _LGR_reflect(
+            content=f"執行 /reflect {reflect_topic_str}…",
+            profile="reflect-on-demand",
+            model="reflect-on-demand",
+            provider_kind="internal",
+            base_url="internal",
+            attempts=[],
+        )
+        try:
+            from agent_memory.reflect import reflect_topic as _reflect_topic
+            _r_result = _reflect_topic(
+                vault_root=adapter.vault_root,
+                topic=reflect_topic_str,
+            )
+            if isinstance(_r_result, dict):
+                reflect_action = str(_r_result.get("action", ""))
+                reflect_path = _r_result.get("path")
+                reflect_matches_count = int(_r_result.get("matches_count", 0) or 0)
+                reflect_invoked = reflect_action == "created"
+                if reflect_action != "created":
+                    reflect_error = f"action={reflect_action}"
+        except Exception as exc:  # noqa: BLE001 — 不阻擋 chat 流程
+            reflect_error = f"{type(exc).__name__}: {exc}"
+    else:
+        llm_result = client.generate(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": message},
+            ],
+            persona_id=persona,
+            override_profile=override_profile,
+            override_model=override_model,
+            temperature=float(temperature),
+            timeout_s=float(timeout_s),
+        )
 
     raw_response_text = llm_result.content.strip()
 
@@ -650,6 +696,25 @@ def run_chat_turn(
 
     response_text = _strip_leading_reasoning_blocks(response_text)
 
+    # R18 C78 — /reflect <topic> 結果 disclaimer (Codex 第 25 輪 T29.2 焦點).
+    if reflect_topic_str:
+        if reflect_invoked and reflect_path:
+            response_text = response_text.rstrip() + (
+                f"\n\n---\n"
+                f"✓ **Reflection 已整理** — 主題 `{reflect_topic_str}` 寫入 `{reflect_path}`\n"
+                f"  · 來源 {reflect_matches_count} 個 .md 由 reflect-on-demand 自動掃描 vault"
+            )
+        elif reflect_action == "no_matches":
+            response_text = response_text.rstrip() + (
+                f"\n\n---\n"
+                f"ℹ️ **Reflection 沒找到相關內容** — 主題 `{reflect_topic_str}` 在 vault 內無匹配資料"
+            )
+        elif reflect_error:
+            response_text = response_text.rstrip() + (
+                f"\n\n---\n"
+                f"⚠️ **Reflection 未產出** — 主題 `{reflect_topic_str}`: {reflect_error}"
+            )
+
     # R16.1 C73 — Manual_Inputs 越權寫入攔截 disclaimer (Codex 第 18 輪 A4 焦點).
     # 對使用者透明: 告訴他 LLM 嘗試寫但被守門攔了, 並提示正確的明示方式.
     if manual_inputs_writes_blocked:
@@ -930,6 +995,13 @@ def run_chat_turn(
         "raw_zone_write_blocked": bool(raw_zone_writes_blocked),
         "raw_zone_write_blocked_count": len(raw_zone_writes_blocked),
         "raw_zone_write_blocked_paths": [b.get("path", "") for b in raw_zone_writes_blocked],
+        # R18 C78 — /reflect <topic> slash command 觀察 (Codex 第 25 輪 T29.2 修補)
+        "reflect_invoked": reflect_invoked,
+        "reflect_topic": reflect_topic_str,
+        "reflect_path": reflect_path,
+        "reflect_action": reflect_action,
+        "reflect_matches_count": reflect_matches_count,
+        "reflect_error": reflect_error,
         "prompt_chars": {  # R12 C45 — prompt budget observability (給 Codex LLM-002/003 重測)
             "system_prompt_total": len(system_prompt),
             "history_tail": len(history_tail),

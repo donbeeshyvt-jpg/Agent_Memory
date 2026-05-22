@@ -1628,6 +1628,115 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"read_note_clean={_read_note_clean} read_file_clean={_read_file_clean}",
     )
 
+    # ─── Step 20 (R18 Path C): sys.argv 編碼污染 + /reflect slash 修補 ──────
+    report.section("Step 20 (R18 Path C): sys.argv cp950 修補 / /reflect <topic> slash 處理")
+
+    # 20.1 — C77 cli.py 加 _patch_argv_for_windows_console_encoding helper
+    cli_src = Path(_cli.__file__).read_text(encoding="utf-8")
+    has_c77 = all(s in cli_src for s in (
+        "_patch_argv_for_windows_console_encoding",  # helper 名稱
+        "R18 C77",  # 標記
+        "GetCommandLineW",  # Win32 API
+        "CommandLineToArgvW",
+        "wintypes.LPCWSTR",
+        "Codex 第 25 輪",  # reference
+    ))
+    # main() 開頭有 call
+    has_c77_main_hook = "_patch_argv_for_windows_console_encoding()" in cli_src
+    report.step(
+        "C77 cli.py 加 Windows sys.argv cp950 編碼污染 patch (Codex 第 25 輪 T27.2/T27.3/T30.3 修)",
+        has_c77 and has_c77_main_hook,
+        f"helper={has_c77} main_hook={has_c77_main_hook}",
+    )
+
+    # 20.2 — C78 chat_runtime /reflect <topic> slash command
+    has_c78_src = all(s in crt2_src for s in (
+        "R18 C78",  # 標記
+        "_is_reflect_request",  # detect flag
+        '/reflect ',  # slash prefix
+        "reflect_invoked",  # payload flag
+        "reflect_topic",
+        "reflect_path",
+        "Reflection 已整理",  # disclaimer
+        "Codex 第 25 輪",
+    ))
+    # functional smoke: /reflect <topic> → 走 reflect API + main LLM 不 called
+    import tempfile as _tmpf6, json as _json6
+    from unittest.mock import MagicMock as _MM6
+    with _tmpf6.TemporaryDirectory() as _td6:
+        from pathlib import Path as _P6
+        _v6 = _P6(_td6) / "vault"
+        _v6.mkdir(parents=True)
+        from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA6
+        from agent_memory.runtime import MemoryRuntime as _MR6, RuntimeProfile as _RP6
+        from agent_memory.llm_client import LLMGenerateResult as _LGR6
+        from agent_memory.chat_runtime import run_chat_turn as _rct6
+        from agent_memory.persona_governance import (
+            ensure_persona_governance_file as _epgf6,
+            load_persona_governance as _lpg6,
+            save_persona_governance as _spg6,
+            _now_iso as _ni6,
+        )
+        _ad6 = _OVA6(_v6)
+        _ad6.ensure_skeleton()
+        _epgf6(_v6, overwrite=True)
+        _gov6 = _lpg6(_v6)
+        _gov6["persona_overrides"]["steward"] = {
+            "status": "active",
+            "supervision": {"enabled": True, "reviewer_persona": "core", "arbiter_persona": "core"},
+            "capabilities": {
+                "tools_enabled": True, "code_write_enabled": True,
+                "shell_enabled": False, "persona_management_enabled": False,
+                "memory_capture_enabled": True,
+            },
+            "source": "step20", "created_at": _ni6(), "updated_at": _ni6(), "updated_by": "step20",
+        }
+        _spg6(_v6, _gov6)
+        # 種 Python 相關 md 給 reflect 掃
+        _mi = _v6 / "10_Permanent/Manual_Inputs"
+        _mi.mkdir(parents=True, exist_ok=True)
+        (_mi / "about_python.md").write_text(
+            "---\ntype: long_term\nsource: user\n---\n# Python\n我喜歡 Python", encoding="utf-8",
+        )
+        _rt6 = _MR6(_ad6, profile=_RP6(name="steward"))
+        _mc6 = _MM6()
+        _mc6.generate.side_effect = RuntimeError("should be skipped for /reflect")
+        _r_reflect = _rct6(
+            adapter=_ad6, runtime=_rt6, client=_mc6,
+            persona="steward", context="cli", session="step20-reflect",
+            message="/reflect Python",
+            temperature=0.0, timeout_s=30.0, memory_mode="session_only",
+            transport="cli", channel_id="cli", user_id="u",
+        )
+        _c78_invoked = bool(_r_reflect.get("reflect_invoked"))
+        _c78_topic = _r_reflect.get("reflect_topic") == "Python"
+        _c78_path = (_r_reflect.get("reflect_path") or "").startswith("10_Permanent/Concepts/reflection_python_")
+        _c78_main_skipped = not _mc6.generate.called
+        _c78_disclaimer = "Reflection 已整理" in _r_reflect.get("response", "")
+        # 一般 chat 不誤觸發
+        _mc6b = _MM6()
+        _mc6b.generate.return_value = _LGR6(
+            content="你好",
+            profile="m", model="m", provider_kind="openai_compatible", base_url="m", attempts=[],
+        )
+        _r_normal = _rct6(
+            adapter=_ad6, runtime=_rt6, client=_mc6b,
+            persona="steward", context="cli", session="step20-normal",
+            message="你好",
+            temperature=0.0, timeout_s=30.0, memory_mode="session_only",
+            transport="cli", channel_id="cli", user_id="u",
+        )
+        _c78_normal_skip = not bool(_r_normal.get("reflect_invoked"))
+    c78_functional = (
+        _c78_invoked and _c78_topic and _c78_path and _c78_main_skipped and _c78_disclaimer and _c78_normal_skip
+    )
+    report.step(
+        "C78 /reflect <topic> 偵測 + skip main LLM + reflect API (Codex 第 25 輪 T29.2 修)",
+        has_c78_src and c78_functional,
+        f"src={has_c78_src} invoked={_c78_invoked} topic={_c78_topic} path={_c78_path} "
+        f"main_skip={_c78_main_skipped} disc={_c78_disclaimer} normal_skip={_c78_normal_skip}",
+    )
+
     return report.summary()
 
 
