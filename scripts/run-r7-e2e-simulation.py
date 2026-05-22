@@ -1747,6 +1747,153 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"main_skip={_c78_main_skipped} disc={_c78_disclaimer} normal_skip={_c78_normal_skip}",
     )
 
+    # ─── Step 21 (R18 C79): umbrella 對話閉環 (Codex 第 25a T27.2/T27.3 修) ─────
+    report.section("Step 21 (R18 C79): umbrella deterministic footer + accept 回寫閉環")
+
+    # 21.1 — umbrella_llm.py 加新函式 (pick + footer + apply + dismiss)
+    import agent_memory.umbrella_llm as _ull
+    ull_src = Path(_ull.__file__).read_text(encoding="utf-8")
+    has_c79_funcs = all(s in ull_src for s in (
+        "R18 C79",  # 標記
+        "pick_next_umbrella_suggestion",
+        "build_umbrella_chat_footer",
+        "apply_umbrella",
+        "dismiss_umbrella",
+        "Codex 第 25a",  # reference
+    ))
+    # functional: pick + footer
+    from agent_memory.umbrella_llm import (
+        save_pending_umbrella as _spu,
+        load_pending_umbrella as _lpu,
+        pick_next_umbrella_suggestion as _pnus,
+        build_umbrella_chat_footer as _bucf,
+        apply_umbrella as _apu,
+    )
+    import tempfile as _tmpf7
+    from pathlib import Path as _P7
+    with _tmpf7.TemporaryDirectory() as _td7:
+        _v7 = _P7(_td7) / "vault"
+        _v7.mkdir(parents=True)
+        from datetime import datetime as _dt7
+        _spu(_v7, [{
+            "umbrella_id": "python-concurrency",
+            "members": ["async-io", "concurrent-futures", "threading-basics"],
+            "reason": "Python 並行語意主題",
+            "proposed_at": _dt7.now().astimezone().isoformat(),
+            "accepted_at": None,
+            "dismissed_at": None,
+        }])
+        _s7 = _pnus(_v7)
+        _c79_picked = _s7 is not None and _s7.get("umbrella_id") == "python-concurrency"
+        _footer7 = _bucf(_s7) if _s7 else ""
+        _c79_footer_ok = (
+            "建議合" in _footer7
+            and "python-concurrency" in _footer7
+            and "好 / 同意 / 升格" in _footer7
+        )
+        # apply_umbrella 回寫 accepted_at
+        _ar = _apu(_v7, umbrella_id="python-concurrency")
+        _c79_accept_ok = (
+            _ar.get("action") == "accepted"
+            and _ar.get("accepted_at") is not None
+        )
+        # 確認 pending JSON 真的回寫
+        _pending_after = _lpu(_v7)
+        _c79_persisted = bool(_pending_after and _pending_after[0].get("accepted_at"))
+
+    report.step(
+        "C79 umbrella_llm 加 pick/footer/apply/dismiss + functional (Codex 第 25a T27.2/T27.3 修)",
+        has_c79_funcs and _c79_picked and _c79_footer_ok and _c79_accept_ok and _c79_persisted,
+        f"src={has_c79_funcs} pick={_c79_picked} footer={_c79_footer_ok} "
+        f"accept={_c79_accept_ok} persist={_c79_persisted}",
+    )
+
+    # 21.2 — chat_runtime 整合 (footer 末端 + accept 回寫 + payload)
+    has_c79_chat = all(s in crt2_src for s in (
+        "R18 C79",  # chat_runtime 內標記
+        "umbrella_proposal_offered",  # payload flag
+        "umbrella_proposal_resolved",  # payload flag
+        "pick_next_umbrella_suggestion",  # 末端 hook
+        "build_umbrella_chat_footer",
+        "apply_umbrella",  # 開頭 hook
+        "dismiss_umbrella",
+    ))
+    # functional smoke
+    import tempfile as _tmpf8
+    from unittest.mock import MagicMock as _MM8
+    with _tmpf8.TemporaryDirectory() as _td8:
+        _v8 = _P7(_td8) / "vault"
+        _v8.mkdir(parents=True)
+        from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA8
+        from agent_memory.runtime import MemoryRuntime as _MR8, RuntimeProfile as _RP8
+        from agent_memory.llm_client import LLMGenerateResult as _LGR8
+        from agent_memory.chat_runtime import run_chat_turn as _rct8
+        from agent_memory.persona_governance import (
+            ensure_persona_governance_file as _epgf8,
+            load_persona_governance as _lpg8,
+            save_persona_governance as _spg8,
+            _now_iso as _ni8,
+        )
+        _ad8 = _OVA8(_v8); _ad8.ensure_skeleton()
+        _epgf8(_v8, overwrite=True)
+        _gov8 = _lpg8(_v8)
+        _gov8["persona_overrides"]["steward"] = {
+            "status": "active",
+            "supervision": {"enabled": True, "reviewer_persona": "core", "arbiter_persona": "core"},
+            "capabilities": {
+                "tools_enabled": True, "code_write_enabled": True,
+                "shell_enabled": False, "persona_management_enabled": False,
+                "memory_capture_enabled": True,
+            },
+            "source": "step21", "created_at": _ni8(), "updated_at": _ni8(), "updated_by": "step21",
+        }
+        _spg8(_v8, _gov8)
+        from datetime import datetime as _dt8
+        _spu(_v8, [{
+            "umbrella_id": "test-umb",
+            "members": ["a-mod", "b-mod"],
+            "reason": "test",
+            "proposed_at": _dt8.now().astimezone().isoformat(),
+            "accepted_at": None,
+            "dismissed_at": None,
+        }])
+        _rt8 = _MR8(_ad8, profile=_RP8(name="steward"))
+        _mc8 = _MM8()
+        _mc8.generate.return_value = _LGR8(
+            content="你好", profile="m", model="m",
+            provider_kind="openai_compatible", base_url="m", attempts=[],
+        )
+        # turn 1: footer 應出現
+        _r_t1 = _rct8(
+            adapter=_ad8, runtime=_rt8, client=_mc8,
+            persona="steward", context="cli", session="step21-1", message="哈囉",
+            temperature=0.0, timeout_s=30.0, memory_mode="session_only",
+            transport="cli", channel_id="cli", user_id="u",
+        )
+        _c79_offered = _r_t1.get("umbrella_proposal_offered") is not None
+        _c79_footer_in_resp = "建議合" in _r_t1.get("response", "")
+        # turn 2: 「好」 → accept → accepted_at 非 null
+        _r_t2 = _rct8(
+            adapter=_ad8, runtime=_rt8, client=_mc8,
+            persona="steward", context="cli", session="step21-2", message="好",
+            temperature=0.0, timeout_s=30.0, memory_mode="session_only",
+            transport="cli", channel_id="cli", user_id="u",
+        )
+        _c79_resolved = _r_t2.get("umbrella_proposal_resolved", {}).get("action") == "accepted"
+        _pending2 = _lpu(_v8)
+        _c79_accepted_at = bool(_pending2 and _pending2[0].get("accepted_at"))
+
+    c79_chat_functional = (
+        has_c79_chat and _c79_offered and _c79_footer_in_resp
+        and _c79_resolved and _c79_accepted_at
+    )
+    report.step(
+        "C79 chat_runtime umbrella footer + accept 閉環 (T27.3 accept_at 回寫)",
+        c79_chat_functional,
+        f"src={has_c79_chat} offered={_c79_offered} footer_in_resp={_c79_footer_in_resp} "
+        f"resolved={_c79_resolved} accepted_at={_c79_accepted_at}",
+    )
+
     return report.summary()
 
 

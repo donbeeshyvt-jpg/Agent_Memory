@@ -309,3 +309,125 @@ def apply_procedure_tag(vault_root: Path, *, entity_id: str) -> dict[str, Any]:
             break
     save_pending_procedure_tags(root, tags)
     return {"action": "applied", "entity_id": entity_id, "path": path}
+
+
+# ─── R18 C79 — umbrella 對話閉環 (Codex 第 25a T27.2/T27.3 焦點) ───────────────
+# R7/R9 原本 umbrella 只實作「LLM 跑 → 寫 pending JSON」一半, 缺對話閉環:
+#   T27.2: chat 末端應有 deterministic「💡 建議合 X/Y/Z」footer (不靠 LLM)
+#   T27.3: 使用者 accept 後應回寫 .ai/pending_umbrella_suggestions.json 的 accepted_at
+# 對齊 skill_suggestions.py R7 C20b 同 pattern + MISSION §3.1 全對話驅動.
+
+
+def pick_next_umbrella_suggestion(
+    vault_root: Path,
+    *,
+    auto_dismiss_days: int = 14,
+) -> Optional[dict[str, Any]]:
+    """從 pending 挑下一個 umbrella suggestion 給 chat_runtime 貼 response 末端.
+
+    已 accepted_at / dismissed_at 的 skip.
+    proposed_at > auto_dismiss_days 自動標 dismiss (不提).
+    """
+    from datetime import timedelta
+    root = Path(vault_root).expanduser().resolve()
+    pending = load_pending_umbrella(root)
+    if not pending:
+        return None
+    now = datetime.now().astimezone()
+    cutoff = timedelta(days=auto_dismiss_days)
+    changed = False
+    selected: dict[str, Any] | None = None
+
+    for s in pending:
+        if s.get("accepted_at") or s.get("dismissed_at"):
+            continue
+        proposed_at_raw = str(s.get("proposed_at", "")).strip()
+        if proposed_at_raw:
+            try:
+                proposed_at = datetime.fromisoformat(proposed_at_raw)
+                if (now - proposed_at) > cutoff:
+                    s["dismissed_at"] = now.isoformat()
+                    s["dismiss_reason"] = "auto_timeout"
+                    changed = True
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
+        if selected is None:
+            selected = s
+
+    if changed:
+        save_pending_umbrella(root, pending)
+    return selected
+
+
+def build_umbrella_chat_footer(suggestion: dict[str, Any]) -> str:
+    """產 chat response 末「💡 建議合 X/Y/Z」deterministic footer (不靠 LLM).
+
+    對齊 skill_suggestions.build_chat_proposal_footer 同 pattern + T27.2 焦點.
+    """
+    if not isinstance(suggestion, dict):
+        return ""
+    umbrella_id = str(suggestion.get("umbrella_id", "")).strip()
+    members = [str(x).strip() for x in suggestion.get("members", []) if x]
+    reason = str(suggestion.get("reason", "")).strip()
+    if not umbrella_id or len(members) < 2:
+        return ""
+
+    members_inline = " / ".join(f"`{m}`" for m in members)
+    lines = [
+        "",
+        "---",
+        f"💡 **建議合 {members_inline} → `{umbrella_id}`**",
+    ]
+    if reason:
+        lines.append(f"  · 原因：{reason}")
+    lines.append("  · 回覆「好 / 同意 / 升格」接受；「不要 / 跳過」拒絕 (對話即生效)")
+    return "\n".join(lines)
+
+
+def apply_umbrella(vault_root: Path, *, umbrella_id: str) -> dict[str, Any]:
+    """使用者 accept 後執行: 回寫 pending_umbrella.accepted_at + return action.
+
+    MVP (R18 C79): 只 mark accepted_at, 真實「合 Mid_Term entries 進 umbrella 母檔」
+    留 curator weekly deep 統一處理 (避免 chat 路徑寫過多). 對齊 T27.3 焦點:
+    accepted_at 非 null 表示已收到使用者接受意圖.
+    """
+    root = Path(vault_root).expanduser().resolve()
+    pending = load_pending_umbrella(root)
+    now_iso = datetime.now().astimezone().isoformat()
+    for s in pending:
+        if s.get("umbrella_id") != umbrella_id:
+            continue
+        if s.get("accepted_at") or s.get("dismissed_at"):
+            return {
+                "action": "already_resolved",
+                "umbrella_id": umbrella_id,
+                "accepted_at": s.get("accepted_at"),
+                "dismissed_at": s.get("dismissed_at"),
+            }
+        s["accepted_at"] = now_iso
+        save_pending_umbrella(root, pending)
+        return {"action": "accepted", "umbrella_id": umbrella_id, "accepted_at": now_iso}
+    return {"action": "not_found", "umbrella_id": umbrella_id}
+
+
+def dismiss_umbrella(vault_root: Path, *, umbrella_id: str, reason: str = "user_declined") -> dict[str, Any]:
+    """使用者 decline 後執行: 回寫 pending_umbrella.dismissed_at + reason."""
+    root = Path(vault_root).expanduser().resolve()
+    pending = load_pending_umbrella(root)
+    now_iso = datetime.now().astimezone().isoformat()
+    for s in pending:
+        if s.get("umbrella_id") != umbrella_id:
+            continue
+        if s.get("accepted_at") or s.get("dismissed_at"):
+            return {
+                "action": "already_resolved",
+                "umbrella_id": umbrella_id,
+                "accepted_at": s.get("accepted_at"),
+                "dismissed_at": s.get("dismissed_at"),
+            }
+        s["dismissed_at"] = now_iso
+        s["dismiss_reason"] = reason
+        save_pending_umbrella(root, pending)
+        return {"action": "dismissed", "umbrella_id": umbrella_id, "dismissed_at": now_iso}
+    return {"action": "not_found", "umbrella_id": umbrella_id}

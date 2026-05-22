@@ -82,6 +82,7 @@ def run_chat_turn(
     # R7 C20b: 對話開頭 parse 使用者上一輪是否在回應「skill 升格提議」
     # 只在「短輸入 + 純 keyword 開頭」時觸發, 避免「升職很爽」誤判
     skill_proposal_resolved: dict[str, Any] = {}
+    umbrella_proposal_resolved: dict[str, Any] = {}  # R18 C79
     try:
         from agent_memory.skill_suggestions import (
             parse_user_response_intent,
@@ -104,6 +105,34 @@ def run_chat_turn(
                     entity_id=target_entry["entity_id"],
                     accept=accept_flag,
                 )
+            else:
+                # R18 C79 (Codex 第 25a T27.3 修): 沒 skill 提議命中, 看 umbrella pending
+                # 對齊 T27.3 焦點「accept 後 accepted_at 仍 null」— 因為原本根本沒處理.
+                # 順序: skill 優先 (既有 R7 C20b 行為), umbrella 次要 (R18 新加閉環)
+                try:
+                    from agent_memory.umbrella_llm import (
+                        load_pending_umbrella,
+                        apply_umbrella,
+                        dismiss_umbrella,
+                    )
+                    pending_umb = load_pending_umbrella(adapter.vault_root)
+                    for u_entry in pending_umb:
+                        if u_entry.get("accepted_at") or u_entry.get("dismissed_at"):
+                            continue
+                        u_id = str(u_entry.get("umbrella_id", "")).strip()
+                        if not u_id:
+                            continue
+                        if intent == "accept":
+                            umbrella_proposal_resolved = apply_umbrella(
+                                adapter.vault_root, umbrella_id=u_id,
+                            )
+                        else:
+                            umbrella_proposal_resolved = dismiss_umbrella(
+                                adapter.vault_root, umbrella_id=u_id,
+                            )
+                        break
+                except Exception:  # noqa: BLE001
+                    umbrella_proposal_resolved = {}
     except Exception:  # noqa: BLE001
         skill_proposal_resolved = {}
 
@@ -887,6 +916,7 @@ def run_chat_turn(
     # 跳過 wizard/verify context. proposal 從 .ai/pending_skill_suggestions.json 拉.
     # R8 C24: skill 提議優先;若沒 skill 提議再考慮 user gap 提問 (每 response 最多 1 個 footer)
     skill_proposal_offered: dict[str, Any] | None = None
+    umbrella_proposal_offered: dict[str, Any] | None = None  # R18 C79
     gap_offered: dict[str, Any] | None = None
     if is_real_chat:
         try:
@@ -901,8 +931,26 @@ def run_chat_turn(
         except Exception:  # noqa: BLE001
             skill_proposal_offered = None
 
-        # R8 C24: 若上面沒貼 skill 提議, 看是否有 user gap 要問 (max 1 footer per response)
+        # R18 C79 (Codex 第 25a T27.2 修): 若沒 skill 提議, 看是否有 umbrella suggestion
+        # 對齊 T27.2 焦點「chat footer 應貼 umbrella 建議」— 原本完全沒寫.
+        # 用 deterministic build_umbrella_chat_footer (不靠 LLM, 對齊 Codex 第 25a 建議).
         if skill_proposal_offered is None:
+            try:
+                from agent_memory.umbrella_llm import (
+                    pick_next_umbrella_suggestion,
+                    build_umbrella_chat_footer,
+                )
+                u_proposal = pick_next_umbrella_suggestion(adapter.vault_root, auto_dismiss_days=14)
+                if u_proposal:
+                    _u_footer = build_umbrella_chat_footer(u_proposal)
+                    if _u_footer:
+                        response_text = response_text.rstrip() + _u_footer
+                        umbrella_proposal_offered = u_proposal
+            except Exception:  # noqa: BLE001
+                umbrella_proposal_offered = None
+
+        # R8 C24: 若上面沒貼 skill 提議, 看是否有 user gap 要問 (max 1 footer per response)
+        if skill_proposal_offered is None and umbrella_proposal_offered is None:
             try:
                 from agent_memory.gap_analysis import (
                     pick_next_gap,
@@ -1020,6 +1068,8 @@ def run_chat_turn(
         "curator": curator_status,  # R7 C18
         "skill_proposal_offered": skill_proposal_offered,  # R7 C20b (footer 貼了什麼)
         "skill_proposal_resolved": skill_proposal_resolved,  # R7 C20b (使用者回應動作)
+        "umbrella_proposal_offered": umbrella_proposal_offered,  # R18 C79 (umbrella footer 貼了什麼)
+        "umbrella_proposal_resolved": umbrella_proposal_resolved,  # R18 C79 (使用者 accept/dismiss umbrella)
         "gap_offered": gap_offered,  # R8 C24 (user gap 提問 footer)
         "gap_resolved": gap_resolved,  # R8 C24 (使用者 dismiss gap)
         "digest_shown": digest_shown,  # R8 C25 (weekly digest 開頭呈現)
