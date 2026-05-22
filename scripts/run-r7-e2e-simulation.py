@@ -1894,6 +1894,45 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"resolved={_c79_resolved} accepted_at={_c79_accepted_at}",
     )
 
+    # ─── Step 22 (R18 C80+C81): daemon $Args + menu /persona list dict 攤平 ────
+    report.section("Step 22 (R18 C80+C81): daemon $Args 修 / menu /persona list PSObject 攤平")
+
+    # 22.1 — C80 daemon.ps1 $Args → $CliArgs (對齊 R12 C46 同 bug fix)
+    daemon_ps1 = Path(__file__).resolve().parent / "agent-memory-daemon.ps1"
+    daemon_src = daemon_ps1.read_text(encoding="utf-8")
+    has_c80 = all(s in daemon_src for s in (
+        "R18 C80",  # 標記
+        "Codex 第 28 輪 T11.2/T11.3/T13.1",  # reference
+        "param([string[]]$CliArgs",  # 改名後參數
+        "$full += $CliArgs",  # 用 $CliArgs 取代 $Args
+        "Invoke-CliCmd -CliArgs @(\"promote-cycle\"",  # caller 也跟著改
+        "Invoke-CliCmd -CliArgs @(\"skill-maintain\"",
+    ))
+    # 確認 caller 沒殘留舊的 -Args (註解內可能還有 reference, 只看 caller 真實 invoke)
+    has_no_old_caller = "Invoke-CliCmd -Args @(" not in daemon_src
+    report.step(
+        "C80 daemon.ps1 $Args → $CliArgs (Codex 第 28 輪 T11.2/T11.3/T13.1 reserved var bug 修)",
+        has_c80 and has_no_old_caller,
+        f"src={has_c80} no_old_caller={has_no_old_caller}",
+    )
+
+    # 22.2 — C81 menu.ps1 /persona list PSObject.Properties 攤平 (對齊 R13 C49)
+    menu_ps1 = Path(__file__).resolve().parent / "menu.ps1"
+    menu_src = menu_ps1.read_text(encoding="utf-8")
+    has_c81 = all(s in menu_src for s in (
+        "R18 C81",  # 標記
+        "Codex 第 28 輪 T9.2",  # reference
+        "$personasMap.PSObject.Properties",  # 攤平 map
+        "對齊 R13 C49 persona-wizard.ps1",  # cross-reference
+    ))
+    # 確認舊的「foreach ($p in @($listJson.personas))」直接 iterate 已不在
+    has_no_old_iterate = "foreach ($p in @($listJson.personas))" not in menu_src
+    report.step(
+        "C81 menu.ps1 /persona list PSObject.Properties 攤平 (Codex 第 28 輪 T9.2 修)",
+        has_c81 and has_no_old_iterate,
+        f"src={has_c81} no_old_iterate={has_no_old_iterate}",
+    )
+
     return report.summary()
 
 

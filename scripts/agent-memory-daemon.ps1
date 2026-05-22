@@ -95,11 +95,15 @@ if (-not (Test-Path -LiteralPath $logDir)) {
 $logFile = Join-Path $logDir "daemon_runs.jsonl"
 
 function Invoke-CliCmd {
-    param([string[]]$Args, [string]$Label)
+    # R18 C80 (Codex 第 28 輪 T11.2/T11.3/T13.1 修): 對齊 R12 C46 同 bug fix.
+    # 原本 param([string[]]$Args, ...) 用 PowerShell **reserved auto variable** $Args,
+    # 被 PowerShell 自動 shadow → $full += $Args 拿空陣列 → CLI 沒收到 subcommand
+    # → 噴 "usage: memory-cli [-h] [--vault-root VAULT_ROOT]". 改 $CliArgs.
+    param([string[]]$CliArgs, [string]$Label)
     Write-Host "[INFO] $Label..." -ForegroundColor Yellow
     $full = @("-X", "utf8", "-m", "agent_memory.cli")
     if ($VaultRoot) { $full += @("--vault-root", $VaultRoot) }
-    $full += $Args
+    $full += $CliArgs
     $full += "--json"
     Push-Location $projectRoot
     try {
@@ -128,7 +132,7 @@ function Invoke-CliCmd {
 }
 
 $results = @()
-$results += Invoke-CliCmd -Args @("promote-cycle", "--phase", "light", "--max-promotions", "20") -Label "promote-cycle (短期→長期升格)"
+$results += Invoke-CliCmd -CliArgs @("promote-cycle", "--phase", "light", "--max-promotions", "20") -Label "promote-cycle (短期→長期升格)"
 
 # skill-maintain 不是所有版本都有, 用 try
 $skillExists = $true
@@ -139,7 +143,7 @@ try {
 catch { $skillExists = $false }
 
 if ($skillExists) {
-    $results += Invoke-CliCmd -Args @("skill-maintain") -Label "skill-maintain (技能 lifecycle)"
+    $results += Invoke-CliCmd -CliArgs @("skill-maintain") -Label "skill-maintain (技能 lifecycle)"
 }
 
 # C13: wikilinks graph rebuild (給 chat 一跳擴展用)

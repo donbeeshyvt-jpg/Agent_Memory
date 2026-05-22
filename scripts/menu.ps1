@@ -560,6 +560,11 @@ function Invoke-CliChat {
                 Write-Host "  當前 persona: $currentPersona" -ForegroundColor $AccentColor
             }
             elseif ($sub -eq "list") {
+                # R18 C81 (Codex 第 28 輪 T9.2 修): 對齊 R13 C49 persona-wizard.ps1 同 fix.
+                # persona-list --json 回 `personas` 是 PSCustomObject map (key=persona_id,
+                # value=metadata), 不是 array. 直接 foreach 拿到 dict 本身, 沒 persona_id
+                # 欄位 → 噴 "The property 'persona_id' cannot be found on this object".
+                # 用 PSObject.Properties 攤平 map → record array.
                 $listArgs = @("-X", "utf8", "-m", "agent_memory.cli")
                 if ($VaultRoot) { $listArgs += @("--vault-root", $VaultRoot) }
                 $listArgs += @("persona-list", "--json")
@@ -569,9 +574,25 @@ function Invoke-CliChat {
                     if ($s -ge 0 -and $e -gt $s) {
                         $listJson = $listOut.Substring($s, $e - $s + 1) | ConvertFrom-Json
                         Write-Host "  已啟用 persona:" -ForegroundColor Cyan
-                        foreach ($p in @($listJson.personas)) {
-                            $mark = if ($p.persona_id -eq $currentPersona) { "→" } else { " " }
-                            Write-Host ("    {0} {1,-12}  {2}  ({3})" -f $mark, $p.persona_id, $p.display_name, $p.status) -ForegroundColor White
+                        $personasMap = $listJson.personas
+                        if ($personasMap) {
+                            # 攤平 PSCustomObject map (key=persona_id, value=metadata)
+                            foreach ($prop in @($personasMap.PSObject.Properties)) {
+                                $personaId = $prop.Name
+                                $meta = $prop.Value
+                                $displayName = if ($meta.PSObject.Properties.Match('display_name').Count -and $meta.display_name) {
+                                    [string]$meta.display_name
+                                } else {
+                                    $personaId  # fallback to persona_id
+                                }
+                                $status = if ($meta.PSObject.Properties.Match('status').Count) {
+                                    [string]$meta.status
+                                } else {
+                                    "active"
+                                }
+                                $mark = if ($personaId -eq $currentPersona) { "→" } else { " " }
+                                Write-Host ("    {0} {1,-12}  {2}  ({3})" -f $mark, $personaId, $displayName, $status) -ForegroundColor White
+                            }
                         }
                     } else {
                         Write-Host "  [ERR] persona-list 沒回 JSON" -ForegroundColor Red
