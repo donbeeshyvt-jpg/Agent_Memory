@@ -427,7 +427,16 @@ def run_chat_turn(
                 memory_capture_saved = bool(_capture_result.saved)
                 memory_capture_path = _capture_result.path
                 memory_capture_error = _capture_result.error
-                # index update 走既有 adapter 管線, 不需這層額外觸發
+                # R18 C82 (Codex 第 28a T9.6 audit 修): 補 search_manager.index_path()
+                # 對齊 session_log/daily_flush 寫入後同 pattern + MISSION §3.4 RAG 雙寫.
+                # 原本 R16 C70 註解誤判「adapter 管線會自動 index」但 adapter.write_note
+                # 只寫 .md 不更 .db; capture 檔寫入後 RAG 搜不到 → cross-persona retrieval
+                # 主要靠 shared-channel history 不靠 RAG hit → memory_context_hits=[].
+                if memory_capture_saved and memory_capture_path:
+                    try:
+                        runtime.search_manager.index_path(memory_capture_path)
+                    except Exception:  # noqa: BLE001 — index 失敗不阻擋 chat
+                        pass
         except Exception as exc:  # noqa: BLE001 — 不阻擋 chat 流程
             memory_capture_detected = False
             memory_capture_error = f"{type(exc).__name__}: {exc}"

@@ -1933,6 +1933,74 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"src={has_c81} no_old_iterate={has_no_old_iterate}",
     )
 
+    # 22.3 — C82 memory_capture 寫入後 search_manager.index_path() (Codex 第 28a T9.6 audit)
+    has_c82_src = all(s in crt2_src for s in (
+        "R18 C82",  # 標記
+        "Codex 第 28a T9.6 audit",  # reference
+        "runtime.search_manager.index_path(memory_capture_path)",  # index call
+        "RAG 雙寫",  # MISSION §3.4 對齊
+    ))
+    # functional smoke: capture 寫入後 search_manager.index_path 真的被 call
+    import tempfile as _tmpf9
+    from unittest.mock import MagicMock as _MM9
+    with _tmpf9.TemporaryDirectory() as _td9:
+        from pathlib import Path as _P9
+        _v9 = _P9(_td9) / "vault"
+        _v9.mkdir(parents=True)
+        from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA9
+        from agent_memory.runtime import MemoryRuntime as _MR9, RuntimeProfile as _RP9
+        from agent_memory.llm_client import LLMGenerateResult as _LGR9
+        from agent_memory.chat_runtime import run_chat_turn as _rct9
+        from agent_memory.persona_governance import (
+            ensure_persona_governance_file as _epgf9,
+            load_persona_governance as _lpg9,
+            save_persona_governance as _spg9,
+            _now_iso as _ni9,
+        )
+        _ad9 = _OVA9(_v9); _ad9.ensure_skeleton()
+        _epgf9(_v9, overwrite=True)
+        _gov9 = _lpg9(_v9)
+        _gov9["persona_overrides"]["steward"] = {
+            "status": "active",
+            "supervision": {"enabled": True, "reviewer_persona": "core", "arbiter_persona": "core"},
+            "capabilities": {
+                "tools_enabled": True, "code_write_enabled": True,
+                "shell_enabled": False, "persona_management_enabled": False,
+                "memory_capture_enabled": True,
+            },
+            "source": "step22_c82", "created_at": _ni9(), "updated_at": _ni9(), "updated_by": "step22",
+        }
+        _spg9(_v9, _gov9)
+        _rt9 = _MR9(_ad9, profile=_RP9(name="steward"))
+        _idx_calls: list[str] = []
+        _orig_idx = _rt9.search_manager.index_path
+        def _spy_idx(p):
+            _idx_calls.append(str(p))
+            return _orig_idx(p)
+        _rt9.search_manager.index_path = _spy_idx
+
+        _mc9 = _MM9()
+        _mc9.generate.return_value = _LGR9(
+            content="已記住", profile="m", model="m",
+            provider_kind="openai_compatible", base_url="m", attempts=[],
+        )
+        _r9 = _rct9(
+            adapter=_ad9, runtime=_rt9, client=_mc9,
+            persona="steward", context="cli", session="step22-c82",
+            message="幫我記得 R28_TOKEN = abc123",
+            temperature=0.0, timeout_s=30.0, memory_mode="session_only",
+            transport="cli", channel_id="cli", user_id="u",
+        )
+        _capture_path = _r9.get("memory_capture_path") or ""
+        _c82_saved = bool(_r9.get("memory_capture_saved"))
+        _c82_indexed = bool(_capture_path) and any(_capture_path in c for c in _idx_calls)
+    c82_functional = _c82_saved and _c82_indexed
+    report.step(
+        "C82 memory_capture 寫入後 search_manager.index_path (Codex 第 28a T9.6 audit RAG 雙寫修)",
+        has_c82_src and c82_functional,
+        f"src={has_c82_src} saved={_c82_saved} indexed={_c82_indexed}",
+    )
+
     return report.summary()
 
 
