@@ -2332,7 +2332,8 @@ def run_simulation(vault_root: Path, report: Report) -> int:
     ))
     import agent_memory.transport_ingest as _ti_c92
     _ti_src_c92 = Path(_ti_c92.__file__).read_text(encoding="utf-8")
-    has_c92_ti = "text[-8000:]" in _ti_src_c92 and "R19 P1-b C92" in _ti_src_c92
+    # R19.2 C100 升級: 預切從 8000 → 32768 (Codex 第 32 輪 5 persona×30 turn ~90000 chars 修)
+    has_c92_ti = "text[-32768:]" in _ti_src_c92 and "R19 P1-b C92" in _ti_src_c92 and "R19.2 C100" in _ti_src_c92
 
     from agent_memory.chat_runtime import _two_sided_excerpt as _tse
     # A. 短文 < cap → 原樣回 (.strip 後)
@@ -2467,9 +2468,10 @@ def run_simulation(vault_root: Path, report: Report) -> int:
     # 透過 import chat_runtime._FAKE_CLAIM_PATTERNS 是 nested in else branch; 直接從 source build
     # 等價: 我重新編譯同 regex 做 isolated smoke. R19.1 只關心 pattern 4 修補不引入 regression.
     import re as _re_c96
-    # 重新編譯一個跟 chat_runtime 一樣的 R19.1 版 regex 做 isolated smoke 驗證
+    # 重新編譯一個跟 chat_runtime 一樣的 regex 做 isolated smoke 驗證
+    # R19.1 C96 加 pattern 4 prefix guard / R19.2 C99 pattern 1 砍未來式只保留我[已也]
     _c96_pat = _re_c96.compile(
-        r"我[已也會將要來].{0,10}(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存)"
+        r"我[已也].{0,10}(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存)"
         r"|"
         r"(為|幫|替)(您|你).{0,10}(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存)"
         r"|"
@@ -2532,6 +2534,103 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         "C96 _FAKE_CLAIM_PATTERNS 第 4 條 prefix guard (R19.1, Codex 第 31 輪 advisor Turn 27 修)",
         has_c96_src and c96_smoke_ok,
         f"src={has_c96_src} smoke_ok={c96_smoke_ok} {_smoke_detail}",
+    )
+
+    # ─── Step 27 (R19.2 C98+C99+C100): disclaimer 去 keyword / pattern 1 砍未來式 / transport 預切 32768 ─
+    report.section("Step 27 (R19.2 C98+C99+C100): disclaimer 去 keyword / pattern 1 砍未來式 / transport 預切 (Codex 第 32 輪 cascading 修)")
+
+    # 27.1 — C98 disclaimer 文案不含 trigger keyword (斷污染環)
+    _crt_src_c98 = Path(_crt_c92.__file__).read_text(encoding="utf-8")
+    # 確認新文案 + 舊 keyword 字樣不在 disclaimer 字串內 (用 surrounding context 鎖定 disclaimer 區域)
+    # disclaimer 在 chat_runtime.py "Step 4: 任何意圖偵測 → 一律加 disclaimer" 之後
+    _disclaimer_section_match = _re_c96.search(
+        r"Step 4:[^\n]*\n.*?response_text = response_text\.rstrip\(\) \+ \(\s*\n(.*?)\)",
+        _crt_src_c98, _re_c96.DOTALL,
+    )
+    if _disclaimer_section_match:
+        _disclaimer_body = _disclaimer_section_match.group(1)
+        # 新文案應在 (R19.2 C98)
+        c98_has_new_phrase = "上文工具相關宣告皆為模型推測語氣" in _disclaimer_body
+        # 舊 keyword 字樣不該在 disclaimer body 內 (斷污染環核心)
+        c98_no_old_kw_kw1 = "已建立 / 已寫入" not in _disclaimer_body
+        c98_no_old_kw_kw2 = "為您建立" not in _disclaimer_body
+    else:
+        c98_has_new_phrase = False
+        c98_no_old_kw_kw1 = False
+        c98_no_old_kw_kw2 = False
+    # 也驗 source 含 R19.2 C98 標記
+    c98_has_tag = "R19.2 C98" in _crt_src_c98
+    report.step(
+        "C98 disclaimer 文案去 keyword 斷污染環 (R19.2, Codex 第 32 輪 cascading 修)",
+        c98_has_tag and c98_has_new_phrase and c98_no_old_kw_kw1 and c98_no_old_kw_kw2,
+        f"tag={c98_has_tag} new={c98_has_new_phrase} no_kw1={c98_no_old_kw_kw1} no_kw2={c98_no_old_kw_kw2}",
+    )
+
+    # 27.2 — C99 pattern 1 砍「會將要來」未來式分支, 只保留「我[已也]」完成式
+    # source check
+    c99_has_tag = "R19.2 C99" in _crt_src_c98
+    # 舊 pattern 1 regex literal (r-string prefix) 不該在 production code 內
+    # (R14.x 歷史註解內仍可保留說明字串, 那不算 production pattern)
+    c99_no_old_p1 = 'r"我[已也會將要來]' not in _crt_src_c98
+    c99_has_new_p1 = '我[已也].{0,10}(生成|建立|寫入' in _crt_src_c98  # 新 pattern 在
+    # functional smoke: 同 Step 26 inline regex (已同步 R19.2 C99)
+    _should_trigger_completed = [
+        ("我已寫入 USER.md", "完成式我已+動詞 (p1 應 trigger)"),
+        ("我也建立了 test.md", "完成式我也+動詞 (p1 應 trigger)"),
+    ]
+    _should_not_trigger_future = [
+        # multi-persona meeting advisory tone (Codex 第 32 輪 product/advisor false positive)
+        ("我將建立 scripts/r32_stress_test_p1a.py", "advisory 我將+動詞 (p1 R19.2 砍 不該 trigger 除非命中其他 pattern)"),
+        ("我會把筆記儲存到 70_Active_Plans/", "advisory 我會+動詞 (但 p3 把...到 仍會 trigger; 此 case 真的算 — 移除)"),
+        ("我要記下這件事", "advisory 我要+動詞 (R14.4 case, 不該 trigger)"),
+        ("我來幫你解釋", "advisory 我來+動詞 (R14.4 case, 不該 trigger)"),
+    ]
+    # 注意「我會把筆記儲存到 70_」會被 pattern 3 (把|將)...到 命中, 屬合理 trigger.
+    # 從 smoke 拿掉, 改測純 advisory (沒 把...到 結構) 的未來式
+    _should_not_trigger_future_clean = [
+        ("我將建立 scripts/r32_stress_test_p1a.py", "advisory 我將+建立+path (p4 R19.1 因無 prefix guard 不該 trigger, 但 ext path 在 → 看 pattern 4 prefix)"),
+        ("我要記下這件事", "advisory 我要+動詞 (純未來式, R14.4 case)"),
+        ("我來幫你解釋", "advisory 我來+動詞 (R14.4 case)"),
+        ("我會通知 steward 開始", "advisory 我會+動詞 (純未來式)"),
+    ]
+    # 重新檢查: 「我將建立 scripts/r32_stress_test_p1a.py」
+    #   - p1 R19.2: 我[已也] 不抓 「我將」 → 不 trigger
+    #   - p4 R19.1: prefix guard (我[已也]|已經?|為您|...) → 「我將」不 match → 不 trigger
+    #   - p6: 「(將|要|準備)(在|到)」 → 「我將建立」沒「在/到」 → 不 trigger
+    #   → 應該不 trigger ✓
+    smoke_c99_pos_fail: list[tuple[str, str]] = []
+    smoke_c99_neg_fail: list[tuple[str, str]] = []
+    for text, label in _should_trigger_completed:
+        if not _c96_pat.search(text):  # 用 Step 26 同 pattern (R19.2 同步)
+            smoke_c99_pos_fail.append((text, label))
+    for text, label in _should_not_trigger_future_clean:
+        if _c96_pat.search(text):
+            smoke_c99_neg_fail.append((text, label))
+    c99_smoke_ok = not smoke_c99_pos_fail and not smoke_c99_neg_fail
+    _c99_detail = (
+        f"completed_trigger={len(_should_trigger_completed) - len(smoke_c99_pos_fail)}/{len(_should_trigger_completed)} "
+        f"future_no_trigger={len(_should_not_trigger_future_clean) - len(smoke_c99_neg_fail)}/{len(_should_not_trigger_future_clean)}"
+    )
+    if smoke_c99_pos_fail:
+        _c99_detail += " | pos_fail=" + ";".join(f"[{l}]" for _, l in smoke_c99_pos_fail)
+    if smoke_c99_neg_fail:
+        _c99_detail += " | neg_fail=" + ";".join(f"[{l}]" for _, l in smoke_c99_neg_fail)
+    report.step(
+        "C99 pattern 1 砍「會將要來」只保留「我[已也]」完成式 (R19.2, Codex 第 32 輪 advisory 修)",
+        c99_has_tag and c99_no_old_p1 and c99_has_new_p1 and c99_smoke_ok,
+        f"tag={c99_has_tag} no_old={c99_no_old_p1} new={c99_has_new_p1} "
+        f"smoke={c99_smoke_ok} {_c99_detail}",
+    )
+
+    # 27.3 — C100 transport 預切 8000 → 32768 (Codex 第 32 輪 90000+ chars head 切走修)
+    _ti_src_c100 = Path(_ti_c92.__file__).read_text(encoding="utf-8")
+    c100_has_tag = "R19.2 C100" in _ti_src_c100
+    c100_no_old = "text[-8000:]" not in _ti_src_c100
+    c100_has_new = "text[-32768:]" in _ti_src_c100
+    report.step(
+        "C100 transport_ingest shared_channel 預切 8000→32768 (R19.2, Codex 第 32 輪 90000 chars 修)",
+        c100_has_tag and c100_no_old and c100_has_new,
+        f"tag={c100_has_tag} no_old={c100_no_old} new={c100_has_new}",
     )
 
     return report.summary()
