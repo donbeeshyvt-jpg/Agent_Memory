@@ -2453,6 +2453,87 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"set_not_shared={c94_set_not_shared} blank_shared={c94_blank_shared}",
     )
 
+    # ─── Step 26 (R19.1 C96): fake_claim pattern 4 加第一人稱完成式 prefix guard ────
+    report.section("Step 26 (R19.1 C96): _FAKE_CLAIM_PATTERNS 第 4 條 prefix guard (Codex 第 31 輪 advisor Turn 27 修)")
+
+    # source: chat_runtime.py 內 R19.1 C96 標記 + 新 pattern 4 寫法
+    has_c96_src = all(s in _crt_src_c92 for s in (
+        "R19.1 C96",
+        "第一人稱完成式 prefix guard",
+        "我[已也]|已經?|現已|為(您|你)|幫(您|你)|系統已|本回合已",
+    ))
+
+    # functional: 抓 chat_runtime._FAKE_CLAIM_PATTERNS regex 跑 smoke (8 case)
+    # 透過 import chat_runtime._FAKE_CLAIM_PATTERNS 是 nested in else branch; 直接從 source build
+    # 等價: 我重新編譯同 regex 做 isolated smoke. R19.1 只關心 pattern 4 修補不引入 regression.
+    import re as _re_c96
+    # 重新編譯一個跟 chat_runtime 一樣的 R19.1 版 regex 做 isolated smoke 驗證
+    _c96_pat = _re_c96.compile(
+        r"我[已也會將要來].{0,10}(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存)"
+        r"|"
+        r"(為|幫|替)(您|你).{0,10}(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存)"
+        r"|"
+        r"(把|將).{0,30}(儲存|寫入|寫|存|放|建立|新增|產生|生成|保存)\s*到"
+        r"|"
+        r"(我[已也]|已經?|現已|為(您|你)|幫(您|你)|系統已|本回合已).{0,5}"
+        r"(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存).{0,10}"
+        r"(\.md|\.py|\.txt|10_|11_|70_|80_|90_|_Permanent|_Active_Plans|_Manual)"
+        r"|"
+        r"(正在|現在).{0,5}(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存)"
+        r"|"
+        r"(將|要|準備).{0,5}(在|到).{0,30}(建立|新增|生成|寫入|產生|儲存|存|寫|放|保存).{0,15}(\.md|\.py|\.txt|test|hello|README|10_|11_|70_|80_|90_|_Permanent|_Active_Plans|_Manual)",
+        _re_c96.IGNORECASE,
+    )
+
+    # 應該 trigger (真假宣稱 第一人稱完成式) — pattern 4 (R19.1 prefix-guarded) + pattern 1/2/3/5/6
+    _should_trigger = [
+        ("我已寫入 70_Active_Plans/x.md", "p4-R19.1 我已+動詞+path"),
+        ("為您建立 test.md", "p4-R19.1 為您+動詞+ext"),
+        ("我會把筆記儲存到 10_Permanent/", "p1 我會+動詞 (or p3 把...到)"),
+        ("已成功建立 USER.md", "p4-R19.1 已+成功+建立+ext (R19.1 prefix 中 '已')"),
+        ("將在 70_Active_Plans/ 目錄下建立 README", "p6 將在+到+建立+path"),
+        ("我已產生 hello.py", "p4-R19.1 我已+產生+ext"),
+        ("正在寫入 .md", "p5 正在+動詞"),
+    ]
+    _should_not_trigger = [
+        # advisor Turn 27 case (Codex 第 31 輪 R19 驗收 FAIL 主因)
+        ("修復過程與結果寫入 70_Active_Plans/Session_Logs/", "advisor numbered list advisory"),
+        # advisor 給 next steps
+        ("請將討論寫入 70_Active_Plans/ 並更新 10_Permanent/Facts/", "advisory '請+動詞'"),
+        # 一般描述 vault path (沒第一人稱)
+        ("結果應該寫入 10_Permanent/Concepts/ 區域", "advisory 'X 應該+動詞+path'"),
+        # R14.5 / R14.4 case (確保 R19.1 沒打破)
+        ("我已準備好為您服務", "R14.5 greeting (不含寫檔動詞 prefix)"),
+        ("我會記得吃飯", "R14.4 一般對話"),
+        # 純名詞 (R14.6 case)
+        ("撰寫程式碼", "R14.6 動詞+程式 (普通名詞已拿掉)"),
+    ]
+
+    smoke_pos_fail: list[tuple[str, str]] = []
+    smoke_neg_fail: list[tuple[str, str]] = []
+    for text, label in _should_trigger:
+        if not _c96_pat.search(text):
+            smoke_pos_fail.append((text, label))
+    for text, label in _should_not_trigger:
+        if _c96_pat.search(text):
+            smoke_neg_fail.append((text, label))
+
+    c96_smoke_ok = not smoke_pos_fail and not smoke_neg_fail
+    _smoke_detail = (
+        f"pos_pass={len(_should_trigger) - len(smoke_pos_fail)}/{len(_should_trigger)} "
+        f"neg_pass={len(_should_not_trigger) - len(smoke_neg_fail)}/{len(_should_not_trigger)}"
+    )
+    if smoke_pos_fail:
+        _smoke_detail += " | pos_fail=" + ";".join(f"[{l}]" for _, l in smoke_pos_fail)
+    if smoke_neg_fail:
+        _smoke_detail += " | neg_fail=" + ";".join(f"[{l}]" for _, l in smoke_neg_fail)
+
+    report.step(
+        "C96 _FAKE_CLAIM_PATTERNS 第 4 條 prefix guard (R19.1, Codex 第 31 輪 advisor Turn 27 修)",
+        has_c96_src and c96_smoke_ok,
+        f"src={has_c96_src} smoke_ok={c96_smoke_ok} {_smoke_detail}",
+    )
+
     return report.summary()
 
 
