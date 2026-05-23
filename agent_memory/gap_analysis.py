@@ -439,7 +439,7 @@ def build_gap_footer(gap: dict[str, Any]) -> str:
         return (
             "\n\n---\n"
             f"❓ 我注意到 USER.md 的「{section} / {label}」還沒填.\n"
-            f"  可以告訴我你的{label}嗎? (我會自動 [TOOL]memory 寫進 USER.md)\n"
+            f"  可以告訴我你的{label}嗎? (你回答後我會把它記在 USER.md 個人檔)\n"
             f"  或回「稍後」之後再問."
         )
     if kind == "midterm_not_in_user":
