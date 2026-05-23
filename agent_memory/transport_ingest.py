@@ -385,9 +385,14 @@ def run_transport_event(
                 shared_note = adapter.read_note(shared_path)
                 if shared_note is not None:
                     text = shared_note.body.strip()
-                    # R19 P1-b C92: 預切 2400 → 8000 給 chat_runtime _two_sided_excerpt 足夠原料
-                    # (找首 head_turns + tail 共 3000 chars). 真正注入 prompt 仍由 chat_runtime 切.
-                    shared_channel_history = text[-8000:] if len(text) > 8000 else text
+                    # R19 P1-b C92 + R19.2 C100: 預切從 8000 → 32768 (4 倍).
+                    # Codex 第 32 輪 5 persona × 30 turn shared_channel log ~90000 chars,
+                    # 8000 只 cover 最後 ~13 turn 把 Turn 1/2 head 切走 → _two_sided_excerpt
+                    # 找不到 head turn marker fallback 退回單純末尾切片 (has_t1/has_t2=false).
+                    # 32768 chars 足以容納 30 turn × 5 persona, head 2 turn 仍在原料內,
+                    # 真正注入 prompt 仍由 chat_runtime 切到 SHARED_HISTORY_CAP=3000.
+                    # 階層式 LLM 摘要更聰明做法留 R20+/V3.
+                    shared_channel_history = text[-32768:] if len(text) > 32768 else text
         except Exception:  # noqa: BLE001
             shared_channel_history = ""
 
