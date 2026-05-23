@@ -2272,6 +2272,187 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"other_clean={c89_other_clean}",
     )
 
+    # ─── Step 25 (R19 P1+P2): gap footer 限頻 / shared cap 3000 / RAG fallback / test 隔離 ───
+    report.section("Step 25 (R19 P1+P2): C91 gap throttle / C92 shared_history cap+two_sided / C93 RAG fallback / C94 test 隔離 (Codex 第 30b)")
+
+    # 25.1 — C91 gap footer per-day throttle
+    import agent_memory.gap_analysis as _ga_mod_c91
+    _ga_src_c91 = Path(_ga_mod_c91.__file__).read_text(encoding="utf-8")
+    has_c91_src = all(s in _ga_src_c91 for s in (
+        "R19 P1-a C91",
+        "GAP_FOOTER_THROTTLE_RELATIVE_PATH",
+        "is_gap_footer_throttled_today",
+        "record_gap_footer_offered",
+        "_gap_footer_throttle_key",
+        "_gc_gap_footer_throttle",
+    ))
+    from agent_memory.gap_analysis import (
+        is_gap_footer_throttled_today as _is_thr,
+        record_gap_footer_offered as _rec_thr,
+        load_gap_footer_throttle as _load_thr,
+        save_gap_footer_throttle as _save_thr,
+    )
+    with tempfile.TemporaryDirectory() as _td91:
+        _v91 = Path(_td91) / "vault"
+        _v91.mkdir(parents=True)
+        # 第一次未 throttled → record → 第二次 throttled
+        c91_first_pass = not _is_thr(_v91, persona="advisor", channel_id="ch-1", today_iso="2026-05-23")
+        _rec_thr(_v91, persona="advisor", channel_id="ch-1", today_iso="2026-05-23", gap_id="gid-1")
+        c91_second_blocked = _is_thr(_v91, persona="advisor", channel_id="ch-1", today_iso="2026-05-23")
+        # 不同 channel / persona / day 各自獨立 (key 隔離)
+        c91_diff_ch = not _is_thr(_v91, persona="advisor", channel_id="ch-2", today_iso="2026-05-23")
+        c91_diff_persona = not _is_thr(_v91, persona="steward", channel_id="ch-1", today_iso="2026-05-23")
+        c91_diff_day = not _is_thr(_v91, persona="advisor", channel_id="ch-1", today_iso="2026-05-24")
+        # GC: 加一個 38 天前的 entry → record 新一條 today → 舊 entry 被清
+        _state91 = _load_thr(_v91)
+        _state91["advisor__ch-old__2026-04-15"] = "2026-04-15T10:00:00+08:00"  # 距 2026-05-23 = 38 天
+        _save_thr(_v91, _state91)
+        _rec_thr(_v91, persona="advisor", channel_id="ch-gc", today_iso="2026-05-23", gap_id="gid-gc")
+        _state91_after = _load_thr(_v91)
+        c91_gc_old_gone = "advisor__ch-old__2026-04-15" not in _state91_after
+        c91_gc_new_kept = "advisor__ch-gc__2026-05-23" in _state91_after
+    report.step(
+        "C91 gap footer per-day throttle (R19 P1-a, Codex 第 30b shared_history 污染修)",
+        has_c91_src and c91_first_pass and c91_second_blocked
+        and c91_diff_ch and c91_diff_persona and c91_diff_day
+        and c91_gc_old_gone and c91_gc_new_kept,
+        f"src={has_c91_src} first={c91_first_pass} blocked={c91_second_blocked} "
+        f"diff_ch={c91_diff_ch} diff_p={c91_diff_persona} diff_day={c91_diff_day} "
+        f"gc_old={c91_gc_old_gone} gc_new={c91_gc_new_kept}",
+    )
+
+    # 25.2 — C92 shared_history cap 3000 + _two_sided_excerpt
+    import agent_memory.chat_runtime as _crt_c92
+    _crt_src_c92 = Path(_crt_c92.__file__).read_text(encoding="utf-8")
+    has_c92_src = all(s in _crt_src_c92 for s in (
+        "R19 P1-b C92",
+        "_two_sided_excerpt",
+        "SHARED_HISTORY_CAP = 3000",
+        "head_turns",
+    ))
+    import agent_memory.transport_ingest as _ti_c92
+    _ti_src_c92 = Path(_ti_c92.__file__).read_text(encoding="utf-8")
+    has_c92_ti = "text[-8000:]" in _ti_src_c92 and "R19 P1-b C92" in _ti_src_c92
+
+    from agent_memory.chat_runtime import _two_sided_excerpt as _tse
+    # A. 短文 < cap → 原樣回 (.strip 後)
+    _short92 = "## 2026-05-23T10:00:00\n\nhello world"
+    c92_short_pass = _tse(_short92, max_chars=3000, head_turns=2) == _short92.strip()
+    # B. 長文 + 5 turn marker → 保留 head 2 turn + tail + separator
+    _parts92 = [f"## 2026-05-23T10:{i:02d}:00\n\n" + ("x" * 400) + f" turn-{i}" for i in range(5)]
+    _long92 = "\n".join(_parts92)
+    _out92 = _tse(_long92, max_chars=2000, head_turns=2)
+    c92_long_head = "turn-0" in _out92 and "turn-1" in _out92
+    c92_long_sep = "(中段省略以保留會議開場與當前討論)" in _out92
+    c92_long_tail = "turn-4" in _out92
+    c92_long_within = len(_out92) <= 2000 + 200  # separator margin
+    # C. 長文無 turn marker → fallback 單純末尾切
+    _no_mark92 = "x" * 5000
+    _out_nm92 = _tse(_no_mark92, max_chars=1000, head_turns=2)
+    c92_no_marker_fb = len(_out_nm92) == 1000 and _out_nm92 == _no_mark92[-1000:]
+    report.step(
+        "C92 _two_sided_excerpt + SHARED_HISTORY_CAP 1200→3000 (R19 P1-b, Codex 第 30b)",
+        has_c92_src and has_c92_ti and c92_short_pass
+        and c92_long_head and c92_long_sep and c92_long_tail and c92_long_within
+        and c92_no_marker_fb,
+        f"src={has_c92_src} ti={has_c92_ti} short={c92_short_pass} "
+        f"head={c92_long_head} sep={c92_long_sep} tail={c92_long_tail} "
+        f"within={c92_long_within} no_mark_fb={c92_no_marker_fb}",
+    )
+
+    # 25.3 — C93 memory_search fallback_min_score + rag_degraded payload
+    import agent_memory.runtime as _rt_c93
+    _rt_src_c93 = Path(_rt_c93.__file__).read_text(encoding="utf-8")
+    has_c93_src = all(s in _rt_src_c93 for s in (
+        "R19 P2-a C93",
+        "fallback_min_score",
+        "metadata_out",
+        "rag_fallback_used",
+        "rag_fallback_threshold",
+    ))
+    has_c93_payload = all(s in _crt_src_c92 for s in (
+        "rag_degraded",
+        "rag_fallback_threshold",
+        "rag_primary_threshold",
+    ))
+    from agent_memory.search.manager import SearchHit as _SH93
+    from unittest.mock import MagicMock as _MM93
+    with tempfile.TemporaryDirectory() as _td93:
+        _v93 = Path(_td93) / "vault"
+        _v93.mkdir(parents=True)
+        from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA93
+        from agent_memory.runtime import MemoryRuntime as _MR93, RuntimeProfile as _RP93
+        _a93 = _OVA93(_v93); _a93.ensure_skeleton()
+        _r93 = _MR93(_a93, profile=_RP93(name="advisor"))
+        _r93.search_manager = _MM93()
+        # A. 全部 hits 在 0.05~0.1 之間 → 主 0.1 過濾後空 → fallback 0.05 撈回
+        _r93.search_manager.search = _MM93(return_value=[
+            _SH93(path="10_Permanent/x.md", snippet="s", score=0.07, source="bm25"),
+            _SH93(path="10_Permanent/y.md", snippet="s", score=0.08, source="bm25"),
+        ])
+        _meta93a: dict[str, Any] = {}
+        _hits93a = _r93.memory_search(query="q", auto_reindex=False, metadata_out=_meta93a)
+        c93_fb_hits = len(_hits93a) == 2
+        c93_fb_flag = _meta93a.get("rag_fallback_used") is True
+        c93_fb_thr = _meta93a.get("rag_fallback_threshold") == 0.05
+        c93_fb_pri = _meta93a.get("rag_primary_threshold") == 0.1
+        # B. hits >= 0.1 → 不走 fallback, metadata 應乾淨
+        _r93.search_manager.search = _MM93(return_value=[
+            _SH93(path="10_Permanent/g.md", snippet="s", score=0.5, source="bm25"),
+        ])
+        _meta93b: dict[str, Any] = {}
+        _hits93b = _r93.memory_search(query="q2", auto_reindex=False, metadata_out=_meta93b)
+        c93_no_fb = len(_hits93b) == 1 and not _meta93b.get("rag_fallback_used")
+    report.step(
+        "C93 memory_search fallback_min_score retry + rag_degraded payload (R19 P2-a, Codex 第 30b)",
+        has_c93_src and has_c93_payload
+        and c93_fb_hits and c93_fb_flag and c93_fb_thr and c93_fb_pri
+        and c93_no_fb,
+        f"src={has_c93_src} payload={has_c93_payload} "
+        f"fb_hits={c93_fb_hits} flag={c93_fb_flag} thr={c93_fb_thr} pri={c93_fb_pri} "
+        f"no_fb_when_good={c93_no_fb}",
+    )
+
+    # 25.4 — C94 shared-channel log AGENT_MEMORY_TEST_RUN_ID env 隔離
+    import agent_memory.chat_session as _cs_c94
+    _cs_src_c94 = Path(_cs_c94.__file__).read_text(encoding="utf-8")
+    has_c94_src = all(s in _cs_src_c94 for s in (
+        "R19 P2-b C94",
+        "_TEST_RUN_ID_ENV",
+        "AGENT_MEMORY_TEST_RUN_ID",
+    ))
+    from agent_memory.chat_session import shared_channel_note_path as _scnp
+    with tempfile.TemporaryDirectory() as _td94:
+        _v94 = Path(_td94) / "vault"
+        _v94.mkdir(parents=True)
+        from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA94
+        _a94 = _OVA94(_v94); _a94.ensure_skeleton()
+        # 確保 env clean
+        os.environ.pop("AGENT_MEMORY_TEST_RUN_ID", None)
+        _path_unset = _scnp(_a94, transport="discord", channel_id="ch-1")
+        c94_unset_shared = _path_unset.endswith("__shared.md")
+        # env set 任意字串 → run_id 進檔名
+        os.environ["AGENT_MEMORY_TEST_RUN_ID"] = "r30b_v2"
+        try:
+            _path_set = _scnp(_a94, transport="discord", channel_id="ch-1")
+        finally:
+            os.environ.pop("AGENT_MEMORY_TEST_RUN_ID", None)
+        c94_set_isolated = _path_set.endswith("__r30b_v2.md")
+        c94_set_not_shared = not _path_set.endswith("__shared.md")
+        # env set 空白 → fallback "shared" (sanitize_component fallback)
+        os.environ["AGENT_MEMORY_TEST_RUN_ID"] = "   "
+        try:
+            _path_blank = _scnp(_a94, transport="discord", channel_id="ch-1")
+        finally:
+            os.environ.pop("AGENT_MEMORY_TEST_RUN_ID", None)
+        c94_blank_shared = _path_blank.endswith("__shared.md")
+    report.step(
+        "C94 shared-channel AGENT_MEMORY_TEST_RUN_ID env 隔離 (R19 P2-b, Codex 第 30b)",
+        has_c94_src and c94_unset_shared and c94_set_isolated and c94_set_not_shared and c94_blank_shared,
+        f"src={has_c94_src} unset={c94_unset_shared} set_iso={c94_set_isolated} "
+        f"set_not_shared={c94_set_not_shared} blank_shared={c94_blank_shared}",
+    )
+
     return report.summary()
 
 
