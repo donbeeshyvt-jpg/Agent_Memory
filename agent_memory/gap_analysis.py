@@ -33,6 +33,12 @@ PENDING_USER_GAPS_RELATIVE_PATH = ".ai/pending_user_gaps.json"
 USER_PROFILE_PATH = "10_Permanent/Profiles/USER.md"
 MIDTERM_DIR = "10_Permanent/Mid_Term"
 
+# R19 P1-a C91 — Codex 第 30b 觀察「USER.md gap footer 每 turn 重複出現污染 shared_history」修.
+# 同 persona + 同 channel_id + 同當地日期 在 throttle 內 → skip; 30 天滾動 GC 防止無限增長.
+# 跟 curator daily 節奏對齊 (每日一次, 同 day digest 系統一輪).
+GAP_FOOTER_THROTTLE_RELATIVE_PATH = ".ai/gap_footer_throttle.json"
+_GAP_THROTTLE_GC_KEEP_DAYS = 30
+
 # USER.md 佔位符 pattern (簡單 regex 偵測「未填」)
 _PLACEHOLDER_RES = [
     re.compile(r"[（(]\s*請填寫\s*[)）]"),
@@ -87,6 +93,104 @@ def save_pending_gaps(vault_root: Path, gaps: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with file_lock(path, timeout=5.0):
         atomic_write(path, json.dumps(gaps, ensure_ascii=False, indent=2) + "\n")
+
+
+# ─── R19 P1-a C91: gap footer per-day throttle (同 persona+channel+日期 一次) ─
+
+
+def _gap_footer_throttle_key(persona: str, channel_id: str, today_iso: str) -> str:
+    """Build throttle key: '{persona}__{channel_id}__{YYYY-MM-DD}'.
+
+    Empty persona → 'unknown'; empty channel_id → 'cli' (對齊 CLI default).
+    """
+    p = (persona or "unknown").strip().lower() or "unknown"
+    c = (channel_id or "cli").strip() or "cli"
+    return f"{p}__{c}__{today_iso}"
+
+
+def load_gap_footer_throttle(vault_root: Path) -> dict[str, str]:
+    """Load throttle state {key: last_offered_iso}. 損壞檔回 {}."""
+    root = Path(vault_root).expanduser().resolve()
+    path = root / GAP_FOOTER_THROTTLE_RELATIVE_PATH
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return {str(k): str(v) for k, v in data.items() if isinstance(v, str)}
+        return {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def save_gap_footer_throttle(vault_root: Path, state: dict[str, str]) -> None:
+    root = Path(vault_root).expanduser().resolve()
+    path = root / GAP_FOOTER_THROTTLE_RELATIVE_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    with file_lock(path, timeout=5.0):
+        atomic_write(path, payload)
+
+
+def _gc_gap_footer_throttle(state: dict[str, str], today_iso: str) -> None:
+    """In-place GC: 移除超過 _GAP_THROTTLE_GC_KEEP_DAYS 天的 key.
+
+    Key format: 'persona__channel__YYYY-MM-DD'; rsplit on '__' 抓最後段.
+    """
+    try:
+        today_dt = datetime.fromisoformat(today_iso).date()
+    except Exception:  # noqa: BLE001
+        return
+    to_remove: list[str] = []
+    for key in list(state.keys()):
+        parts = key.rsplit("__", 1)
+        if len(parts) != 2:
+            continue
+        try:
+            key_date = datetime.fromisoformat(parts[1]).date()
+        except Exception:  # noqa: BLE001
+            continue
+        if (today_dt - key_date).days > _GAP_THROTTLE_GC_KEEP_DAYS:
+            to_remove.append(key)
+    for k in to_remove:
+        state.pop(k, None)
+
+
+def is_gap_footer_throttled_today(
+    vault_root: Path,
+    persona: str,
+    channel_id: str,
+    *,
+    today_iso: str | None = None,
+) -> bool:
+    """同 persona + channel_id 今日是否已出過 gap footer.
+
+    R19 P1-a C91 — 防止 USER.md gap footer 每 turn 重複污染 shared_history.
+    維度跟 curator daily 對齊: 同 persona+channel 一天最多一次 footer.
+    """
+    if today_iso is None:
+        today_iso = datetime.now().astimezone().date().isoformat()
+    state = load_gap_footer_throttle(vault_root)
+    key = _gap_footer_throttle_key(persona, channel_id, today_iso)
+    return key in state
+
+
+def record_gap_footer_offered(
+    vault_root: Path,
+    persona: str,
+    channel_id: str,
+    *,
+    today_iso: str | None = None,
+    gap_id: str | None = None,  # 保留參數給未來追溯, 目前不寫進 state
+) -> None:
+    """記錄今日已出過 footer (含 GC 過期 entry)."""
+    if today_iso is None:
+        today_iso = datetime.now().astimezone().date().isoformat()
+    state = load_gap_footer_throttle(vault_root)
+    key = _gap_footer_throttle_key(persona, channel_id, today_iso)
+    state[key] = _now_local_iso()
+    _gc_gap_footer_throttle(state, today_iso)
+    save_gap_footer_throttle(vault_root, state)
 
 
 # ─── Scan: USER.md placeholders + Mid_Term entity mismatch ──────────────────

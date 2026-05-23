@@ -982,17 +982,32 @@ def run_chat_turn(
             except Exception:  # noqa: BLE001
                 umbrella_proposal_offered = None
 
-        # R8 C24: 若上面沒貼 skill 提議, 看是否有 user gap 要問 (max 1 footer per response)
+        # R8 C24 + R19 P1-a C91: 若上面沒貼 skill 提議, 看是否有 user gap 要問.
+        # C91 加同 persona + 同 channel + 同當地日期 throttle (跟 curator daily 對齊),
+        # 防止 footer 每 turn 重複污染 shared_history (Codex 第 30b 觀察).
         if skill_proposal_offered is None and umbrella_proposal_offered is None:
             try:
                 from agent_memory.gap_analysis import (
                     pick_next_gap,
                     build_gap_footer,
+                    is_gap_footer_throttled_today,
+                    record_gap_footer_offered,
                 )
-                gap = pick_next_gap(adapter.vault_root, auto_dismiss_days=14)
-                if gap:
-                    response_text = response_text.rstrip() + build_gap_footer(gap)
-                    gap_offered = gap
+                if not is_gap_footer_throttled_today(
+                    adapter.vault_root,
+                    persona=persona,
+                    channel_id=channel_id,
+                ):
+                    gap = pick_next_gap(adapter.vault_root, auto_dismiss_days=14)
+                    if gap:
+                        response_text = response_text.rstrip() + build_gap_footer(gap)
+                        gap_offered = gap
+                        record_gap_footer_offered(
+                            adapter.vault_root,
+                            persona=persona,
+                            channel_id=channel_id,
+                            gap_id=str(gap.get("gap_id", "")),
+                        )
             except Exception:  # noqa: BLE001
                 gap_offered = None
 
