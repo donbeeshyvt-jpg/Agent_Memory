@@ -2554,16 +2554,34 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         # 舊 keyword 字樣不該在 disclaimer body 內 (斷污染環核心)
         c98_no_old_kw_kw1 = "已建立 / 已寫入" not in _disclaimer_body
         c98_no_old_kw_kw2 = "為您建立" not in _disclaimer_body
+        # R19.3 C102: disclaimer 前段「宣稱已執行」→「宣稱完成執行」修 cascading 第二處漏網
+        # (Codex 第 33 輪 Turn 9 design 仍命中, 因 R19.2 C98 只改後段沒改前段「已執行」keyword)
+        c102_no_yi_zhi_xing = "已執行" not in _disclaimer_body  # disclaimer body 不該含 「已執行」keyword
+        c102_has_new_phrase = "宣稱完成執行" in _disclaimer_body  # 新前段文案在
+        # 其他 keyword 也順手檢查 (regression guard)
+        c102_no_other_kw = all(
+            kw not in _disclaimer_body
+            for kw in ("已建立", "已寫入", "已生成", "已產生", "已新增", "已儲存", "為您建立")
+        )
     else:
         c98_has_new_phrase = False
         c98_no_old_kw_kw1 = False
         c98_no_old_kw_kw2 = False
-    # 也驗 source 含 R19.2 C98 標記
+        c102_no_yi_zhi_xing = False
+        c102_has_new_phrase = False
+        c102_no_other_kw = False
+    # 也驗 source 含 R19.2 C98 / R19.3 C102 標記
     c98_has_tag = "R19.2 C98" in _crt_src_c98
+    c102_has_tag = "R19.3 C102" in _crt_src_c98
     report.step(
-        "C98 disclaimer 文案去 keyword 斷污染環 (R19.2, Codex 第 32 輪 cascading 修)",
-        c98_has_tag and c98_has_new_phrase and c98_no_old_kw_kw1 and c98_no_old_kw_kw2,
-        f"tag={c98_has_tag} new={c98_has_new_phrase} no_kw1={c98_no_old_kw_kw1} no_kw2={c98_no_old_kw_kw2}",
+        "C98+C102 disclaimer 文案完整去 keyword 斷 cascading 污染環 (R19.2+R19.3, Codex 第 32/33 輪修)",
+        c98_has_tag and c102_has_tag
+        and c98_has_new_phrase and c98_no_old_kw_kw1 and c98_no_old_kw_kw2
+        and c102_no_yi_zhi_xing and c102_has_new_phrase and c102_no_other_kw,
+        f"c98_tag={c98_has_tag} c102_tag={c102_has_tag} new={c98_has_new_phrase} "
+        f"no_kw1={c98_no_old_kw_kw1} no_kw2={c98_no_old_kw_kw2} "
+        f"no_yi_zhi_xing={c102_no_yi_zhi_xing} new_phrase={c102_has_new_phrase} "
+        f"no_other_kw={c102_no_other_kw}",
     )
 
     # 27.2 — C99 pattern 1 砍「會將要來」未來式分支, 只保留「我[已也]」完成式

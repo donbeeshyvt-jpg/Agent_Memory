@@ -789,13 +789,15 @@ def run_chat_turn(
         had_tool_attempt_when_disabled = had_tool_token or had_fake_claim_when_disabled or had_fake_claim_pattern
 
         # Step 4: 任何意圖偵測 → 一律加 disclaimer
-        # R19.2 C98: disclaimer 文案改寫 — 移除「已建立/已寫入/已生成/已準備/為您建立」keyword
-        # 字樣 (Codex 第 32 輪 cascading 修): 文案自己含 detector keyword 會寫進 shared_history,
-        # 下 turn 別 persona 看到複述 → detector 再 trigger → 級聯污染. 新文案不含具體
-        # keyword, 用泛稱「工具相關宣告」.
+        # R19.2 C98 + R19.3 C102: disclaimer 文案避開 detector keyword 字樣斷污染環.
+        # R19.2 C98 改了後段「上文...推測語氣」, 但前段「宣稱已執行」漏改 — 「已執行」
+        # 在 _TOOLS_DISABLED_FAKE_CLAIM_KW 內, Codex 第 33 輪 Turn 9 design 仍命中 cascading.
+        # R19.3 C102 把「宣稱已執行」→「宣稱完成執行」拆掉「已」前綴, 不命中 keyword 也不
+        # 命中 pattern 1/4 (需「我[已也]」/「為您」等 prefix), 完成 disclaimer 文案的 cascading
+        # 隔離.
         if had_tool_attempt_when_disabled:
             response_text = response_text.rstrip() + (
-                "\n\n⚠️ **tools_disabled persona**：偵測到模型嘗試輸出工具呼叫片段或宣稱已執行，"
+                "\n\n⚠️ **tools_disabled persona**：偵測到模型嘗試輸出工具呼叫片段或宣稱完成執行，"
                 "**未實際執行任何工具**（此 persona governance.tools_enabled=False）。"
                 "上文工具相關宣告皆為模型推測語氣，請以實際 vault 檔案為準。"
                 "如需工具能力請切換到 tools_enabled persona（例如 steward / coder）。"
