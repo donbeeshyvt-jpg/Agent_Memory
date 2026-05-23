@@ -308,12 +308,15 @@ def run_chat_turn(
     # 跟 frozen_snapshot (固定不變) 不同, 這一段是「每回合刷新」.
     memory_context_block = ""
     memory_context_hits: list[dict[str, Any]] = []
+    # R19 P2-a C93: 收 fallback metadata (rag_fallback_used / threshold) 回傳 payload.
+    _rag_meta: dict[str, Any] = {}
     try:
         hits = runtime.memory_search(
             query=message,
             max_results=5,
             auto_reindex=False,
             strategy="hybrid",
+            metadata_out=_rag_meta,
         )
         # C13: 載入 wikilinks graph, 對每個 hit 取 1 hop 鄰居 (有檔有 wikilink 才有效)
         graph_neighbors: list[str] = []
@@ -1178,6 +1181,11 @@ def run_chat_turn(
             },
         },
         "memory_context_hits": memory_context_hits,  # Phase A C6 (dynamic fence)
+        # R19 P2-a C93: RAG retrieve 兩階段 threshold (主 0.1 → fallback 0.05) 觸發旗標.
+        # 上層可用此判斷本 turn 走的是降級 retrieve, 必要時搭配 shared_history fallback.
+        "rag_degraded": bool(_rag_meta.get("rag_fallback_used")),
+        "rag_fallback_threshold": _rag_meta.get("rag_fallback_threshold"),
+        "rag_primary_threshold": _rag_meta.get("rag_primary_threshold"),
         "auto_evolve": auto_evolve_status,  # Phase A C15
         "curator": curator_status,  # R7 C18
         "skill_proposal_offered": skill_proposal_offered,  # R7 C20b (footer 貼了什麼)

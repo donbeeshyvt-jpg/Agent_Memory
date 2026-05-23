@@ -306,6 +306,8 @@ class MemoryRuntime:
         use_mmr: bool | None = None,
         mmr_lambda: float | None = None,
         min_score: float = 0.1,
+        fallback_min_score: float | None = 0.05,
+        metadata_out: dict[str, Any] | None = None,
     ) -> list[SearchHit]:
         """Run scoped retrieval with path-first filtering.
 
@@ -313,6 +315,13 @@ class MemoryRuntime:
         - raw zones (20/80/90) hardcoded exclude — 即使 profile.read_include 含, retrieval 也不該命中
           (使用者私人區, AI 不該透過 RAG 引用; 但單檔直接讀仍 OK 由 files.read_file 另外控制)
         - min_score 門檻 (預設 0.1) — 低於門檻 hits 不回, 避免 no-hit 查詢仍回 top-k 灌爆 prompt
+
+        R19 P2-a C93 (Codex 第 30b Turn 27 hits=0 修):
+        - fallback_min_score (預設 0.05) — 主 threshold 過濾後若 hits 為空, 自動降到
+          fallback_min_score 再試一次. 真的還是空就空; degraded 旗標寫進 metadata_out.
+        - metadata_out (optional in/out dict) — 若 caller 傳入 dict, 用 fallback 時會塞
+          {"rag_fallback_used": True, "rag_fallback_threshold": 0.05, "rag_primary_threshold": 0.1}
+          給 caller 反映到自己 payload (例如 chat_runtime 加 rag_degraded flag).
         """
 
         # R14 C53 T6.3: 永遠把 raw zones 從 retrieval 排除 (避免 RAG 污染 prompt)
@@ -324,7 +333,7 @@ class MemoryRuntime:
 
         if auto_reindex:
             self.reindex_search(sync_views=False)
-        hits = self.search_manager.search(
+        raw_hits = self.search_manager.search(
             query=query,
             max_results=max_results,
             include_prefixes=self.profile.read_include,
@@ -335,8 +344,24 @@ class MemoryRuntime:
             mmr_lambda=mmr_lambda,
         )
         # R14 C53 T6.4: min_score 門檻 — 過濾雜訊 hit
-        if min_score > 0 and hits:
-            hits = [h for h in hits if float(getattr(h, "score", 0.0)) >= min_score]
+        # R19 P2-a C93: 主 threshold 過濾後空 → fallback_min_score retry
+        if min_score > 0 and raw_hits:
+            filtered = [h for h in raw_hits if float(getattr(h, "score", 0.0)) >= min_score]
+            if (
+                not filtered
+                and fallback_min_score is not None
+                and 0 < fallback_min_score < min_score
+            ):
+                fb_hits = [h for h in raw_hits if float(getattr(h, "score", 0.0)) >= fallback_min_score]
+                if fb_hits and metadata_out is not None:
+                    metadata_out["rag_fallback_used"] = True
+                    metadata_out["rag_fallback_threshold"] = float(fallback_min_score)
+                    metadata_out["rag_primary_threshold"] = float(min_score)
+                hits = fb_hits
+            else:
+                hits = filtered
+        else:
+            hits = raw_hits
         if hits:
             try:
                 record_recall_hits(self.adapter.vault_root, query=query, hits=hits, phase="light")
