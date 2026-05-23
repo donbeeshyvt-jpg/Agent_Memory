@@ -2175,6 +2175,103 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"bob={_bob_norm and _bob_md_exists} default={_def_norm and _def_path}",
     )
 
+    # ─── Step 24 (R19 P0): atomic_write retry + gap footer [TOOL] 污染修 ─────
+    report.section("Step 24 (R19 P0): atomic_write retry / gap footer [TOOL]memory 污染修 (Codex 第 30b)")
+
+    # 24.1 — C88 atomic_write retry + backoff on PermissionError (Windows WinError 5)
+    import agent_memory.security.atomic as _atomic_mod
+    _atomic_src = Path(_atomic_mod.__file__).read_text(encoding="utf-8")
+    has_c88_src = all(s in _atomic_src for s in (
+        "R19 P0",
+        "Codex 第 30b",
+        "_REPLACE_MAX_ATTEMPTS",
+        "_compute_replace_backoff",
+        "WinError 5",
+    ))
+
+    from unittest.mock import patch as _patch_C88
+    # functional A: 前 2 次拋 PermissionError, 第 3 次成功 → retry 機制生效
+    _retry_calls = {"n": 0}
+    _real_replace_88 = os.replace
+    def _flaky_replace_88(src, dst):
+        _retry_calls["n"] += 1
+        if _retry_calls["n"] <= 2:
+            raise PermissionError(5, "Access is denied. (Simulated WinError 5)")
+        return _real_replace_88(src, dst)
+    c88_retried = False
+    _t88a_content = ""
+    _t88a_exists = False
+    with tempfile.TemporaryDirectory() as _td88a:
+        _t88a = Path(_td88a) / "test.md"
+        with _patch_C88("agent_memory.security.atomic.os.replace", side_effect=_flaky_replace_88), \
+             _patch_C88("agent_memory.security.atomic.time.sleep"):
+            _atomic_mod.atomic_write(_t88a, "retry-content")
+        _t88a_exists = _t88a.exists()
+        _t88a_content = _t88a.read_text(encoding="utf-8") if _t88a_exists else ""
+        c88_retried = (
+            _retry_calls["n"] == 3
+            and _t88a_exists
+            and _t88a_content == "retry-content"
+        )
+
+    # functional B: 全部 6 次失敗 → 明確拋 PermissionError + attempts=6
+    _fail_calls = {"n": 0}
+    def _always_fail_88(src, dst):
+        _fail_calls["n"] += 1
+        raise PermissionError(5, "Access is denied. (Simulated WinError 5)")
+    c88_raises = False
+    with tempfile.TemporaryDirectory() as _td88b:
+        _t88b = Path(_td88b) / "test2.md"
+        with _patch_C88("agent_memory.security.atomic.os.replace", side_effect=_always_fail_88), \
+             _patch_C88("agent_memory.security.atomic.time.sleep"):
+            try:
+                _atomic_mod.atomic_write(_t88b, "should-fail")
+            except PermissionError:
+                c88_raises = True
+        # 全失敗時 temp 檔應被 best-effort cleanup, 至少不殘留
+        c88_no_target = not _t88b.exists()
+    c88_attempts = _fail_calls["n"] == 6
+
+    report.step(
+        "C88 atomic_write retry + backoff (Codex 第 30b RACE-4 WinError 5 修)",
+        has_c88_src and c88_retried and c88_raises and c88_attempts and c88_no_target,
+        f"src={has_c88_src} retried={c88_retried} (calls={_retry_calls['n']}, exists={_t88a_exists}, "
+        f"content={_t88a_content!r}) raises={c88_raises} attempts={c88_attempts} "
+        f"({_fail_calls['n']}/6) no_target={c88_no_target}",
+    )
+
+    # 24.2 — C89 gap footer 移除 [TOOL]memory 字樣 (tools-disabled persona 污染修)
+    import agent_memory.gap_analysis as _ga_mod
+    _ga_src_v2 = Path(_ga_mod.__file__).read_text(encoding="utf-8")
+    # 舊 footer 寫死的 [TOOL]memory literal 不應在 build_gap_footer 範本內出現
+    c89_old_phrase_gone = "(我會自動 [TOOL]memory 寫進 USER.md)" not in _ga_src_v2
+    # 新 footer 文案在
+    c89_new_phrase = "(你回答後我會把它記在 USER.md 個人檔)" in _ga_src_v2
+
+    from agent_memory.gap_analysis import build_gap_footer as _bgf
+    _placeholder_out = _bgf({"kind": "placeholder", "section": "Identity", "label": "暱稱"})
+    c89_placeholder_clean = "[TOOL]" not in _placeholder_out
+    c89_placeholder_phrase = "USER.md 個人檔" in _placeholder_out
+
+    # 其他 kind 維持不污染 (regression guard)
+    _midterm_out = _bgf({"kind": "midterm_not_in_user", "entity_id": "X", "mention_count": 3})
+    _missing_out = _bgf({"kind": "user_md_missing"})
+    _contradiction_out = _bgf({"kind": "contradiction", "user_md_claim": "A", "evidence_entity": "B", "reason": "r"})
+    _default_out = _bgf({"kind": "unknown", "label": "Y"})
+    c89_other_clean = all(
+        "[TOOL]" not in out
+        for out in (_midterm_out, _missing_out, _contradiction_out, _default_out)
+    )
+
+    report.step(
+        "C89 gap footer [TOOL]memory 字樣移除 (Codex 第 30b advisor disclaimer 污染修)",
+        c89_old_phrase_gone and c89_new_phrase and c89_placeholder_clean
+        and c89_placeholder_phrase and c89_other_clean,
+        f"src_clean={c89_old_phrase_gone} new_phrase={c89_new_phrase} "
+        f"out_clean={c89_placeholder_clean} out_phrase={c89_placeholder_phrase} "
+        f"other_clean={c89_other_clean}",
+    )
+
     return report.summary()
 
 
