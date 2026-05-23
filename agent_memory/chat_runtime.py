@@ -79,6 +79,17 @@ def run_chat_turn(
     dialogue_prompt: str = "",
     shared_channel_history: str = "",
 ) -> dict[str, Any]:
+    # R18 C85 (Path A): user_id 預先標準化 (governance load 之後才知道 capability flag).
+    user_profile_normalized = ""
+    user_profile_path_resolved = ""
+    try:
+        from agent_memory.user_profile import normalize_user_id, user_profile_path
+        user_profile_normalized = normalize_user_id(user_id)
+        user_profile_path_resolved = user_profile_path(user_profile_normalized)
+    except Exception:  # noqa: BLE001
+        user_profile_normalized = "default"
+        user_profile_path_resolved = "10_Permanent/Profiles/USER.md"
+
     # R7 C20b: 對話開頭 parse 使用者上一輪是否在回應「skill 升格提議」
     # 只在「短輸入 + 純 keyword 開頭」時觸發, 避免「升職很爽」誤判
     skill_proposal_resolved: dict[str, Any] = {}
@@ -320,10 +331,22 @@ def run_chat_turn(
         # backward-compat: 舊 schema 沒這欄位 → C68 _normalize_capabilities
         # 自動補 True, 所以這裡讀 _caps 即可.
         memory_capture_enabled = bool(_caps.get("memory_capture_enabled", True))
+        # R18 C85: user_namespace_enabled 多用戶身份隔離 (對齊 V2_Round15 §9).
+        # backward-compat: 舊 schema v2 沒這欄 → C83 normalize 補 True.
+        user_namespace_enabled = bool(_caps.get("user_namespace_enabled", True))
     except Exception:  # noqa: BLE001
-        # governance 讀取失敗 → 安全預設 (tools=False deny; capture=True 對話功能優先)
+        # governance 讀取失敗 → 安全預設 (tools=False deny; capture=True / namespace=True 對話功能優先)
         tools_enabled = False
         memory_capture_enabled = True
+        user_namespace_enabled = True
+
+    # R18 C85: 多用戶模式 ensure_user_profile (對齊使用者 4 條設計拍板 #2 namespace 子腦).
+    if user_namespace_enabled and user_profile_normalized and user_profile_normalized != "default":
+        try:
+            from agent_memory.user_profile import ensure_user_profile
+            ensure_user_profile(adapter, user_profile_normalized)
+        except Exception:  # noqa: BLE001 — 不阻擋 chat (idempotent, 失敗就用既有檔)
+            pass
     tools_prompt = build_agent_tools_prompt(
         write_allow=list(runtime.profile.write_allow),
         write_deny=list(runtime.profile.write_deny),
@@ -423,6 +446,7 @@ def run_chat_turn(
                     persona_id=persona,
                     context_id=str(context or ""),
                     session_id=str(session or ""),
+                    user_id=user_id,  # R18 C85 multi-user namespace
                 )
                 memory_capture_saved = bool(_capture_result.saved)
                 memory_capture_path = _capture_result.path
@@ -1052,6 +1076,11 @@ def run_chat_turn(
         "raw_zone_write_blocked": bool(raw_zone_writes_blocked),
         "raw_zone_write_blocked_count": len(raw_zone_writes_blocked),
         "raw_zone_write_blocked_paths": [b.get("path", "") for b in raw_zone_writes_blocked],
+        # R18 C85 — multi-user namespace 觀察 (對齊 V2_Round15 §9 + 使用者 4 條設計拍板)
+        "user_id_raw": user_id,
+        "user_id_normalized": user_profile_normalized,
+        "user_profile_path": user_profile_path_resolved,
+        "user_namespace_enabled": user_namespace_enabled,
         # R18 C78 — /reflect <topic> slash command 觀察 (Codex 第 25 輪 T29.2 修補)
         "reflect_invoked": reflect_invoked,
         "reflect_topic": reflect_topic_str,

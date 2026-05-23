@@ -116,11 +116,23 @@ def _slug_from_summary(summary: str, *, max_len: int = 30) -> str:
     return cleaned
 
 
-def _build_capture_path(detected_at: datetime, summary: str) -> str:
-    """組合 capture 落點檔名: captures/<YYYY-MM-DD>_<slug>.md."""
+def _build_capture_path(detected_at: datetime, summary: str, *, user_id: str | None = None) -> str:
+    """組合 capture 落點檔名: <captures_dir>/<YYYY-MM-DD>_<slug>.md.
+
+    R18 C85: 加 user_id 參數實現 multi-user namespace 隔離:
+      - default user / None → 沿用既有 10_Permanent/Manual_Inputs/captures/
+      - 多用戶 (alice 等) → 10_Permanent/Profiles/<user_id>/captures/
+    對齊 V2_Round15 §9 拍板「私有 captures 嚴格邊界」.
+    """
     date_part = detected_at.strftime("%Y-%m-%d")
     slug = _slug_from_summary(summary)
-    return f"{_CAPTURE_DIR}/{date_part}_{slug}.md"
+    # R18 C85: per-user namespace 寫入點
+    try:
+        from agent_memory.user_profile import user_captures_dir  # lazy avoid circular
+        target_dir = user_captures_dir(user_id)
+    except Exception:  # noqa: BLE001
+        target_dir = _CAPTURE_DIR  # fallback 既有路徑
+    return f"{target_dir}/{date_part}_{slug}.md"
 
 
 def _build_capture_body(
@@ -157,15 +169,19 @@ def record_memory_capture(
     persona_id: str,
     context_id: str,
     session_id: str,
+    user_id: str | None = None,  # R18 C85: multi-user namespace
     now: datetime | None = None,
 ) -> MemoryCaptureResult:
-    """把偵測到的記憶提醒寫入 Manual_Inputs/captures/.
+    """把偵測到的記憶提醒寫入 captures/.
 
     Args:
         adapter: ObsidianVaultAdapter — 走既有 write_note 管線 (含 atomic + index).
         user_message: 使用者本回合完整訊息.
         detection: detect_memory_capture_intent() 結果, 必須 detected=True.
         persona_id / context_id / session_id: chat turn metadata, 寫進 body 追蹤.
+        user_id: R18 C85 multi-user namespace — None / "default" 走既有
+                 10_Permanent/Manual_Inputs/captures/; 其他 (alice / Discord ID)
+                 走 10_Permanent/Profiles/<user_id>/captures/ 私有區.
         now: 偵測時間 (None = datetime.now UTC).
 
     Returns:
@@ -179,7 +195,7 @@ def record_memory_capture(
         raise ValueError("detection.detected must be True before record_memory_capture")
 
     detected_at = now or datetime.now(timezone.utc)
-    path = _build_capture_path(detected_at, detection.summary or "")
+    path = _build_capture_path(detected_at, detection.summary or "", user_id=user_id)
     matched_kw = detection.matched_keyword or "?"
 
     body = _build_capture_body(
@@ -198,10 +214,16 @@ def record_memory_capture(
         # 取前 20 字當 alias 給 GraphRAG entity link 用
         aliases_pool = [detection.summary[:20]]
 
+    # R18 C85: extras 加 user_id 追蹤 + tags 加 user:<id> 給 GraphRAG / RAG filter
+    from agent_memory.user_profile import normalize_user_id  # lazy
+    _normalized_uid = normalize_user_id(user_id)
+    _tags = ["manual_input", "chat_capture", "memory_reminder"]
+    if _normalized_uid != "default":
+        _tags.append(f"user:{_normalized_uid}")
     fm = Frontmatter(
         type=MemoryType.USER_PROFILE,
         source=MemorySource.USER,
-        tags=["manual_input", "chat_capture", "memory_reminder"],
+        tags=_tags,
         aliases=aliases_pool,
         etl_status=EtlStatus.INTERNALISED,  # 對齊 §5.4 「使用者投餵 = 直接永久記憶」
         security_level=SecurityLevel.SAFE_DATA,
@@ -213,6 +235,7 @@ def record_memory_capture(
             "capture_persona": persona_id,
             "capture_context": context_id,
             "capture_session": session_id,
+            "capture_user_id": _normalized_uid,  # R18 C85
         },
     )
 

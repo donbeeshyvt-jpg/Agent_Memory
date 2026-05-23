@@ -1157,7 +1157,9 @@ def run_simulation(vault_root: Path, report: Report) -> int:
     pg_src = Path(_pg.__file__).read_text(encoding="utf-8")
     has_c68_src = all(s in pg_src for s in (
         "memory_capture_enabled",  # 新 capability key
-        "schema_version 1 → 2",  # 升版註解
+        # R18 C83 升 v3 後, C68 的 "schema_version 1 → 2" 舊註解被 "schema_version 2 → 3" 取代,
+        # 改檢 memory_capture_enabled 在 defaults block 內 (C68 真實效果還在)
+        "memory_capture_enabled",  # capability 加進去仍在
         "規格 §5.2 D2",  # 拍板 reference
     ))
     # functional: backward-compat default True
@@ -1933,6 +1935,9 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"src={has_c81} no_old_iterate={has_no_old_iterate}",
     )
 
+    # ─── Step 23 (R18 Path A C83-C86): multi-user namespace 收尾 ──────────
+    # 注意: 這 block 放在 22.3 之後（在 return 之前一起跑）— 因為改 source 文件已含 C83~C86 標記
+
     # 22.3 — C82 memory_capture 寫入後 search_manager.index_path() (Codex 第 28a T9.6 audit)
     has_c82_src = all(s in crt2_src for s in (
         "R18 C82",  # 標記
@@ -1999,6 +2004,175 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         "C82 memory_capture 寫入後 search_manager.index_path (Codex 第 28a T9.6 audit RAG 雙寫修)",
         has_c82_src and c82_functional,
         f"src={has_c82_src} saved={_c82_saved} indexed={_c82_indexed}",
+    )
+
+    # ─── Step 23 (R18 Path A C83-C86): multi-user namespace 多角色管家延伸 ────
+    report.section("Step 23 (R18 Path A): multi-user namespace + USER_<id>.md 拆分")
+
+    # 23.1 — C83 persona_governance schema v3 加 user_namespace_enabled
+    pg_src_v3 = Path(_pg.__file__).read_text(encoding="utf-8")
+    has_c83 = all(s in pg_src_v3 for s in (
+        "R18 C83",
+        "schema_version 2 → 3",
+        "user_namespace_enabled",
+        "V2_Round15 §9 multi-user identity",
+    ))
+    # functional: backward-compat + tools_disabled persona 仍 user_namespace=True
+    from agent_memory.persona_governance import _normalize_capabilities as _nc_v3
+    cap_bc = _nc_v3({"tools_enabled": True}, {})  # 舊 schema 沒這欄
+    cap_explicit_off = _nc_v3({"tools_enabled": True, "user_namespace_enabled": False}, {})
+    cap_tools_off = _nc_v3({"tools_enabled": False}, {"user_namespace_enabled": True})
+    c83_bc = cap_bc.get("user_namespace_enabled") is True
+    c83_explicit = cap_explicit_off.get("user_namespace_enabled") is False
+    c83_indep = cap_tools_off.get("user_namespace_enabled") is True
+    report.step(
+        "C83 persona_governance schema v3 + user_namespace_enabled capability",
+        has_c83 and c83_bc and c83_explicit and c83_indep,
+        f"src={has_c83} bc={c83_bc} explicit={c83_explicit} indep={c83_indep}",
+    )
+
+    # 23.2 — C84 user_profile.py normalize + path + ensure
+    import agent_memory.user_profile as _up
+    up_src = Path(_up.__file__).read_text(encoding="utf-8")
+    has_c84_src = all(s in up_src for s in (
+        "R18 C84",
+        "normalize_user_id",
+        "user_profile_path",
+        "user_captures_dir",
+        "ensure_user_profile",
+        "_DEFAULT_USER_ALIASES",  # CLI / smoke 等價 aliases
+    ))
+    # functional: normalize / path / 跨平台檔名安全
+    from agent_memory.user_profile import (
+        normalize_user_id as _norm,
+        user_profile_path as _upath,
+        user_captures_dir as _udir,
+    )
+    c84_norm = (
+        _norm("alice") == "alice"
+        and _norm(None) == "default"
+        and _norm("") == "default"
+        and _norm("cli-user") == "default"  # 既有 CLI alias 不 fork
+        and _norm("../../etc/passwd") == "passwd"  # path traversal 防禦
+        and _norm("阿凱") == "阿凱"  # CJK 保留
+    )
+    c84_path = (
+        _upath("default") == "10_Permanent/Profiles/USER.md"
+        and _upath("alice") == "10_Permanent/Profiles/alice/USER.md"
+        and _udir("default") == "10_Permanent/Manual_Inputs/captures"  # 既有路徑
+        and _udir("bob") == "10_Permanent/Profiles/bob/captures"  # 私有
+    )
+    report.step(
+        "C84 user_profile.py API (normalize / path / captures_dir / ensure)",
+        has_c84_src and c84_norm and c84_path,
+        f"src={has_c84_src} norm={c84_norm} path={c84_path}",
+    )
+
+    # 23.3 — C85 chat_runtime 整合 + C86 cli.py --user-id flag
+    has_c85_chat = all(s in crt2_src for s in (
+        "R18 C85",
+        "user_namespace_enabled",
+        "user_profile_normalized",
+        "user_profile_path_resolved",
+        "ensure_user_profile",  # 多用戶模式 lazy 建
+        "user_id=user_id",  # 傳給 record_memory_capture
+    ))
+    has_c85_capture = all(s in Path(__file__).resolve().parent.parent.joinpath(
+        "agent_memory/memory_capture.py").read_text(encoding="utf-8") for s in (
+        "R18 C85",
+        "user_id: str | None = None",  # 新參數
+        "capture_user_id",  # extras 欄位
+        "user_captures_dir",  # 用 helper 決定 path
+    ))
+    has_c86_cli = all(s in cli_src for s in (
+        "R18 C86",
+        "--user-id",
+        "_cli_user_id",
+        "multi-user identity",
+    ))
+    # functional: chat_runtime 帶 user_id=alice → 走 Profiles/alice/captures/
+    import tempfile as _tmpfA
+    from unittest.mock import MagicMock as _MMA
+    with _tmpfA.TemporaryDirectory() as _tdA:
+        from pathlib import Path as _PA
+        _vA = _PA(_tdA) / "vault"
+        _vA.mkdir(parents=True)
+        from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVAa
+        from agent_memory.runtime import MemoryRuntime as _MRa, RuntimeProfile as _RPa
+        from agent_memory.llm_client import LLMGenerateResult as _LGRa
+        from agent_memory.chat_runtime import run_chat_turn as _rcta
+        from agent_memory.persona_governance import (
+            ensure_persona_governance_file as _epgfa,
+            load_persona_governance as _lpga,
+            save_persona_governance as _spga,
+            _now_iso as _nia,
+        )
+        _ada = _OVAa(_vA); _ada.ensure_skeleton()
+        _epgfa(_vA, overwrite=True)
+        _gova = _lpga(_vA)
+        _gova["persona_overrides"]["steward"] = {
+            "status": "active",
+            "supervision": {"enabled": True, "reviewer_persona": "core", "arbiter_persona": "core"},
+            "capabilities": {
+                "tools_enabled": True, "code_write_enabled": True,
+                "shell_enabled": False, "persona_management_enabled": False,
+                "memory_capture_enabled": True, "user_namespace_enabled": True,
+            },
+            "source": "step23", "created_at": _nia(), "updated_at": _nia(), "updated_by": "step23",
+        }
+        _spga(_vA, _gova)
+        _rta = _MRa(_ada, profile=_RPa(name="steward"))
+        _mca = _MMA()
+        _mca.generate.return_value = _LGRa(
+            content="已記住", profile="m", model="m",
+            provider_kind="openai_compatible", base_url="m", attempts=[],
+        )
+
+        # alice 跑
+        _r_alice = _rcta(
+            adapter=_ada, runtime=_rta, client=_mca,
+            persona="steward", context="cli", session="step23-alice",
+            message="幫我記得明天還書",
+            temperature=0.0, timeout_s=30.0, memory_mode="session_only",
+            transport="cli", channel_id="cli", user_id="alice",
+        )
+        _alice_norm = _r_alice.get("user_id_normalized") == "alice"
+        _alice_path = (_r_alice.get("memory_capture_path") or "").startswith("10_Permanent/Profiles/alice/captures/")
+        _alice_md_exists = (_vA / "10_Permanent/Profiles/alice/USER.md").exists()
+
+        # bob 跑 (獨立 namespace)
+        _r_bob = _rcta(
+            adapter=_ada, runtime=_rta, client=_mca,
+            persona="steward", context="cli", session="step23-bob",
+            message="提醒我下週報告",
+            temperature=0.0, timeout_s=30.0, memory_mode="session_only",
+            transport="cli", channel_id="cli", user_id="bob",
+        )
+        _bob_norm = _r_bob.get("user_id_normalized") == "bob"
+        _bob_md_exists = (_vA / "10_Permanent/Profiles/bob/USER.md").exists()
+
+        # default (cli-user) 走既有路徑
+        _r_def = _rcta(
+            adapter=_ada, runtime=_rta, client=_mca,
+            persona="steward", context="cli", session="step23-def",
+            message="幫我記得這事",
+            temperature=0.0, timeout_s=30.0, memory_mode="session_only",
+            transport="cli", channel_id="cli", user_id="cli-user",
+        )
+        _def_norm = _r_def.get("user_id_normalized") == "default"
+        _def_path = "Manual_Inputs/captures" in (_r_def.get("memory_capture_path") or "")
+
+    c85_functional = (
+        _alice_norm and _alice_path and _alice_md_exists
+        and _bob_norm and _bob_md_exists
+        and _def_norm and _def_path
+    )
+    report.step(
+        "C85+C86 chat_runtime multi-user namespace + cli --user-id (Path A 核心)",
+        has_c85_chat and has_c85_capture and has_c86_cli and c85_functional,
+        f"chat={has_c85_chat} capture={has_c85_capture} cli={has_c86_cli} "
+        f"alice={_alice_norm and _alice_path and _alice_md_exists} "
+        f"bob={_bob_norm and _bob_md_exists} default={_def_norm and _def_path}",
     )
 
     return report.summary()

@@ -63,9 +63,10 @@ def _dump_yaml(payload: dict[str, Any]) -> str:
 def _default_payload() -> dict[str, Any]:
     now = _now_iso()
     return {
-        # R16 C68: schema_version 1 → 2 (加 memory_capture_enabled capability,
-        # 對齊 MISSION §3.3 對話驅動雙向投餵 + V2_Round15 規格 §5.2)
-        "schema_version": 2,
+        # R18 C83: schema_version 2 → 3 (加 user_namespace_enabled capability,
+        # 對齊 V2_Round15 §9 multi-user identity 規格 + MISSION §3.3 雙向投餵).
+        # 既有 schema_version=2 (R16 C68 加 memory_capture_enabled) 也保留.
+        "schema_version": 3,
         "description": "人格治理策略：監督關係 + 工具能力。",
         "defaults": {
             "supervision": {
@@ -81,6 +82,11 @@ def _default_payload() -> dict[str, Any]:
                 # R16 C68: memory_capture 跟 tools_enabled 獨立, 預設 True 即使
                 # tools_disabled persona 也能「記住記憶提醒」(對齊規格 §5.2 D2 拍板)
                 "memory_capture_enabled": True,
+                # R18 C83: user_namespace 多用戶身份隔離, 預設 True 開啟自動拆 namespace
+                # (Discord user_id → Profiles/<id>/USER.md + captures/ 私有).
+                # tools_disabled persona 也能 user_namespace=True (彼此獨立). 對齊 §3.3
+                # 雙向投餵但每個 user 有自己的 Manual_Inputs / captures.
+                "user_namespace_enabled": True,
             },
         },
         "first_persona_defaults": {
@@ -90,6 +96,7 @@ def _default_payload() -> dict[str, Any]:
                 "shell_enabled": True,
                 "persona_management_enabled": True,
                 "memory_capture_enabled": True,
+                "user_namespace_enabled": True,
             }
         },
         "persona_overrides": {
@@ -106,6 +113,7 @@ def _default_payload() -> dict[str, Any]:
                     "shell_enabled": True,
                     "persona_management_enabled": True,
                     "memory_capture_enabled": True,
+                    "user_namespace_enabled": True,
                 },
                 "source": "system_core",
                 "created_at": now,
@@ -142,6 +150,11 @@ def _normalize_capabilities(raw: Any, fallback: dict[str, Any]) -> dict[str, boo
         "shell_enabled": bool(data.get("shell_enabled", fallback.get("shell_enabled", False))),
         "persona_management_enabled": bool(
             data.get("persona_management_enabled", fallback.get("persona_management_enabled", False))
+        ),
+        # R18 C83: user_namespace_enabled — backward-compat default True
+        # (舊 schema v2 vault 升級時自動補 True). 對齊 V2_Round15 §9 multi-user 拍板.
+        "user_namespace_enabled": bool(
+            data.get("user_namespace_enabled", fallback.get("user_namespace_enabled", True))
         ),
         # R16 C68: memory_capture_enabled — backward-compat default True 即使 raw
         # / fallback 兩邊都沒這欄位 (舊 schema_version=1 vault 升級時自動補 True).

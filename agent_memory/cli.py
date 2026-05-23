@@ -774,6 +774,11 @@ def _build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--context", default="cli", help="Conversation context id.")
     chat.add_argument("--session", default="default", help="Session id.")
     chat.add_argument(
+        "--user-id",
+        default="",
+        help="R18 C86 — multi-user identity. CLI 直接帶 alias (alice/bob), Discord 走 transport_ingest 自動填. 空字串 → default user 沿用既有 USER.md.",
+    )
+    chat.add_argument(
         "--dialogue-mode",
         "--mode",
         dest="dialogue_mode",
@@ -3101,13 +3106,18 @@ def _cmd_chat(args: argparse.Namespace) -> int:
     if not message:
         raise ValueError("message 銝?箇征")
 
+    # R18 C86: --user-id 帶入 payload, 預設 "cli-user" (對齊既有 CLI 行為, default user namespace).
+    # 對齊 V2_Round15 §9 multi-user identity 規格 + 拍板 #4 USER.md 保留:
+    #   - 沒帶 --user-id → "cli-user" (對齊既有, default 走 Profiles/USER.md)
+    #   - 帶 --user-id alice → "alice" (走 Profiles/alice/USER.md namespace 子腦)
+    _cli_user_id = str(getattr(args, "user_id", "") or "").strip() or "cli-user"
     payload: dict[str, Any] = {
         # Keep multiple common text keys so transport-specific parsers
         # (discord/content, generic/message,text) can all resolve the turn.
         "message": message,
         "text": message,
         "content": message,
-        "user_id": "cli-user",
+        "user_id": _cli_user_id,
     }
     if channel_id:
         payload["channel_id"] = channel_id
