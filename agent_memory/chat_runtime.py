@@ -31,6 +31,58 @@ def _tail_excerpt(text: str, *, max_chars: int = 3000) -> str:
     return compact[-max_chars:]
 
 
+def _two_sided_excerpt(
+    text: str,
+    *,
+    max_chars: int = 3000,
+    head_turns: int = 2,
+    turn_marker: str = "\n## ",
+    separator: str = "\n\n...(中段省略以保留會議開場與當前討論)...\n\n",
+) -> str:
+    """R19 P1-b C92 — shared-channel history 兩端保留切片.
+
+    Codex 第 30b 觀察: 5 persona × 30 turn 會議, shared_history 從 Turn 2
+    起即達 cap 一定截掉 Turn 1-N 共識/設定. 改保留首 head_turns 個 turn
+    (通常含會議開場 + 初始角色設定 + 主軸共識) + 末尾直到 cap (當前討論)，
+    中段省略。
+
+    Turn boundary 由 turn_marker 偵測 (shared-channel log format: '\\n## ISO\\n').
+    Fallback: 若 turn boundary 不夠 (< head_turns+1 個 marker), 退回單純
+    末尾切片 (`_tail_excerpt` 行為).
+    """
+    compact = text.strip()
+    if len(compact) <= max_chars:
+        return compact
+
+    # 找前 (head_turns + 1) 個 marker; 第 (head_turns + 1) 個位置之前 = head 段結尾
+    pos = 0
+    marker_positions: list[int] = []
+    while len(marker_positions) <= head_turns:
+        idx = compact.find(turn_marker, pos)
+        if idx == -1:
+            break
+        marker_positions.append(idx)
+        pos = idx + len(turn_marker)
+
+    if len(marker_positions) < head_turns + 1:
+        # turn boundary 不夠 → fallback 單純 tail
+        return compact[-max_chars:]
+
+    head_end = marker_positions[head_turns]
+    head_part = compact[:head_end].rstrip()
+    head_len = len(head_part)
+    sep_len = len(separator)
+
+    # head 太大會吃掉 tail; 保證 tail ≥ 200 chars 否則 fallback tail-only
+    min_tail = 200
+    if max_chars - head_len - sep_len < min_tail:
+        return compact[-max_chars:]
+
+    tail_budget = max_chars - head_len - sep_len
+    tail_part = compact[-tail_budget:].lstrip()
+    return head_part + separator + tail_part
+
+
 def _safe_snapshot(runtime: MemoryRuntime) -> str:
     try:
         return runtime.frozen_snapshot()
@@ -169,16 +221,19 @@ def run_chat_turn(
         gap_resolved = {}
 
     # R12 C45: prompt budget (Codex LLM-002/LLM-003 GAP — local 4096-token 多 session 第 6 回爆窗)
+    # R19 P1-b C92: shared_history 1200 → 3000 + 兩端保留切片 (Codex 第 30b 5 persona×30 turn
+    #   會議 Turn 2 起即截斷修); 走 paid fallback (deepseek-v4-pro / 32k token) 時 budget 充裕,
+    #   3000 + memory 3000 = ~4k token 仍在安全範圍; 本地小模型若回歸需 D33 重新評估.
     # 對應 Claude_驗收批次A §A2「先做 token budget, 再決定注入 cross_session/history/shared 的量」.
     # 各段獨立 cap, 不重構整個 system_prompt 組裝:
     #   - history_tail   : 2400 chars (保留, 本 session 連續性最重要)
     #   - cross_session  : 800 chars  (砍 1/3, 從 2400; LLM-003 主要 token 爆源)
-    #   - shared_history : 1200 chars (砍 1/2, 從 2400)
+    #   - shared_history : 3000 chars (R19 提升 + 兩端保留: 首 2 turn + 末尾)
     #   - memory_context : 動態 RAG 後 cap 3000 chars (避免單回 hit 過多)
     # 中文 ~ 1.5 chars/token, local 4096 token model 留 ~6500 chars budget for system prompt.
     HISTORY_TAIL_CAP = 2400
     CROSS_SESSION_CAP = 800
-    SHARED_HISTORY_CAP = 1200
+    SHARED_HISTORY_CAP = 3000
     MEMORY_CONTEXT_CAP = 3000
 
     hist_path = session_note_path(
@@ -237,7 +292,13 @@ def run_chat_turn(
             cross_session_paths = list(cross_ctx.get("session_paths", []))
     except Exception:  # noqa: BLE001
         cross_session_paths = []
-    shared_history = _tail_excerpt(str(shared_channel_history or ""), max_chars=SHARED_HISTORY_CAP)
+    # R19 P1-b C92: 改用 _two_sided_excerpt 保留首 2 turn (會議開場/初始共識) + 末尾 (當前討論);
+    # 中段被切掉時加省略 separator 提示 LLM. Fallback 仍是單純末尾切片 (turn boundary 不夠時).
+    shared_history = _two_sided_excerpt(
+        str(shared_channel_history or ""),
+        max_chars=SHARED_HISTORY_CAP,
+        head_turns=2,
+    )
     if shared_history:
         system_prompt += "\n以下是共通頻道近期摘錄（跨角色共享）：\n" + shared_history + "\n"
 

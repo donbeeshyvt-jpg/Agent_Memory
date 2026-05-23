@@ -385,7 +385,9 @@ def run_transport_event(
                 shared_note = adapter.read_note(shared_path)
                 if shared_note is not None:
                     text = shared_note.body.strip()
-                    shared_channel_history = text[-2400:] if len(text) > 2400 else text
+                    # R19 P1-b C92: 預切 2400 → 8000 給 chat_runtime _two_sided_excerpt 足夠原料
+                    # (找首 head_turns + tail 共 3000 chars). 真正注入 prompt 仍由 chat_runtime 切.
+                    shared_channel_history = text[-8000:] if len(text) > 8000 else text
         except Exception:  # noqa: BLE001
             shared_channel_history = ""
 

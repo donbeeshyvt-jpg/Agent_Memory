@@ -893,17 +893,17 @@ def run_simulation(vault_root: Path, report: Report) -> int:
     )
 
     # 13.3 — C45 cross_session 預設 max_total_chars 從 chat_runtime 傳入 800
-    # 直接驗 chat_runtime module 內常數
+    # 直接驗 chat_runtime module 內常數 (R19 C92 SHARED_HISTORY_CAP 1200 → 3000 升級)
     import agent_memory.chat_runtime as _crt
     crt_src = Path(_crt.__file__).read_text(encoding="utf-8")
     has_caps = all(
         s in crt_src
-        for s in ("HISTORY_TAIL_CAP = 2400", "CROSS_SESSION_CAP = 800", "SHARED_HISTORY_CAP = 1200", "MEMORY_CONTEXT_CAP = 3000")
+        for s in ("HISTORY_TAIL_CAP = 2400", "CROSS_SESSION_CAP = 800", "SHARED_HISTORY_CAP = 3000", "MEMORY_CONTEXT_CAP = 3000")
     )
     report.step(
-        "C45 chat_runtime 四個 prompt budget 常數都在",
+        "C45 chat_runtime 四個 prompt budget 常數都在 (R19 C92 SHARED 1200→3000)",
         has_caps,
-        f"caps_check={has_caps} (HISTORY 2400 / CROSS 800 / SHARED 1200 / MEMORY 3000)",
+        f"caps_check={has_caps} (HISTORY 2400 / CROSS 800 / SHARED 3000 / MEMORY 3000)",
     )
 
     # 13.4 — C46 _LLM_PRESET_MAP 含 7 preset
