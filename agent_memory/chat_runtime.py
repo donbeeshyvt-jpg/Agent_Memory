@@ -746,10 +746,14 @@ def run_chat_turn(
         )
         lower_raw = raw_response_text.lower()
         had_fake_claim_when_disabled = any(kw.lower() in lower_raw for kw in _TOOLS_DISABLED_FAKE_CLAIM_KW)
-        # R14.3 → R14.6 regex pattern:
+        # R14.3 → R14.6 → R19.1 C96 regex pattern:
         # - regex 4 後綴 R14.6 收斂: 拿掉普通名詞「檔/文件/程式/筆記/file/note」,
         #   只保留 file ext + vault path prefix (避免「撰寫程式碼」「建立筆記」誤觸發)
         # - regex 4 距離 R14.6 從 .{0,5} 擴到 .{0,10} (抓「建立一個 test.md」)
+        # - regex 4 R19.1 C96: 加第一人稱完成式 prefix guard (Codex 第 31 輪 R19 驗收
+        #   advisor Turn 27 false positive 修): 「修復過程與結果寫入 70_Active_Plans/...」
+        #   是 advisor advisory 用法不該 trigger; 加 (我[已也]|已經?|現已|為您|幫您|...)
+        #   prefix 才算第一人稱「宣稱已做」.
         # - regex 6 R14.6 新加: 「(將|要)(在|到)...動詞...(ext|path)」
         #   抓「將在 Vault 中建立 test.md」「準備在 70_Active_Plans/ 目錄下建立 README」
         _FAKE_CLAIM_PATTERNS = _re_c57.compile(
@@ -762,8 +766,13 @@ def run_chat_turn(
             # 3. 「(把|將) <內容> 動詞 到」— 「把筆記儲存到...」「將內容寫到...」
             r"(把|將).{0,30}(儲存|寫入|寫|存|放|建立|新增|產生|生成|保存)\s*到"
             r"|"
-            # 4. R14.6 收斂: 動詞 + (ext|path prefix), 拿掉普通名詞後綴避誤觸發
-            r"(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存).{0,10}(\.md|\.py|\.txt|10_|11_|70_|80_|90_|_Permanent|_Active_Plans|_Manual)"
+            # 4. R14.6 + R19.1 C96: 第一人稱完成式 prefix + 動詞 + (ext|path prefix).
+            #    R19.1 加 prefix guard: 必須是「我已/我也/已/已經/現已/為您/為你/幫您/幫你/
+            #    系統已/本回合已」第一人稱完成式 trigger, 不再單看「動詞+path」(advisor
+            #    numbered list advisory 用法不該 trigger, Codex 第 31 輪 Turn 27 修).
+            r"(我[已也]|已經?|現已|為(您|你)|幫(您|你)|系統已|本回合已).{0,5}"
+            r"(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存).{0,10}"
+            r"(\.md|\.py|\.txt|10_|11_|70_|80_|90_|_Permanent|_Active_Plans|_Manual)"
             r"|"
             # 5. 「正在/現在 + 動詞」
             r"(正在|現在).{0,5}(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存)"
