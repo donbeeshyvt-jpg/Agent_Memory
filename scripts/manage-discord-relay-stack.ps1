@@ -209,8 +209,18 @@ function Build-SpecsFromConfig {
     # PS5.1 從 PSCustomObject property 抓單元素陣列時會解包成單一物件
     # 用 @(...) 強制當成陣列，避免 [System.Collections.IEnumerable] 判斷誤觸發
     $relayNodes = @(Get-OptionalValue -Source $Config -Name "relays" -Default @())
+    # R18 C87 (Codex 第 30b 卡關修補): backward-compat 接受 `roles` 別名為 `relays`.
+    # Codex 寫 local.json 時用了 `roles` schema, 對齊既有 sample.json `relays` 格式
+    # 自動轉, 兩種 schema 都吃 (避免 Codex / 使用者再踩同坑).
     if ($relayNodes.Count -eq 0) {
-        throw "config.relays must contain at least one relay (got empty array)."
+        $roleNodes = @(Get-OptionalValue -Source $Config -Name "roles" -Default @())
+        if ($roleNodes.Count -gt 0) {
+            Write-Host "[INFO] config 用了舊 'roles' 別名, 自動當 'relays' 處理 (R18 C87 backward-compat)" -ForegroundColor Yellow
+            $relayNodes = $roleNodes
+        }
+    }
+    if ($relayNodes.Count -eq 0) {
+        throw "config.relays (或 roles 別名) must contain at least one relay (got empty array)."
     }
     $specs = New-Object System.Collections.ArrayList
     foreach ($relayNode in $relayNodes) {
