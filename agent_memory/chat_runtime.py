@@ -757,8 +757,11 @@ def run_chat_turn(
         # - regex 6 R14.6 新加: 「(將|要)(在|到)...動詞...(ext|path)」
         #   抓「將在 Vault 中建立 test.md」「準備在 70_Active_Plans/ 目錄下建立 README」
         _FAKE_CLAIM_PATTERNS = _re_c57.compile(
-            # 1. 「我[已也會將要來] ... 動詞」 — 完成/未來/現在式 intent
-            r"我[已也會將要來].{0,10}(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存)"
+            # 1. 「我[已也] ... 動詞」 — 只保留完成式 prefix
+            # R19.2 C99: 砍「會將要來」未來式分支 (Codex 第 32 輪 product/advisor advisory tone
+            #   「我將建立 X」「我會把 Y 寫入」屬 multi-persona meeting 合理角色分工, 不算假宣稱).
+            # 完成式「我已寫入」「我也建立」才是真正「宣稱已執行」, 仍 trigger.
+            r"我[已也].{0,10}(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存)"
             r"|"
             # 2. 「為您/為你/幫您/幫你/替您/替你 ... 動詞」
             r"(為|幫|替)(您|你).{0,10}(生成|建立|寫入|儲存|產生|新增|完成|存|寫|放|保存)"
@@ -786,12 +789,16 @@ def run_chat_turn(
         had_tool_attempt_when_disabled = had_tool_token or had_fake_claim_when_disabled or had_fake_claim_pattern
 
         # Step 4: 任何意圖偵測 → 一律加 disclaimer
+        # R19.2 C98: disclaimer 文案改寫 — 移除「已建立/已寫入/已生成/已準備/為您建立」keyword
+        # 字樣 (Codex 第 32 輪 cascading 修): 文案自己含 detector keyword 會寫進 shared_history,
+        # 下 turn 別 persona 看到複述 → detector 再 trigger → 級聯污染. 新文案不含具體
+        # keyword, 用泛稱「工具相關宣告」.
         if had_tool_attempt_when_disabled:
             response_text = response_text.rstrip() + (
                 "\n\n⚠️ **tools_disabled persona**：偵測到模型嘗試輸出工具呼叫片段或宣稱已執行，"
                 "**未實際執行任何工具**（此 persona governance.tools_enabled=False）。"
-                "上文若提到「已建立 / 已寫入 / 已生成 / 已準備 / 為您建立」等皆為模型推測，"
-                "請以實際 vault 檔案為準。如需工具能力請切換到 tools_enabled persona（例如 steward / coder）。"
+                "上文工具相關宣告皆為模型推測語氣，請以實際 vault 檔案為準。"
+                "如需工具能力請切換到 tools_enabled persona（例如 steward / coder）。"
             )
 
     # R13 C48: LLM 幻覺假宣稱 disclaimer (Codex 第 8 輪 TOOL-002/004 FAIL).
