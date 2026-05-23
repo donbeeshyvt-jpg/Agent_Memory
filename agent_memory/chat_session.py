@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import datetime, timezone
 from typing import Tuple
 
 from agent_memory.types import Frontmatter, MemoryNote, MemorySource, MemoryType
 from agent_memory.vault import ObsidianVaultAdapter
+
+# R19 P2-b C94: 壓測時 set 此 env var (任意字串 sanitize 後當 session_id) 隔離
+# shared-channel log 檔. 沒 set 就用 "shared" 維持向後兼容.
+_TEST_RUN_ID_ENV = "AGENT_MEMORY_TEST_RUN_ID"
 
 
 _SAFE_COMPONENT_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -60,11 +65,19 @@ def shared_channel_note_path(
     transport_safe = sanitize_component(transport, fallback="transport").lower()
     channel_safe = sanitize_component(channel_id, fallback="channel")
     context_id = f"{transport_safe}-{channel_safe}"
+    # R19 P2-b C94: AGENT_MEMORY_TEST_RUN_ID 設了 → session_id 用 sanitized run_id
+    # 隔離壓測產出; 沒設 → "shared" 維持向後兼容 (生產日常 session).
+    _test_run_raw = (os.environ.get(_TEST_RUN_ID_ENV) or "").strip()
+    session_id = (
+        sanitize_component(_test_run_raw, fallback="shared")
+        if _test_run_raw
+        else "shared"
+    )
     return session_note_path(
         adapter,
         persona_id="shared-channel",
         context_id=context_id,
-        session_id="shared",
+        session_id=session_id,
         date_str=date_str,
     )
 
