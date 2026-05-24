@@ -2776,6 +2776,81 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         + (f" err={_init_err}" if _init_raised else ""),
     )
 
+    # ─── Step 29 (R20.2 C108): _safe_init_with_recovery multi-pass loop (Codex 第 38 輪 R20 P2 A2 lock retry 修) ─
+    report.section("Step 29 (R20.2 C108): _safe_init_with_recovery multi-pass loop + sidecar truncate (Codex 第 38 輪 R20 P2 A2 lock retry 修)")
+
+    # source check: R20.2 C108 結構正確 (重新 import module 避開 step 28 變數 reassign)
+    import agent_memory.search.manager as _sm_mod_c108
+    _sm_src_c108 = Path(_sm_mod_c108.__file__).read_text(encoding="utf-8")
+    has_c108_tag = "R20.2 C108" in _sm_src_c108
+    has_c108_method = "def _safe_init_with_recovery" in _sm_src_c108
+    has_c108_multi_pass = "for pass_idx in range(3)" in _sm_src_c108
+    has_c108_transient_check = "transient_signals" in _sm_src_c108
+    has_c108_sidecar_truncate = "truncate sidecar 兜底" in _sm_src_c108
+
+    # functional: mock _init_db 序列模擬「corrupt → recovery → lock retry → success」
+    # 不依賴真實 lock 環境, 純驗 multi-pass loop 邏輯
+    from unittest.mock import patch as _patch_c108
+    import sqlite3 as _sq3_c108
+    from agent_memory.search.manager import MemorySearchManager as _MSM_c108
+
+    _init_calls_c108 = {"n": 0}
+    _recover_calls_c108 = {"n": 0}
+
+    def _flaky_init_c108(self):
+        _init_calls_c108["n"] += 1
+        if _init_calls_c108["n"] == 1:
+            raise _sq3_c108.DatabaseError("malformed database schema (notes_vec) - incomplete input")
+        if _init_calls_c108["n"] == 2:
+            raise _sq3_c108.OperationalError("database is locked")
+        # 3rd success (return None / 正常結束)
+        return None
+
+    def _noop_recover_c108(self):
+        _recover_calls_c108["n"] += 1
+
+    c108_init_raised = False
+    c108_init_err: str = ""
+    _td_c108 = tempfile.mkdtemp(prefix="r20_c108_")
+    try:
+        _v_c108 = Path(_td_c108) / "vault"
+        _v_c108.mkdir(parents=True)
+        from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA_c108
+        _a_c108 = _OVA_c108(_v_c108)
+        _a_c108.ensure_skeleton()
+        # mock _init_db (3 次序列) + _recover_index_db (no-op 避免動真 db)
+        with _patch_c108.object(_MSM_c108, "_init_db", new=_flaky_init_c108), \
+             _patch_c108.object(_MSM_c108, "_recover_index_db", new=_noop_recover_c108):
+            try:
+                _sm_test_c108 = _MSM_c108(_a_c108)
+            except Exception as _e:  # noqa: BLE001
+                c108_init_raised = True
+                c108_init_err = type(_e).__name__ + ": " + str(_e)[:80]
+        _sm_test_c108 = None
+    finally:
+        shutil.rmtree(_td_c108, ignore_errors=True)
+
+    # 驗證 multi-pass 邏輯:
+    # - _init_db 被 call 3 次 (pass1 拋 corrupt, pass2 拋 lock, pass3 成功)
+    # - _recover_index_db 被 call 1 次 (pass1 corrupt 後觸發, pass2 lock 不觸發)
+    # - init 整體不拋 (pass3 成功 return)
+    c108_init_3x = _init_calls_c108["n"] == 3
+    c108_recover_1x = _recover_calls_c108["n"] == 1
+    c108_no_raise = not c108_init_raised
+
+    report.step(
+        "C108 _safe_init_with_recovery multi-pass loop + sidecar truncate (R20.2, Codex 第 38 輪 lock retry 修)",
+        has_c108_tag and has_c108_method and has_c108_multi_pass and has_c108_transient_check
+        and has_c108_sidecar_truncate
+        and c108_init_3x and c108_recover_1x and c108_no_raise,
+        f"tag={has_c108_tag} method={has_c108_method} loop={has_c108_multi_pass} "
+        f"transient={has_c108_transient_check} sidecar_truncate={has_c108_sidecar_truncate} "
+        f"init_3x={c108_init_3x}({_init_calls_c108['n']}) "
+        f"recover_1x={c108_recover_1x}({_recover_calls_c108['n']}) "
+        f"no_raise={c108_no_raise}"
+        + (f" err={c108_init_err}" if c108_init_raised else ""),
+    )
+
     return report.summary()
 
 

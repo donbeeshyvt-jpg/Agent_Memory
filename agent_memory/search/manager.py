@@ -183,37 +183,13 @@ class MemorySearchManager:
         self._embedding_client = EmbeddingClient(self.adapter.vault_root)
         self._provider_embedding_disabled = False
         self._embed_signature = self._build_embed_signature()
-        try:
-            self._init_db()
-        except sqlite3.DatabaseError as exc:
-            lowered = str(exc).lower()
-            # R20.1 C106: 擴展 corrupt signal 白名單 (Codex 第 37 輪 R20 P2 A2 修).
-            # 舊版只認 'disk i/o error' / 'database disk image is malformed' 兩條,
-            # Codex 模擬「schema 損壞」拋 'malformed database schema (notes_vec) -
-            # incomplete input' 沒命中白名單 → 沒走 _recover_index_db → exception
-            # 往外拋. 'malformed' substring 同時抓 'database disk image is malformed' +
-            # 'malformed database schema' + 'malformed disk image' 變體; 加 4 種
-            # corrupt signal cover 更廣的 sqlite 損壞模式. transient lock/busy 仍 raise.
-            corrupt_signals = (
-                "disk i/o error",
-                "malformed",
-                "file is encrypted",
-                "not a database",
-                "incomplete input",
-                "database is corrupt",
-            )
-            if any(s in lowered for s in corrupt_signals):
-                # R20.1 C106: Force release sqlite3 fd before recovery (Windows
-                # lock workaround). Windows 上 sqlite3.connect 失敗時 fd 釋放可能
-                # 延遲, 讓 _recover_index_db 內 db_path.replace 撞 PermissionError.
-                # gc + 短 sleep 讓 fd 進 release queue 再 recover.
-                import gc as _gc_init
-                import time as _time_init
-                _gc_init.collect()
-                _time_init.sleep(0.1)
-                self._recover_index_db()
-            else:
-                raise
+        # R20.2 C108: init 改用 _safe_init_with_recovery 3-pass loop
+        # (R20.1 是 single-pass: corrupt 抓到一次 recovery 就放; 第 38 輪 Codex
+        # 模擬「壞 schema + 殘留 .wal lock」場景, recovery 後新 init 撞 lock 直接
+        # 拋, schema 沒建完 → 後續 search 拋 'no such table: notes_fts'. R20.2
+        # 改 multi-pass: corrupt 走 recovery, transient lock 走 wait+retry,
+        # 各 pass 之間 gc+sleep 讓 fd 釋放).
+        self._safe_init_with_recovery()
 
     def reindex_all(
         self,
@@ -729,6 +705,62 @@ class MemorySearchManager:
             lines.extend(["- (index is empty)", ""])
         return "\n".join(lines)
 
+    def _safe_init_with_recovery(self) -> None:
+        """R20.2 C108: 3-pass init with corrupt-recovery + transient lock retry.
+
+        Codex 第 38 輪 R20 P2 A2 觀察:
+          - 壞 db schema → corrupt 抓到走 recovery → 新 _init_db 撞殘留 .wal lock
+            (`OperationalError: database is locked`)
+          - 沒人接這個 lock → schema 沒建完 → 後續 search 拋
+            `OperationalError: no such table: notes_fts`
+
+        Multi-pass loop 邏輯 (每 pass 之間 gc+sleep 讓 sqlite3 fd 釋放):
+          - Pass N corrupt signal → gc+sleep(0.1) + _recover_index_db
+            (recovery 內 _init_db 失敗的話, 下 pass 接 lock retry)
+          - Pass N transient (locked/busy) → gc+sleep(exponential 0.3→2.0s) retry
+          - 非 corrupt 非 transient → 直接 raise
+          - 3 pass 都失敗 → raise last error
+        """
+        import gc as _gc_init
+        import time as _time_init
+        transient_signals = ("locked", "busy")
+        # R20.1 C106 corrupt 白名單沿用 ('malformed' substring cover 變體 + 6 條 sqlite corrupt)
+        corrupt_signals = (
+            "disk i/o error",
+            "malformed",
+            "file is encrypted",
+            "not a database",
+            "incomplete input",
+            "database is corrupt",
+        )
+        last_err: sqlite3.DatabaseError | None = None
+        for pass_idx in range(3):
+            try:
+                self._init_db()
+                return  # success
+            except sqlite3.DatabaseError as exc:
+                last_err = exc
+                lowered = str(exc).lower()
+                is_corrupt = any(s in lowered for s in corrupt_signals)
+                is_transient = any(s in lowered for s in transient_signals)
+                if is_transient and not is_corrupt:
+                    # lock — wait + retry (不該觸發 recovery, 等就好)
+                    _gc_init.collect()
+                    _time_init.sleep(min(0.3 * (2 ** pass_idx), 2.0))
+                    continue
+                if is_corrupt:
+                    _gc_init.collect()
+                    _time_init.sleep(0.1)
+                    try:
+                        self._recover_index_db()
+                    except sqlite3.DatabaseError:
+                        # recovery 內 _init_db 失敗 (e.g. 殘留 lock) → 下 pass 接 retry
+                        pass
+                    continue
+                raise  # 非 corrupt 非 transient — 真錯誤, 不該吞
+        if last_err is not None:
+            raise last_err
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
@@ -798,7 +830,14 @@ class MemorySearchManager:
                 try:
                     sidecar.unlink(missing_ok=True)
                 except OSError:
-                    pass  # sidecar cleanup best-effort
+                    # R20.2 C108: truncate sidecar 兜底 (Windows lock-safer than unlink).
+                    # 殘留 .wal 持有 lock 是第 38 輪 A2 FAIL 主因, 必須清乾淨避免新 _init_db
+                    # 撞 'database is locked'. unlink 失敗就 open 'wb' truncate 到 0 bytes.
+                    try:
+                        with open(sidecar, "wb"):
+                            pass
+                    except OSError:
+                        pass  # 真不能寫只能交給 _safe_init_with_recovery 的下一 pass 處理
         self._init_db()
 
     def _init_db(self) -> None:
