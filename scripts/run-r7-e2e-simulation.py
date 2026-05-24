@@ -2651,6 +2651,43 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"tag={c100_has_tag} no_old={c100_no_old} new={c100_has_new}",
     )
 
+    # 27.4 — C104 fallback strip-clean 邊角抑制 (Codex 第 34 輪 Turn 8 product gemma fallback 修)
+    c104_has_tag = "R19.4 C104" in _crt_src_c98
+    c104_has_var = "raw_only_tool_token_clean_after_strip" in _crt_src_c98
+    c104_has_negate = "not raw_only_tool_token_clean_after_strip" in _crt_src_c98
+
+    # functional smoke: 用 isolated function 重現抑制邏輯
+    def _simulate_suppress(had_tool_token, had_fake_kw, had_fake_pat, resp_text):
+        """重現 chat_runtime R19.4 抑制條件 (隔離 unit, 不 invoke chat_runtime)."""
+        return (
+            had_tool_token
+            and not had_fake_kw
+            and not had_fake_pat
+            and "[TOOL]" not in resp_text.upper()
+        )
+
+    # 4 smoke cases
+    # case A (gemma fallback 邊角 — Turn 8 case): raw [TOOL] + strip 乾淨 + 無 kw/pat → 應抑制
+    c104_a_gemma_clean = _simulate_suppress(True, False, False, "結論：R34 會議進入執行分派階段...") is True
+    # case B (keyword 真假宣稱): raw 含 keyword → 仍貼
+    c104_b_kw_still_show = _simulate_suppress(True, True, False, "結論：我已寫入 ...") is False
+    # case C (pattern 真假宣稱): raw 含 pattern → 仍貼
+    c104_c_pat_still_show = _simulate_suppress(False, False, True, "結論：為您建立 X.md ...") is False
+    # case D (strip 沒乾淨 [TOOL] 殘留): raw [TOOL] + strip 後仍 [TOOL] (格式異常) → 仍貼
+    c104_d_residual_still_show = _simulate_suppress(True, False, False, "結論[TOOL]memory{殘留}...") is False
+    # case E (無任何 trigger): 全 False → 抑制 (但這 case 在外層 had_tool_attempt_when_disabled 也是 False, 不進此 branch)
+    # 我們只關心: 「有 trigger 但被抑制」是 A; 其他都該照舊貼
+
+    c104_smoke_ok = c104_a_gemma_clean and c104_b_kw_still_show and c104_c_pat_still_show and c104_d_residual_still_show
+
+    report.step(
+        "C104 disclaimer 抑制 gemma fallback strip-clean 邊角 (R19.4, Codex 第 34 輪 Turn 8 product 修)",
+        c104_has_tag and c104_has_var and c104_has_negate and c104_smoke_ok,
+        f"tag={c104_has_tag} var={c104_has_var} negate={c104_has_negate} smoke={c104_smoke_ok} "
+        f"A_gemma_clean_suppressed={c104_a_gemma_clean} B_kw_still_show={c104_b_kw_still_show} "
+        f"C_pat_still_show={c104_c_pat_still_show} D_residual_still_show={c104_d_residual_still_show}",
+    )
+
     return report.summary()
 
 

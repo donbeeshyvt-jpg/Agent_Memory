@@ -788,14 +788,28 @@ def run_chat_turn(
         had_fake_claim_pattern = bool(_FAKE_CLAIM_PATTERNS.search(raw_response_text))
         had_tool_attempt_when_disabled = had_tool_token or had_fake_claim_when_disabled or had_fake_claim_pattern
 
-        # Step 4: 任何意圖偵測 → 一律加 disclaimer
+        # Step 4: 任何意圖偵測 → 一律加 disclaimer (R19.4 加抑制條件防 gemma fallback 邊角)
         # R19.2 C98 + R19.3 C102: disclaimer 文案避開 detector keyword 字樣斷污染環.
-        # R19.2 C98 改了後段「上文...推測語氣」, 但前段「宣稱已執行」漏改 — 「已執行」
-        # 在 _TOOLS_DISABLED_FAKE_CLAIM_KW 內, Codex 第 33 輪 Turn 9 design 仍命中 cascading.
-        # R19.3 C102 把「宣稱已執行」→「宣稱完成執行」拆掉「已」前綴, 不命中 keyword 也不
-        # 命中 pattern 1/4 (需「我[已也]」/「為您」等 prefix), 完成 disclaimer 文案的 cascading
-        # 隔離.
-        if had_tool_attempt_when_disabled:
+        # R19.4 C104: gemma fallback 邊角抑制 (Codex 第 34 輪 Turn 8 product 修).
+        #   情境: deepseek 報 "Unsupported content format: None" 回落 gemma-4-31b-it,
+        #         gemma 在 tools-disabled persona 仍輸出 [TOOL] block (對應 STATUS O1
+        #         「本機 gemma 不太遵守 [TOOL]...[/TOOL]」). strip_agent_tool_blocks
+        #         正確拿掉 [TOOL] block (unparsed_tool_attempts=0 表 parser 認可格式),
+        #         response 給使用者乾淨無 [TOOL]. 但 detector 跑在 raw_response_text
+        #         (strip 前) 仍看到 [TOOL] → had_tool_token=True → 觸發 disclaimer.
+        #   問題: 貼 disclaimer 給使用者沒 actionable 訊息 (他們看不到 [TOOL]),
+        #         反而困惑 + disclaimer 字串可能被下 turn LLM 看到複述.
+        #   修法: 抑制條件 raw_only_tool_token_clean_after_strip — raw 含 [TOOL]
+        #         但 strip 後 response_text 完全乾淨 + 沒 keyword/pattern → 不貼 disclaimer.
+        #         payload `tools_disabled_tool_attempt=True` 仍 set 給 telemetry / debugging
+        #         不漏 (記錄 raw 行為事實).
+        raw_only_tool_token_clean_after_strip = (
+            had_tool_token
+            and not had_fake_claim_when_disabled
+            and not had_fake_claim_pattern
+            and "[TOOL]" not in response_text.upper()
+        )
+        if had_tool_attempt_when_disabled and not raw_only_tool_token_clean_after_strip:
             response_text = response_text.rstrip() + (
                 "\n\n⚠️ **tools_disabled persona**：偵測到模型嘗試輸出工具呼叫片段或宣稱完成執行，"
                 "**未實際執行任何工具**（此 persona governance.tools_enabled=False）。"
