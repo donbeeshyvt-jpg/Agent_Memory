@@ -2688,6 +2688,94 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"C_pat_still_show={c104_c_pat_still_show} D_residual_still_show={c104_d_residual_still_show}",
     )
 
+    # ─── Step 28 (R20.1 C106): sqlite-index 損壞 recovery (Codex 第 37 輪 R20 P2 A2 修) ─
+    report.section("Step 28 (R20.1 C106): sqlite-index 損壞 recovery 觸發條件擴展 (Codex 第 37 輪 R20 P2 A2 修)")
+
+    # source: search/manager.py 含 R20.1 C106 標記 + 擴展 corrupt_signals 白名單
+    import agent_memory.search.manager as _sm_c106
+    _sm_src_c106 = Path(_sm_c106.__file__).read_text(encoding="utf-8")
+    has_c106_tag = "R20.1 C106" in _sm_src_c106
+    has_c106_whitelist = "corrupt_signals" in _sm_src_c106
+    # 確認 'malformed' substring 在白名單內 (cover 新發現的 schema 損壞)
+    has_c106_malformed = '"malformed"' in _sm_src_c106 or "'malformed'" in _sm_src_c106
+    # 確認新加 corrupt signals
+    has_c106_extras = all(
+        s in _sm_src_c106 for s in (
+            '"file is encrypted"',
+            '"not a database"',
+            '"incomplete input"',
+            '"database is corrupt"',
+        )
+    )
+
+    # functional smoke: 模擬 sqlite db schema 損壞 → MemorySearchManager init 應觸發 recovery
+    # Windows-aware: 手動 mkdtemp + shutil.rmtree(ignore_errors=True) 避開 sqlite3 fd
+    # 殘留導致 TemporaryDirectory 自動 cleanup 撞 WinError 267
+    from agent_memory.search.manager import MemorySearchManager as _MSM_c106
+    from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA_c106
+    import gc as _gc_c106
+    import time as _time_c106
+    _td_c106 = tempfile.mkdtemp(prefix="r20_c106_")
+    _init_raised = False
+    _init_err = ""
+    c106_init_no_raise = False
+    c106_backup_exists = False
+    c106_new_db_schema_ok = False
+    try:
+        _v_c106 = Path(_td_c106) / "vault"
+        _v_c106.mkdir(parents=True)
+        _a_c106 = _OVA_c106(_v_c106)
+        _a_c106.ensure_skeleton()
+        _ai_dir = _v_c106 / ".ai"
+        _ai_dir.mkdir(exist_ok=True)
+        _db_path = _ai_dir / "sqlite-index.db"
+        # 寫一個壞 magic + 內容 (非合法 sqlite db)
+        _db_path.write_bytes(b"NOT A VALID SQLITE DATABASE FILE\x00" * 50)
+
+        # init MemorySearchManager - R20.1 C106 之前會拋 DatabaseError, 之後應 graceful recover
+        try:
+            _sm_c106 = _MSM_c106(_a_c106)
+        except Exception as _e:  # noqa: BLE001
+            _init_raised = True
+            _init_err = type(_e).__name__ + ": " + str(_e)[:80]
+
+        c106_init_no_raise = not _init_raised
+
+        # 驗證 recovery backup 檔存在
+        _backups = list(_ai_dir.glob("sqlite-index.recovery-*.db"))
+        c106_backup_exists = len(_backups) >= 1
+
+        # 驗證新 db 可正常 open + 含 notes_meta table (重建後 schema)
+        if not _init_raised:
+            try:
+                import sqlite3 as _sq3_c106
+                _conn_v = _sq3_c106.connect(str(_db_path))
+                try:
+                    _conn_v.execute("SELECT * FROM notes_meta LIMIT 1")
+                    c106_new_db_schema_ok = True
+                finally:
+                    _conn_v.close()
+            except Exception:  # noqa: BLE001
+                c106_new_db_schema_ok = False
+
+        # 釋放 sqlite3 connection / sm 對 db 的 fd 持有, 避免 cleanup 撞 Windows lock
+        _sm_c106 = None
+        _gc_c106.collect()
+        _time_c106.sleep(0.2)
+    finally:
+        # ignore_errors 防 Windows sqlite3 fd 殘留導致 rmtree 拋 OSError 出 step 27 scope
+        shutil.rmtree(_td_c106, ignore_errors=True)
+
+    report.step(
+        "C106 sqlite-index 損壞 recovery 白名單擴展 (R20.1, Codex 第 37 輪 R20 P2 A2 修)",
+        has_c106_tag and has_c106_whitelist and has_c106_malformed and has_c106_extras
+        and c106_init_no_raise and c106_backup_exists and c106_new_db_schema_ok,
+        f"tag={has_c106_tag} whitelist={has_c106_whitelist} malformed={has_c106_malformed} "
+        f"extras={has_c106_extras} init_no_raise={c106_init_no_raise} "
+        f"backup_exists={c106_backup_exists} new_schema_ok={c106_new_db_schema_ok}"
+        + (f" err={_init_err}" if _init_raised else ""),
+    )
+
     return report.summary()
 
 

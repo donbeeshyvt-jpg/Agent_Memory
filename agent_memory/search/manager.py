@@ -187,7 +187,30 @@ class MemorySearchManager:
             self._init_db()
         except sqlite3.DatabaseError as exc:
             lowered = str(exc).lower()
-            if "disk i/o error" in lowered or "database disk image is malformed" in lowered:
+            # R20.1 C106: 擴展 corrupt signal 白名單 (Codex 第 37 輪 R20 P2 A2 修).
+            # 舊版只認 'disk i/o error' / 'database disk image is malformed' 兩條,
+            # Codex 模擬「schema 損壞」拋 'malformed database schema (notes_vec) -
+            # incomplete input' 沒命中白名單 → 沒走 _recover_index_db → exception
+            # 往外拋. 'malformed' substring 同時抓 'database disk image is malformed' +
+            # 'malformed database schema' + 'malformed disk image' 變體; 加 4 種
+            # corrupt signal cover 更廣的 sqlite 損壞模式. transient lock/busy 仍 raise.
+            corrupt_signals = (
+                "disk i/o error",
+                "malformed",
+                "file is encrypted",
+                "not a database",
+                "incomplete input",
+                "database is corrupt",
+            )
+            if any(s in lowered for s in corrupt_signals):
+                # R20.1 C106: Force release sqlite3 fd before recovery (Windows
+                # lock workaround). Windows 上 sqlite3.connect 失敗時 fd 釋放可能
+                # 延遲, 讓 _recover_index_db 內 db_path.replace 撞 PermissionError.
+                # gc + 短 sleep 讓 fd 進 release queue 再 recover.
+                import gc as _gc_init
+                import time as _time_init
+                _gc_init.collect()
+                _time_init.sleep(0.1)
                 self._recover_index_db()
             else:
                 raise
@@ -727,18 +750,55 @@ class MemorySearchManager:
         return conn
 
     def _recover_index_db(self) -> None:
+        # R20.1 C106: Windows file lock retry — corrupt sqlite db init 失敗時 fd
+        # 釋放可能延遲, db_path.replace 撞 PermissionError [WinError 32]. 加 6 次
+        # retry exponential backoff (跟 atomic.py 一致 pattern), 最後 fallback copy2+unlink
+        # best-effort (不讓 backup 失敗 block recovery).
+        import time as _time_recovery
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         backup = self.db_path.with_name(f"{self.db_path.stem}.recovery-{timestamp}{self.db_path.suffix}")
         if self.db_path.exists():
-            try:
-                self.db_path.replace(backup)
-            except OSError:
-                shutil.copy2(self.db_path, backup)
-                self.db_path.unlink(missing_ok=True)
+            replace_succeeded = False
+            last_err: OSError | None = None
+            for attempt in range(6):
+                try:
+                    self.db_path.replace(backup)
+                    replace_succeeded = True
+                    break
+                except OSError as exc:
+                    last_err = exc
+                    if attempt == 5:
+                        break
+                    _time_recovery.sleep(min(0.3 * (2 ** attempt), 2.0))
+            if not replace_succeeded:
+                # Final fallback: copy + unlink + truncate (recovery 不該因 backup 失敗 block)
+                try:
+                    shutil.copy2(self.db_path, backup)
+                except OSError:
+                    pass  # backup 失敗也繼續, recovery 主目標是重建 db
+                try:
+                    self.db_path.unlink(missing_ok=True)
+                except OSError:
+                    pass  # unlink 失敗下一步用 truncate
+                # R20.1 C106 — Windows lock 末路: 若 unlink 也失敗, truncate 到 0 bytes 讓
+                # sqlite3 視為 new empty db (open 'wb' 在 Windows 上比 unlink 更耐 lock).
+                if self.db_path.exists():
+                    for attempt in range(6):
+                        try:
+                            with open(self.db_path, "wb"):
+                                pass  # 0-byte file
+                            break
+                        except OSError:
+                            if attempt == 5:
+                                break
+                            _time_recovery.sleep(min(0.3 * (2 ** attempt), 2.0))
         for suffix in (".wal", ".shm"):
             sidecar = Path(str(self.db_path) + suffix)
             if sidecar.exists():
-                sidecar.unlink(missing_ok=True)
+                try:
+                    sidecar.unlink(missing_ok=True)
+                except OSError:
+                    pass  # sidecar cleanup best-effort
         self._init_db()
 
     def _init_db(self) -> None:
