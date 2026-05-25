@@ -438,6 +438,19 @@ class MemorySearchManager:
                     if self._fts_enabled
                     else self._search_rows_like(conn, cleaned_query, include_archived, fetch_limit)
                 )
+                # R21 C110 (A2): hybrid retrieve 合併 trigram FTS 結果提升 CJK 召回.
+                # Dedupe by path — unicode61 已命中的優先 (BM25 較準), trigram 補沒命中的 path.
+                if getattr(self, "_fts_trigram_enabled", False) and strategy_norm in ("fts", "hybrid"):
+                    trigram_rows = self._search_rows_fts_trigram(
+                        conn, cleaned_query, include_archived, fetch_limit
+                    )
+                    if trigram_rows:
+                        seen_paths = {str(r["path"]) for r in rows}
+                        for tri_row in trigram_rows:
+                            tri_path = str(tri_row["path"])
+                            if tri_path not in seen_paths:
+                                rows.append(tri_row)
+                                seen_paths.add(tri_path)
                 if strategy_norm == "hybrid" and not rows:
                     rows = self._vector_candidate_rows(conn, include_archived=include_archived, fetch_limit=fetch_limit * 6)
             if anchor_tokens:
@@ -885,25 +898,44 @@ class MemorySearchManager:
             if existing is not None:
                 sql = str(existing["sql"] or "").upper()
                 self._fts_enabled = "VIRTUAL TABLE" in sql and "FTS5" in sql
-                return
-
-            try:
-                conn.execute(
-                    "CREATE VIRTUAL TABLE notes_fts USING fts5(path, title, body, tags, tokenize='unicode61')"
-                )
-                self._fts_enabled = True
-            except sqlite3.OperationalError:
-                conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS notes_fts (
-                      path TEXT PRIMARY KEY,
-                      title TEXT NOT NULL,
-                      body TEXT NOT NULL,
-                      tags TEXT NOT NULL
+            else:
+                try:
+                    conn.execute(
+                        "CREATE VIRTUAL TABLE notes_fts USING fts5(path, title, body, tags, tokenize='unicode61')"
                     )
-                    """
-                )
-                self._fts_enabled = False
+                    self._fts_enabled = True
+                except sqlite3.OperationalError:
+                    conn.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS notes_fts (
+                          path TEXT PRIMARY KEY,
+                          title TEXT NOT NULL,
+                          body TEXT NOT NULL,
+                          tags TEXT NOT NULL
+                        )
+                        """
+                    )
+                    self._fts_enabled = False
+
+            # R21 C110 (A2): 加平行 notes_fts_trigram 表 (trigram tokenizer) 提升 CJK 召回.
+            # hermes-agent-core 參考: messages_fts_trigram USING fts5(tokenize='trigram') 對短詞/CJK 友善.
+            # 設計: 跟 notes_fts 平行 (同 4 columns), backward compat — 既有 db 自動補表,
+            #       不取代 unicode61 (兩個並用 + dedupe by path), reindex 同步寫.
+            existing_trigram = conn.execute(
+                "SELECT sql FROM sqlite_master WHERE name='notes_fts_trigram' AND type IN ('table', 'virtual table')"
+            ).fetchone()
+            if existing_trigram is not None:
+                sql_tri = str(existing_trigram["sql"] or "").upper()
+                self._fts_trigram_enabled = "VIRTUAL TABLE" in sql_tri and "FTS5" in sql_tri
+            else:
+                try:
+                    conn.execute(
+                        "CREATE VIRTUAL TABLE notes_fts_trigram USING fts5(path, title, body, tags, tokenize='trigram')"
+                    )
+                    self._fts_trigram_enabled = True
+                except sqlite3.OperationalError:
+                    # FTS5 trigram tokenizer 不可用 (sqlite version 太舊) → 降級不啟用
+                    self._fts_trigram_enabled = False
 
     def _load_retrieval_settings(self) -> dict[str, Any]:
         try:
@@ -1043,6 +1075,13 @@ class MemorySearchManager:
                 """,
                 (doc["path"], doc["title"], doc["body"], doc["tags"]),
             )
+        # R21 C110 (A2): trigram FTS 平行同步 INSERT (CJK 召回升級, 與 unicode61 並用)
+        if getattr(self, "_fts_trigram_enabled", False):
+            conn.execute("DELETE FROM notes_fts_trigram WHERE path = ?", (doc["path"],))
+            conn.execute(
+                "INSERT INTO notes_fts_trigram(path, title, body, tags) VALUES(?, ?, ?, ?)",
+                (doc["path"], doc["title"], doc["body"], doc["tags"]),
+            )
         conn.execute(
             """
             INSERT INTO notes_vec(path, embedding, updated, embed_version, embed_backend, embed_signature)
@@ -1067,6 +1106,9 @@ class MemorySearchManager:
     def _remove_path_in_tx(self, conn: sqlite3.Connection, path: str) -> None:
         conn.execute("DELETE FROM notes_meta WHERE path = ?", (path,))
         conn.execute("DELETE FROM notes_fts WHERE path = ?", (path,))
+        # R21 C110 (A2): trigram FTS 平行同步刪
+        if getattr(self, "_fts_trigram_enabled", False):
+            conn.execute("DELETE FROM notes_fts_trigram WHERE path = ?", (path,))
         conn.execute("DELETE FROM notes_vec WHERE path = ?", (path,))
 
     def _search_rows_fts(
@@ -1100,6 +1142,53 @@ class MemorySearchManager:
             """,
             (compiled, 1 if include_archived else 0, fetch_limit),
         ).fetchall()
+
+    def _search_rows_fts_trigram(
+        self,
+        conn: sqlite3.Connection,
+        query: str,
+        include_archived: bool,
+        fetch_limit: int,
+    ) -> list[sqlite3.Row]:
+        """R21 C110 (A2): trigram FTS query — CJK 短詞 / 子串匹配友善.
+
+        對比 _search_rows_fts (unicode61 tokenizer): unicode61 對 CJK 整段不分詞
+        召回率低, trigram 用 3-char window 對中文短詞匹配更準.
+        兩種 FTS 結果在 search() 內 merge dedupe by path (保留較佳 BM25 rank).
+        """
+        # trigram tokenizer 對 query 不需要 FTS5 syntax escape (不分詞), 直接傳原 query.
+        # 但仍要過濾空字串避免 syntax error.
+        cleaned = (query or "").strip()
+        if not cleaned:
+            return []
+        # 用 phrase quote 避免 trigram 內含 reserved char (如 ":", "*") 撞 FTS5 syntax
+        # FTS5 phrase syntax: "xxx" (雙引號內當 literal phrase)
+        phrase = '"' + cleaned.replace('"', '""') + '"'
+        try:
+            return conn.execute(
+                """
+                SELECT
+                  notes_meta.path AS path,
+                  notes_meta.title AS title,
+                  snippet(notes_fts_trigram, 2, '[', ']', ' ... ', 24) AS snippet,
+                  bm25(notes_fts_trigram) AS rank,
+                  notes_meta.updated AS updated,
+                  notes_meta.status AS status,
+                  notes_meta.tags AS tags,
+                  notes_meta.type AS type,
+                  notes_meta.source AS source
+                FROM notes_fts_trigram
+                JOIN notes_meta ON notes_meta.path = notes_fts_trigram.path
+                WHERE notes_fts_trigram MATCH ?
+                  AND (? = 1 OR notes_meta.status != 'archived')
+                ORDER BY bm25(notes_fts_trigram) ASC
+                LIMIT ?
+                """,
+                (phrase, 1 if include_archived else 0, fetch_limit),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # trigram syntax error / 表不存在 → 安靜降級回空 (不破壞既有 FTS path)
+            return []
 
     def _search_rows_like(
         self,
