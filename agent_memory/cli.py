@@ -11,6 +11,17 @@ import sys
 from datetime import datetime
 from typing import Any
 
+# R21.1 C114: Windows cp950 emoji stdout/stderr 編碼修
+# (Codex 第 40 輪 Phase 2+4 主因: chat subprocess 寫 📖 / etc emoji 到 stdout/stderr,
+#  Windows cmd 預設 cp950 codepage 不能 encode emoji → UnicodeEncodeError crash,
+#  R18 C77 只修 sys.argv stdin cp950 沒修 stdout). force UTF-8 + errors='replace'
+# (萬一仍編碼失敗 emoji 變 '?' 不 crash). 對齊 e2e simulation script 既有 pattern.
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+except Exception:  # noqa: BLE001
+    pass
+
 from agent_memory.chat_session import append_chat_turn, sanitize_component
 from agent_memory.brain_template import seed_brain_from_template
 from agent_memory.channel_bindings import (

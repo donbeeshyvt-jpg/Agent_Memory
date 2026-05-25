@@ -2952,6 +2952,69 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"empty_allows={c112_empty_matrix_allows}",
     )
 
+    # ─── Step 31 (R21.1): C114 cli stdout cp950 fix + C115 trigram short query early return ───
+    report.section("Step 31 (R21.1 C114+C115): cli cp950 stdout 修 + trigram short query early return (Codex 第 40 輪 Phase 2+4 + Phase 1 polishing)")
+
+    # 31.1 — C114 cli.py 開頭含 sys.stdout/sys.stderr reconfigure utf-8 errors=replace
+    import agent_memory.cli as _cli_mod_r21_1
+    _cli_src_r21_1 = Path(_cli_mod_r21_1.__file__).read_text(encoding="utf-8")
+    has_c114_tag = "R21.1 C114" in _cli_src_r21_1
+    has_c114_stdout = (
+        'sys.stdout.reconfigure(encoding="utf-8", errors="replace")' in _cli_src_r21_1
+        or "sys.stdout.reconfigure(encoding='utf-8', errors='replace')" in _cli_src_r21_1
+    )
+    has_c114_stderr = (
+        'sys.stderr.reconfigure(encoding="utf-8", errors="replace")' in _cli_src_r21_1
+        or "sys.stderr.reconfigure(encoding='utf-8', errors='replace')" in _cli_src_r21_1
+    )
+    report.step(
+        "C114 cli.py 入口 sys.stdout/stderr UTF-8 reconfigure errors=replace (R21.1, Codex 第 40 輪 Phase 2+4 cp950 emoji 修)",
+        has_c114_tag and has_c114_stdout and has_c114_stderr,
+        f"tag={has_c114_tag} stdout={has_c114_stdout} stderr={has_c114_stderr}",
+    )
+
+    # 31.2 — C115 _search_rows_fts_trigram short query (<3 char) early return + still works for ≥3 char
+    _sm_src_c115 = Path(_sm_mod_r21.__file__).read_text(encoding="utf-8")
+    has_c115_tag = "R21.1 C115" in _sm_src_c115
+    has_c115_early_return = "if len(cleaned) < 3:" in _sm_src_c115
+
+    # functional smoke: 用 isolated import 跑 _search_rows_fts_trigram (mock conn / 跳過真 db)
+    # 因 short query early return 不需 db connect, 直接驗 cleaned 邏輯
+    # 用 MagicMock 模擬 conn (不會被 call 因 early return 在 connect 前 OK 其實是 query parse 前)
+    from unittest.mock import MagicMock as _MM_c115
+    from agent_memory.search.manager import MemorySearchManager as _MSM_c115
+    _td_c115 = tempfile.mkdtemp(prefix="r21_1_c115_")
+    c115_short_returns_empty = False
+    c115_long_attempts_query = False
+    try:
+        _v_c115 = Path(_td_c115) / "vault"
+        _v_c115.mkdir(parents=True)
+        from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA_c115
+        _a_c115 = _OVA_c115(_v_c115); _a_c115.ensure_skeleton()
+        _sm_inst_c115 = _MSM_c115(_a_c115)
+        # short query (2 char CJK) → early return [] 不查 db
+        with _sm_inst_c115._connect() as _conn_c115:
+            _short_result = _sm_inst_c115._search_rows_fts_trigram(_conn_c115, "藍莓", False, 10)
+        c115_short_returns_empty = _short_result == []
+        # long query (4 char CJK) → 不 early return, 走 db query (空 vault → 預期 0 rows 但不 short-circuit)
+        # 用 mock conn 驗 conn.execute 真被 call
+        _mock_conn = _MM_c115()
+        _mock_conn.execute = _MM_c115(return_value=_MM_c115(fetchall=_MM_c115(return_value=[])))
+        _long_result = _sm_inst_c115._search_rows_fts_trigram(_mock_conn, "測試共識四字", False, 10)
+        c115_long_attempts_query = _mock_conn.execute.called  # mock 確認 execute 被 call (沒 early return)
+        _sm_inst_c115 = None
+        import gc as _gc_c115_t; _gc_c115_t.collect()
+        import time as _t_c115; _t_c115.sleep(0.1)
+    finally:
+        shutil.rmtree(_td_c115, ignore_errors=True)
+
+    report.step(
+        "C115 _search_rows_fts_trigram short query <3 char early return (R21.1, SQLite trigram inherent limit 接受)",
+        has_c115_tag and has_c115_early_return and c115_short_returns_empty and c115_long_attempts_query,
+        f"tag={has_c115_tag} early_return_src={has_c115_early_return} "
+        f"short_empty={c115_short_returns_empty} long_queries={c115_long_attempts_query}",
+    )
+
     return report.summary()
 
 

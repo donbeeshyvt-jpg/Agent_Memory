@@ -1161,6 +1161,13 @@ class MemorySearchManager:
         cleaned = (query or "").strip()
         if not cleaned:
             return []
+        # R21.1 C115: SQLite FTS5 trigram tokenizer 需要 3-char window, < 3 char query
+        # 必然 0 hit (SQLite inherent, 不是 bug — Codex 第 40 輪 Phase 1 「藍莓」「銀河」
+        # 2-char CJK 命中 0 確認). Early return 省 latency (~7ms 中文 chat 高頻 query),
+        # 由 unicode61 主路徑提供短 query 召回 (Codex 第 40 輪 unicode_hits=6 證實 work).
+        # 注意: 是 char 數而非 byte 數 (CJK 一字 = 1 char in Python str, OK).
+        if len(cleaned) < 3:
+            return []
         # 用 phrase quote 避免 trigram 內含 reserved char (如 ":", "*") 撞 FTS5 syntax
         # FTS5 phrase syntax: "xxx" (雙引號內當 literal phrase)
         phrase = '"' + cleaned.replace('"', '""') + '"'
