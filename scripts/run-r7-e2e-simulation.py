@@ -3068,7 +3068,7 @@ def run_simulation(vault_root: Path, report: Report) -> int:
     has_c120_service_name = _bs_mod_c120.SERVICE_NAME == "agent-memory-hermes-bridge"
     has_c120_port = _bs_mod_c120.DEFAULT_PORT == 16001
     has_c120_secret_header = _bs_mod_c120.SECRET_HEADER == "X-Bridge-Secret"
-    has_c120_version = _bs_mod_c120.HEALTH_VERSION in ("r22-stage1", "r22-stage2")
+    has_c120_version = _bs_mod_c120.HEALTH_VERSION == "r22-stage1"
     has_c120_do_get = hasattr(_bs_mod_c120._HermesBridgeHandler, "do_GET")
     has_c120_do_post = hasattr(_bs_mod_c120._HermesBridgeHandler, "do_POST")
     has_c120_serve_entry = callable(_bs_mod_c120.serve_hermes_bridge)
@@ -3165,15 +3165,11 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         _v_c123 = Path(_td_c123) / "vault"
         _v_c123.mkdir(parents=True)
         # 直接 call _handle_chat unbound, fake server + fake handler
-        # R22 stage 2 加: server 需 hermes_signing_secret; handler 需 _hermes_id method (空 augmentation 不觸發簽名 check)
         class _FakeServerC123:
             vault_root = _v_c123
-            hermes_signing_secret = ""
         class _FakeHandlerC123:
             def __init__(self):
                 self.server = _FakeServerC123()
-            def _hermes_id(self) -> str:  # R22 stage 2 _handle_chat 會 call self._hermes_id()
-                return "hermes-default"
         _fh = _FakeHandlerC123()
         with _patch_c123.object(_bs_mod_c120, "run_transport_event", return_value=_fake_result_c123):
             _out = _bs_mod_c120._HermesBridgeHandler._handle_chat(_fh, {"user_message": "hi", "persona": "core"})  # type: ignore[arg-type]
@@ -3193,210 +3189,6 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"daily={has_c123_daily_get} shared={has_c123_shared_channel_get} no_flat={has_c123_no_flat_call} "
         f"map_session={c123_mapping_session} map_daily={c123_mapping_daily} "
         f"map_shared={c123_mapping_shared} map_reply={c123_mapping_reply}",
-    )
-
-    # ─── Step 34 (R22 stage 2 C124~C128): outbox + signing + namespace + telemetry ───
-    report.section("Step 34 (R22 stage 2 C124~C128): outbox sqlite queue + HMAC signing + multi-hermes namespace + bridge_event telemetry")
-
-    # 34.1 — C124 bridge_outbox.py module + 常數 + 3 class + 2 function
-    import agent_memory.bridge_outbox as _bo_mod
-    _bo_src = Path(_bo_mod.__file__).read_text(encoding="utf-8")
-    c124_outbox_db_const = _bo_mod.OUTBOX_DB_RELATIVE == ".ai/hermes-bridge-outbox.db"
-    c124_telemetry_const = _bo_mod.TELEMETRY_LOG_RELATIVE == ".ai/bridge_events.jsonl"
-    c124_max_attempts = _bo_mod.MAX_ATTEMPTS == 3
-    c124_has_outbox_class = hasattr(_bo_mod, "BridgeOutbox") and callable(_bo_mod.BridgeOutbox)
-    c124_has_worker_class = hasattr(_bo_mod, "BridgeOutboxWorker") and callable(_bo_mod.BridgeOutboxWorker)
-    c124_has_write_event = hasattr(_bo_mod, "write_bridge_event") and callable(_bo_mod.write_bridge_event)
-    c124_has_read_events = hasattr(_bo_mod, "read_bridge_events") and callable(_bo_mod.read_bridge_events)
-    # functional smoke: enqueue → worker process → mark_sent
-    _td_c124 = tempfile.mkdtemp(prefix="r22_s2_c124_")
-    c124_enqueue_ok = False
-    c124_dequeue_ok = False
-    c124_sent_ok = False
-    c124_dead_ok = False
-    try:
-        _v_c124 = Path(_td_c124) / "vault"
-        _v_c124.mkdir(parents=True)
-        _ob = _bo_mod.BridgeOutbox(_v_c124)
-        rid_ok = _ob.enqueue(hermes_id="hermes-test", payload={"message": "hi", "persona": "core"})
-        c124_enqueue_ok = rid_ok > 0
-        row = _ob.dequeue_next_pending()
-        c124_dequeue_ok = row is not None and int(row["id"]) == rid_ok and str(row["status"]) == "pending"
-        _ob.mark_sent(rid_ok, result={"ok": True, "reply": "fake"})
-        sent_row = _ob.get_by_id(rid_ok)
-        c124_sent_ok = sent_row is not None and str(sent_row["status"]) == "sent"
-        # retry → dead
-        rid_bad = _ob.enqueue(hermes_id="hermes-bad", payload={"message": "x"})
-        for _ in range(_bo_mod.MAX_ATTEMPTS):
-            _ob.mark_failed(rid_bad, error="forced")
-        dead_row = _ob.get_by_id(rid_bad)
-        c124_dead_ok = dead_row is not None and str(dead_row["status"]) == "dead" and int(dead_row["attempts"]) == _bo_mod.MAX_ATTEMPTS
-        # telemetry
-        _bo_mod.write_bridge_event(_v_c124, kind="health", status_code=200, latency_ms=1.5)
-        _bo_mod.write_bridge_event(_v_c124, kind="retrieve", status_code=200, latency_ms=12.3, hermes_id="hermes-bob", extra={"hits": 3})
-        events = _bo_mod.read_bridge_events(_v_c124, limit=10)
-        c124_telemetry_ok = len(events) == 2 and events[0]["kind"] == "health" and events[1]["hermes_id"] == "hermes-bob"
-    finally:
-        shutil.rmtree(_td_c124, ignore_errors=True)
-
-    report.step(
-        "C124 bridge_outbox sqlite queue + retry + dead-letter + jsonl telemetry (R22 stage 2.1 基礎建設, stdlib only)",
-        c124_outbox_db_const and c124_telemetry_const and c124_max_attempts
-        and c124_has_outbox_class and c124_has_worker_class
-        and c124_has_write_event and c124_has_read_events
-        and c124_enqueue_ok and c124_dequeue_ok and c124_sent_ok and c124_dead_ok and c124_telemetry_ok,
-        f"db_const={c124_outbox_db_const} tel_const={c124_telemetry_const} max={c124_max_attempts} "
-        f"Outbox={c124_has_outbox_class} Worker={c124_has_worker_class} "
-        f"write={c124_has_write_event} read={c124_has_read_events} "
-        f"enq={c124_enqueue_ok} deq={c124_dequeue_ok} sent={c124_sent_ok} dead={c124_dead_ok} tel={c124_telemetry_ok}",
-    )
-
-    # 34.2 — C125 bridge_service HMAC signing
-    c125_sig_header = _bs_mod_c120.SIGNATURE_HEADER == "X-Hermes-Augmentation-Signature"
-    c125_signing_env = _bs_mod_c120.SIGNING_SECRET_ENV == "HERMES_SIGNING_SECRET"
-    c125_has_compute = hasattr(_bs_mod_c120, "_compute_hmac_sig") and callable(_bs_mod_c120._compute_hmac_sig)
-    c125_has_verify = hasattr(_bs_mod_c120, "_verify_hmac_sig") and callable(_bs_mod_c120._verify_hmac_sig)
-    # 4 case 矩陣: compute → verify good / verify wrong sig / verify wrong secret / verify empty sig
-    _aug_text = "藍莓食譜 mock augmentation"
-    _good_sig = _bs_mod_c120._compute_hmac_sig("test-secret", _aug_text)
-    c125_verify_good = _bs_mod_c120._verify_hmac_sig("test-secret", _aug_text, _good_sig) is True
-    c125_verify_wrong_sig = _bs_mod_c120._verify_hmac_sig("test-secret", _aug_text, "deadbeef") is False
-    c125_verify_wrong_secret = _bs_mod_c120._verify_hmac_sig("wrong-secret", _aug_text, _good_sig) is False
-    c125_verify_empty = _bs_mod_c120._verify_hmac_sig("test-secret", _aug_text, "") is False
-    # version 標記
-    c125_version_tag = _bs_mod_c120.HEALTH_VERSION == "r22-stage2"
-
-    report.step(
-        "C125 bridge_service HMAC-SHA256 signing helper + 4 case verify 矩陣 (R22 stage 2.2 出口品檢)",
-        c125_sig_header and c125_signing_env and c125_has_compute and c125_has_verify
-        and c125_verify_good and c125_verify_wrong_sig and c125_verify_wrong_secret and c125_verify_empty
-        and c125_version_tag,
-        f"sig_header={c125_sig_header} env={c125_signing_env} compute={c125_has_compute} "
-        f"verify={c125_has_verify} good={c125_verify_good} wrong_sig={c125_verify_wrong_sig} "
-        f"wrong_secret={c125_verify_wrong_secret} empty={c125_verify_empty} version={c125_version_tag}",
-    )
-
-    # 34.3 — C126 bridge_service namespace header + default
-    c126_id_header = _bs_mod_c120.HERMES_ID_HEADER == "X-Hermes-ID"
-    c126_default_id = _bs_mod_c120.DEFAULT_HERMES_ID == "hermes-default"
-    # _hermes_id 邏輯: 有 header → 用; 沒 header → default
-    class _FakeServerC126:
-        expected_secret = ""
-        auth_disabled = False
-        hermes_signing_secret = ""
-    class _FakeHeadersC126:
-        def __init__(self, h): self._h = h
-        def get(self, k, d=""): return self._h.get(k, d)
-    class _FakeHandlerC126:
-        def __init__(self, srv, headers):
-            self.server = srv
-            self.headers = headers
-    _hermes_id_unbound = _bs_mod_c120._HermesBridgeHandler._hermes_id
-    _fh_with = _FakeHandlerC126(_FakeServerC126(), _FakeHeadersC126({"X-Hermes-ID": "hermes-alpha"}))
-    _fh_without = _FakeHandlerC126(_FakeServerC126(), _FakeHeadersC126({}))
-    _fh_blank = _FakeHandlerC126(_FakeServerC126(), _FakeHeadersC126({"X-Hermes-ID": "   "}))
-    c126_with_header = _hermes_id_unbound(_fh_with) == "hermes-alpha"  # type: ignore[arg-type]
-    c126_without_header = _hermes_id_unbound(_fh_without) == "hermes-default"  # type: ignore[arg-type]
-    c126_blank_fallback = _hermes_id_unbound(_fh_blank) == "hermes-default"  # type: ignore[arg-type]
-
-    report.step(
-        "C126 bridge_service multi-hermes namespace header (R22 stage 2.2 namespace 隔離)",
-        c126_id_header and c126_default_id and c126_with_header and c126_without_header and c126_blank_fallback,
-        f"header={c126_id_header} default={c126_default_id} "
-        f"with={c126_with_header} without={c126_without_header} blank={c126_blank_fallback}",
-    )
-
-    # 34.4 — C127 outbox 接 chat (async_mode + _is_async_request + _process_outbox_chat)
-    c127_has_process_fn = hasattr(_bs_mod_c120, "_process_outbox_chat") and callable(_bs_mod_c120._process_outbox_chat)
-    import inspect as _inspect_c127
-    c127_handler_has_async = "async_mode" in _inspect_c127.signature(_bs_mod_c120._HermesBridgeHandler._handle_chat).parameters
-    c127_has_async_detect = hasattr(_bs_mod_c120._HermesBridgeHandler, "_is_async_request")
-    # _is_async_request 邏輯
-    _is_async_unbound = _bs_mod_c120._HermesBridgeHandler._is_async_request
-    class _FakeC127:
-        pass
-    _fc = _FakeC127()
-    c127_qs_true = _is_async_unbound(_fc, "async=true", {}) is True  # type: ignore[arg-type]
-    c127_qs_false = _is_async_unbound(_fc, "", {}) is False  # type: ignore[arg-type]
-    c127_body_true = _is_async_unbound(_fc, "", {"async": True}) is True  # type: ignore[arg-type]
-    c127_body_str = _is_async_unbound(_fc, "", {"async": "yes"}) is True  # type: ignore[arg-type]
-
-    report.step(
-        "C127 bridge_service outbox 接 chat (async_mode kwarg + _is_async_request + _process_outbox_chat) (R22 stage 2.1 異步)",
-        c127_has_process_fn and c127_handler_has_async and c127_has_async_detect
-        and c127_qs_true and c127_qs_false and c127_body_true and c127_body_str,
-        f"process_fn={c127_has_process_fn} async_kwarg={c127_handler_has_async} detect={c127_has_async_detect} "
-        f"qs_t={c127_qs_true} qs_f={c127_qs_false} body_t={c127_body_true} body_str={c127_body_str}",
-    )
-
-    # 34.5 — C128 telemetry wrapper (do_GET/do_POST 包 _emit_telemetry)
-    c128_has_emit = hasattr(_bs_mod_c120._HermesBridgeHandler, "_emit_telemetry")
-    # source check: do_GET / do_POST 含 _tx_t0 / _tx_status / _tx_kind / _emit_telemetry 字串
-    c128_get_wrapped = (
-        "_tx_t0 = time.perf_counter()" in _bs_src_c120
-        and "self._emit_telemetry()" in _bs_src_c120
-        and "_dispatch_get" in _bs_src_c120
-    )
-    c128_post_wrapped = (
-        "_dispatch_post" in _bs_src_c120
-        and "self._tx_extra" in _bs_src_c120
-    )
-    c128_send_json_updates_status = "self._tx_status = int(status.value)" in _bs_src_c120
-
-    report.step(
-        "C128 bridge_service telemetry wrapper do_GET/do_POST 包 _emit_telemetry + _send_json update _tx_status (R22 stage 2.1)",
-        c128_has_emit and c128_get_wrapped and c128_post_wrapped and c128_send_json_updates_status,
-        f"emit={c128_has_emit} get={c128_get_wrapped} post={c128_post_wrapped} send_json={c128_send_json_updates_status}",
-    )
-
-    # ─── Step 35 (R22 stage 2 C129+C130): mock_hermes_server (test/) + HMAC compat ───
-    report.section("Step 35 (R22 stage 2 C129+C130): mock_hermes_server source + HMAC signature cross-module compatibility")
-
-    # 35.1 — C129 mock_hermes_server.py 載入 + 常數
-    import importlib.util as _ilu_c129
-    _mock_path = Path(__file__).resolve().parents[2] / "test" / "mock_hermes_server.py"
-    c129_file_exists = _mock_path.exists()
-    c129_mock_loadable = False
-    c129_service_name = False
-    c129_port = False
-    c129_sig_header_name = False
-    c129_augment_fn = False
-    if c129_file_exists:
-        try:
-            _spec = _ilu_c129.spec_from_file_location("mock_hermes_server", _mock_path)
-            assert _spec is not None and _spec.loader is not None
-            _mock_mod = _ilu_c129.module_from_spec(_spec)
-            _spec.loader.exec_module(_mock_mod)
-            c129_mock_loadable = True
-            c129_service_name = _mock_mod.SERVICE_NAME == "mock-hermes"
-            c129_port = _mock_mod.DEFAULT_PORT == 16002
-            c129_sig_header_name = _mock_mod.SIGNATURE_HEADER_NAME == "X-Hermes-Augmentation-Signature"
-            c129_augment_fn = callable(_mock_mod._augment_message) and "augmentation" in _mock_mod._augment_message("hi", "")
-        except Exception:  # noqa: BLE001
-            pass
-
-    report.step(
-        "C129 mock_hermes_server (test/) 載入 + 常數對 + augmentation function (R22 stage 2.3 Flow W mock)",
-        c129_file_exists and c129_mock_loadable and c129_service_name
-        and c129_port and c129_sig_header_name and c129_augment_fn,
-        f"exists={c129_file_exists} loadable={c129_mock_loadable} svc={c129_service_name} "
-        f"port={c129_port} sig_header={c129_sig_header_name} augment={c129_augment_fn}",
-    )
-
-    # 35.2 — C130 HMAC sig 跨 module 對齊 (bridge_service vs mock_hermes_server)
-    c130_cross_module_match = False
-    c130_aug_v1_format = False
-    if c129_mock_loadable:
-        _aug = _mock_mod._augment_message("幫我記藍莓", "context-r43")
-        _sig_mock = _mock_mod._compute_hmac_sig("shared-secret-r44", _aug)
-        _sig_bridge = _bs_mod_c120._compute_hmac_sig("shared-secret-r44", _aug)
-        c130_cross_module_match = _sig_mock == _sig_bridge and len(_sig_mock) == 64  # SHA256 hex = 64 chars
-        c130_aug_v1_format = "[mock_hermes augmentation v1]" in _aug
-
-    report.step(
-        "C130 mock_hermes HMAC sig 跟 bridge_service 對齊 (R22 stage 2 共享 secret → 同 sig, 真接時 hermes 端可用)",
-        c129_mock_loadable and c130_cross_module_match and c130_aug_v1_format,
-        f"loadable={c129_mock_loadable} sig_match={c130_cross_module_match} aug_format={c130_aug_v1_format}",
     )
 
     return report.summary()
