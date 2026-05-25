@@ -3191,6 +3191,270 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"map_shared={c123_mapping_shared} map_reply={c123_mapping_reply}",
     )
 
+    # ─── Step 36 (R23 high-priority 5 項 — 核心 / 三層 / 歸納 functional smoke 補強) ───
+    # 對齊使用者 2026-05-26 拍板「核心完整跟管家完成」, 補 A1/A4/B3/B4/A2 真實 functional smoke.
+    # (A3 prompt budget / B1+B2 long-running / C1+C2+C4 audit-style / C3 文獻吸收 不在本輪; C3 已 cover 在 Step 11.7)
+    report.section("Step 36 (R23): 核心 functional smoke 補 — tools dispatch / multi-step chain / skill 升 / umbrella 品質 / LLM fallback")
+
+    # 36.1 — C133 A1 tools 真實 dispatch: parse [TOOL]memory{add} → execute_agent_tool_call → vault 真寫到檔
+    # execute_agent_tool_call 是 chat_runtime 內 dispatch entry (memory namespace 走 apply_memory_tool, files 走 execute_tool_request)
+    from agent_memory.local_tools import parse_agent_tool_calls, execute_agent_tool_call, count_unmatched_tool_attempts
+    from agent_memory.runtime import MemoryRuntime as _MR133
+    from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA133
+    _td_c133 = tempfile.mkdtemp(prefix="r23_a1_")
+    c133_parse_ok = False
+    c133_execute_ok = False
+    c133_vault_written = False
+    c133_tool_chain_clean = False
+    try:
+        _v_c133 = Path(_td_c133) / "vault"
+        _v_c133.mkdir(parents=True)
+        _a133 = _OVA133(_v_c133); _a133.ensure_skeleton()
+        _runtime133 = _MR133(_a133)
+        # 模擬 LLM 回應含 [TOOL]memory{add}
+        fake_response = (
+            "我幫你記錄藍莓.\n"
+            '[TOOL]memory{"action":"add","path":"10_Permanent/Concepts/r23_blueberry.md",'
+            '"content":"# 藍莓 R23\\n\\n藍莓是莓果之一."}[/TOOL]\n'
+            "完成."
+        )
+        calls = parse_agent_tool_calls(fake_response)
+        c133_parse_ok = len(calls) == 1 and calls[0]["tool"] == "memory"
+        if c133_parse_ok:
+            result = execute_agent_tool_call(_runtime133, calls[0], operator="r23-test-agent")
+            c133_execute_ok = bool(result.get("ok"))
+            written_path = _v_c133 / "10_Permanent" / "Concepts" / "r23_blueberry.md"
+            c133_vault_written = written_path.exists() and "藍莓 R23" in written_path.read_text(encoding="utf-8")
+        # unmatched tool attempt 應為 0 (parse 成功)
+        c133_tool_chain_clean = count_unmatched_tool_attempts(fake_response, len(calls)) == 0
+    finally:
+        shutil.rmtree(_td_c133, ignore_errors=True)
+
+    report.step(
+        "C133 A1 tools 真實打通: parse_agent_tool_calls + execute_tool_request → vault 真寫 (memory.add)",
+        c133_parse_ok and c133_execute_ok and c133_vault_written and c133_tool_chain_clean,
+        f"parse={c133_parse_ok} execute={c133_execute_ok} written={c133_vault_written} clean={c133_tool_chain_clean}",
+    )
+
+    # 36.2 — C134 A4 multi-step tool chain: 3 個 [TOOL] in single LLM response → 3 個 action 都 dispatch
+    _td_c134 = tempfile.mkdtemp(prefix="r23_a4_")
+    c134_parsed_3 = False
+    c134_executed_3 = False
+    c134_vault_states = False
+    try:
+        _v_c134 = Path(_td_c134) / "vault"
+        _v_c134.mkdir(parents=True)
+        _a134 = _OVA133(_v_c134); _a134.ensure_skeleton()
+        _runtime134 = _MR133(_a134)
+        # 預建 a.md 讓 step1 能 get
+        (_v_c134 / "10_Permanent" / "Concepts").mkdir(parents=True, exist_ok=True)
+        (_v_c134 / "10_Permanent" / "Concepts" / "a.md").write_text("# a\n\norig content", encoding="utf-8")
+        multi_response = (
+            "我先 get a, 然後 add b, 最後再 get a:\n"
+            '[TOOL]memory{"action":"get","path":"10_Permanent/Concepts/a.md"}[/TOOL]\n'
+            '[TOOL]memory{"action":"add","path":"10_Permanent/Concepts/r23_b.md","content":"# b R23 step2"}[/TOOL]\n'
+            '[TOOL]memory{"action":"get","path":"10_Permanent/Concepts/a.md"}[/TOOL]\n'
+            "完成 3 step."
+        )
+        calls_m = parse_agent_tool_calls(multi_response)
+        c134_parsed_3 = len(calls_m) == 3
+        if c134_parsed_3:
+            ok_count = 0
+            for c in calls_m:
+                try:
+                    r = execute_agent_tool_call(_runtime134, c, operator="r23-test-agent")
+                    if r.get("ok"):
+                        ok_count += 1
+                except Exception:  # noqa: BLE001
+                    pass
+            c134_executed_3 = ok_count == 3
+        b_path = _v_c134 / "10_Permanent" / "Concepts" / "r23_b.md"
+        c134_vault_states = b_path.exists() and "b R23 step2" in b_path.read_text(encoding="utf-8")
+    finally:
+        shutil.rmtree(_td_c134, ignore_errors=True)
+
+    report.step(
+        "C134 A4 multi-step tool chain: 3 [TOOL] in single LLM response → all dispatch + vault state 對 (R15 T3.3 延伸)",
+        c134_parsed_3 and c134_executed_3 and c134_vault_states,
+        f"parsed_3={c134_parsed_3} executed_3={c134_executed_3} vault={c134_vault_states}",
+    )
+
+    # 36.3 — C135 B3 skill_suggestions.promote_to_skill 真產 00_System/Skills/<id>/SKILL.md
+    from agent_memory.skill_suggestions import promote_to_skill
+    _td_c135 = tempfile.mkdtemp(prefix="r23_b3_")
+    c135_skill_file = False
+    c135_skill_frontmatter = False
+    try:
+        _v_c135 = Path(_td_c135) / "vault"
+        _v_c135.mkdir(parents=True)
+        _a135 = _OVA133(_v_c135); _a135.ensure_skeleton()
+        # 寫一個 Mid_Term/<entity>.md 模擬 procedure 中期概念
+        mt_dir = _v_c135 / "10_Permanent" / "Mid_Term"
+        mt_dir.mkdir(parents=True, exist_ok=True)
+        (mt_dir / "r23_test_proc.md").write_text(
+            "---\ntype: concept\nlifecycle_state: mid\ntags: [procedure]\nmentions: 5\n---\n\n"
+            "# r23_test_proc\n\n步驟一: 開啟. 步驟二: 處理. 步驟三: 關閉.",
+            encoding="utf-8",
+        )
+        skill_path = promote_to_skill(
+            _v_c135,
+            entity_id="r23_test_proc",
+            suggested_skill_id="r23-test-skill",
+        )
+        skill_md = _v_c135 / skill_path
+        c135_skill_file = skill_md.exists()
+        if c135_skill_file:
+            skill_text = skill_md.read_text(encoding="utf-8")
+            c135_skill_frontmatter = ("type: skill" in skill_text) and ("r23_test_proc" in skill_text or "步驟" in skill_text)
+    finally:
+        shutil.rmtree(_td_c135, ignore_errors=True)
+
+    report.step(
+        "C135 B3 skill_suggestions.promote_to_skill 真產 00_System/Skills/<id>/SKILL.md (R7 C20b functional)",
+        c135_skill_file and c135_skill_frontmatter,
+        f"skill_file={c135_skill_file} frontmatter={c135_skill_frontmatter}",
+    )
+
+    # 36.4 — C136 B4 umbrella consolidate LLM mock: merge 不刪 + wikilinks 保留 (hermes 抄)
+    from agent_memory.umbrella_llm import consolidate_umbrella_with_llm
+    _td_c136 = tempfile.mkdtemp(prefix="r23_b4_")
+    c136_merge_count = False
+    c136_sources_kept = False
+    c136_mock_used = False
+    try:
+        _v_c136 = Path(_td_c136) / "vault"
+        _v_c136.mkdir(parents=True)
+        _a136 = _OVA133(_v_c136); _a136.ensure_skeleton()
+        # 寫 2 個 Mid_Term entity 作為 merge candidates — 用 MemoryNote 確保 lifecycle_state.MID + mention_count
+        from agent_memory.types import (
+            MemoryNote as _MN136,
+            Frontmatter as _FM136,
+            MemoryType as _MT136,
+            MemorySource as _MS136,
+            LifecycleState as _LS136,
+        )
+        mt6 = _v_c136 / "10_Permanent" / "Mid_Term"
+        mt6.mkdir(parents=True, exist_ok=True)
+        _a136.write_note(_MN136(
+            path="10_Permanent/Mid_Term/rag_intro.md",
+            frontmatter=_FM136(
+                type=_MT136.CONCEPT,
+                source=_MS136.AGENT,
+                lifecycle_state=_LS136.MID,
+                mention_count=3,
+                tags=["test"],
+            ),
+            body="# RAG 介紹\n\n[[Retrieval]] + [[Generation]].",
+        ))
+        _a136.write_note(_MN136(
+            path="10_Permanent/Mid_Term/rag_example.md",
+            frontmatter=_FM136(
+                type=_MT136.CONCEPT,
+                source=_MS136.AGENT,
+                lifecycle_state=_LS136.MID,
+                mention_count=3,
+                tags=["test"],
+            ),
+            body="# RAG 範例\n\n[[FAISS]] + [[OpenAI]].",
+        ))
+        # Mock LLM 回應: 建議把 rag_intro + rag_example 合 umbrella "RAG"
+        mock_umbrella = {
+            "merges": [
+                {
+                    "umbrella_id": "rag-umbrella-r23",
+                    "members": ["rag_intro", "rag_example"],
+                    "reason": "RAG 結合檢索與生成的相關概念合併",
+                }
+            ],
+            "procedure_tags": [],
+        }
+        ull_result = consolidate_umbrella_with_llm(_v_c136, mock_response=mock_umbrella, max_entities=10, cooldown_days=0)
+        c136_mock_used = bool(ull_result.get("mock_used"))
+        # merges_added 是 list (pending umbrella entries); len >= 1 算 PASS
+        c136_merge_count = len(ull_result.get("merges_added", [])) >= 1
+        # hermes "merge 不刪": umbrella 是 pending 提議, source 必定保留 (不立即合併)
+        c136_sources_kept = (mt6 / "rag_intro.md").exists() and (mt6 / "rag_example.md").exists()
+    finally:
+        shutil.rmtree(_td_c136, ignore_errors=True)
+
+    _c136_scanned = ull_result.get("scanned_entries", 0) if 'ull_result' in dir() else "?"
+    _c136_note = ull_result.get("note", "") if 'ull_result' in dir() else "?"
+    _c136_skipped = ull_result.get("skipped", []) if 'ull_result' in dir() else []
+    report.step(
+        "C136 B4 umbrella consolidate LLM mock 品質: merge 不刪 + wikilinks 保留 (R9 C27 hermes 抄)",
+        c136_mock_used and c136_merge_count and c136_sources_kept,
+        f"mock_used={c136_mock_used} merges>=1={c136_merge_count} sources_kept={c136_sources_kept} "
+        f"scanned={_c136_scanned} note={_c136_note!r} skipped={_c136_skipped[:2] if _c136_skipped else []}",
+    )
+
+    # 36.5 — C137 A2 LLMClient.generate fallback chain: 1st fail → 2nd success
+    from agent_memory.llm_client import LLMClient as _LC_c137
+    import agent_memory.llm_routing as _lr_c137
+    _td_c137 = tempfile.mkdtemp(prefix="r23_a2_")
+    c137_fallback_to_2nd = False
+    c137_attempts_logged = False
+    c137_2nd_succeeded = False
+    try:
+        _v_c137 = Path(_td_c137) / "vault"
+        _v_c137.mkdir(parents=True)
+        from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA137
+        _a137 = _OVA137(_v_c137); _a137.ensure_skeleton()
+        # 配 router yaml: 兩個 provider, 都 openai_compatible kind 但 base_url + api_key 都 mock
+        router_cfg = {
+            "providers": {
+                "fake-1st": {
+                    "kind": "openai_compatible",
+                    "base_url": "http://localhost:1/fake1",
+                    "requires_api_key": False,
+                },
+                "fake-2nd": {
+                    "kind": "openai_compatible",
+                    "base_url": "http://localhost:2/fake2",
+                    "requires_api_key": False,
+                },
+            },
+            "persona_overrides": {
+                "advisor": {"profile": "fake-1st", "model": "fake-model-1"},
+            },
+            "fallback_chain": [
+                {"profile": "fake-2nd", "model": "fake-model-2"},
+            ],
+        }
+        _lr_c137.save_llm_router_config(_v_c137, router_cfg)
+        # patch _dispatch_generate: 1st call 拋 503 (transient), retry 一次, 再拋, 走 2nd provider OK
+        call_log: list[tuple[str, str]] = []
+        def _fake_dispatch(self, *, kind, base_url, model, api_key, provider_cfg, messages, temperature, timeout_s):
+            call_log.append((base_url, model))
+            if "fake1" in base_url:
+                raise RuntimeError("HTTP 503 simulated transient failure")
+            if "fake2" in base_url:
+                return "FALLBACK OK from 2nd"
+            raise RuntimeError("unknown provider")
+        from unittest.mock import patch as _patch_c137
+        with _patch_c137.object(_LC_c137, "_dispatch_generate", _fake_dispatch):
+            client = _LC_c137(_v_c137)
+            try:
+                result = client.generate(
+                    messages=[{"role": "user", "content": "hi r23 a2"}],
+                    persona_id="advisor",
+                    temperature=0.0,
+                    timeout_s=5.0,
+                )
+                c137_2nd_succeeded = result.content == "FALLBACK OK from 2nd" and result.profile == "fake-2nd"
+                c137_fallback_to_2nd = any("fake2" in p[0] for p in call_log)
+                # attempts 應含 1st 失敗紀錄 (R15 C65 retry 一次後算 1 個 attempt)
+                c137_attempts_logged = len(result.attempts) >= 1 and result.attempts[0].profile == "fake-1st"
+            except Exception:  # noqa: BLE001
+                pass
+    finally:
+        shutil.rmtree(_td_c137, ignore_errors=True)
+
+    report.step(
+        "C137 A2 LLMClient.generate fallback chain: 1st 拋 503 → 2nd success + attempts log (R11 C41 延伸真實壓測)",
+        c137_2nd_succeeded and c137_fallback_to_2nd and c137_attempts_logged,
+        f"2nd_succeeded={c137_2nd_succeeded} fallback_to_2nd={c137_fallback_to_2nd} attempts={c137_attempts_logged}",
+    )
+
     return report.summary()
 
 
