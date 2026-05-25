@@ -30,6 +30,7 @@ def _default_router_config() -> dict[str, Any]:
         "description": "V1：本機 GGUF + Google Gemini API。改 global_default / persona_overrides 切角色用哪顆。",
         "resolution_order": [
             "request_override",
+            "auxiliary_override",
             "persona_override",
             "global_default",
             "fallback_chain",
@@ -42,6 +43,16 @@ def _default_router_config() -> dict[str, Any]:
             {"profile": "gemini", "model": "gemma-4-31b-it"},
         ],
         "persona_overrides": {},
+        # R21 C111 (A1): auxiliary.* 子任務 LLM 分工 (參考 hermes auxiliary.* 設計).
+        # auxiliary_default 是 cheap 子任務通用 model (curator/umbrella/triage 等),
+        # auxiliary_overrides 是 per-task override (e.g. umbrella 走特定 model).
+        # Priority: request_override > auxiliary_override > persona_override > global_default.
+        # 都缺 → 用 global_default (backward compat, 既有沒設 auxiliary 的 db 不影響).
+        "auxiliary_default": {
+            "profile": "",  # 空字串 = 不啟用 auxiliary 分流, 仍用 global/persona
+            "model": "",
+        },
+        "auxiliary_overrides": {},  # e.g. {"umbrella": {"profile": "gemini", "model": "gemma-4-31b-it"}}
         "providers": {
             "llama_cpp_local": {
                 "kind": "llama_cpp_python",
@@ -111,8 +122,14 @@ def resolve_llm_route(
     persona_id: str | None = None,
     override_profile: str | None = None,
     override_model: str | None = None,
+    auxiliary: str | None = None,
 ) -> dict[str, Any]:
-    """Resolve effective model chain from override/persona/global/fallback."""
+    """Resolve effective model chain from override/auxiliary/persona/global/fallback.
+
+    R21 C111 (A1): auxiliary kwarg 新加 — 子任務 LLM 分流 (curator/umbrella/triage 等
+    走 cheap model, 不吃 persona 主要 model). Priority order:
+      override > auxiliary > persona > global > fallback_chain
+    """
 
     providers = config.get("providers", {})
     if not isinstance(providers, dict):
@@ -130,13 +147,31 @@ def resolve_llm_route(
     if not isinstance(persona_entry, dict):
         persona_entry = {}
 
+    # R21 C111 (A1): auxiliary 層 — auxiliary_overrides[name] > auxiliary_default
+    aux_profile = ""
+    aux_model = ""
+    if auxiliary:
+        aux_overrides = config.get("auxiliary_overrides", {})
+        if isinstance(aux_overrides, dict):
+            aux_entry = aux_overrides.get(auxiliary, {})
+            if isinstance(aux_entry, dict):
+                aux_profile = str(aux_entry.get("profile", "")).strip()
+                aux_model = str(aux_entry.get("model", "")).strip()
+        if not aux_profile or not aux_model:
+            aux_default = config.get("auxiliary_default", {})
+            if isinstance(aux_default, dict):
+                aux_profile = aux_profile or str(aux_default.get("profile", "")).strip()
+                aux_model = aux_model or str(aux_default.get("model", "")).strip()
+
     selected_profile = (
         (override_profile or "").strip()
+        or aux_profile
         or str(persona_entry.get("profile", "")).strip()
         or str(global_default.get("profile", "")).strip()
     )
     selected_model = _normalize_model_ref(
         override_model
+        or aux_model
         or str(persona_entry.get("model", ""))
         or str(global_default.get("model", "")),
         fallback="",

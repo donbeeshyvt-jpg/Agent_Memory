@@ -2851,6 +2851,107 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         + (f" err={c108_init_err}" if c108_init_raised else ""),
     )
 
+    # ─── Step 30 (R21 C110+C111+C112): 核心 capability 升級三條整合驗 (參考 hermes-agent-core) ───
+    report.section("Step 30 (R21): 核心 capability 升級 — A2 FTS trigram + A1 auxiliary LLM + A3 platform_toolsets (參考 hermes-agent-core)")
+
+    # 30.1 — C110 A2 FTS5 trigram tokenizer source check
+    import agent_memory.search.manager as _sm_mod_r21
+    _sm_src_r21 = Path(_sm_mod_r21.__file__).read_text(encoding="utf-8")
+    has_a2_tag = "R21 C110 (A2)" in _sm_src_r21
+    has_a2_trigram_create = "notes_fts_trigram USING fts5" in _sm_src_r21 and "tokenize='trigram'" in _sm_src_r21
+    has_a2_trigram_func = "def _search_rows_fts_trigram" in _sm_src_r21
+    has_a2_trigram_dedupe = "seen_paths" in _sm_src_r21 and "trigram_rows" in _sm_src_r21
+    has_a2_trigram_flag = "_fts_trigram_enabled" in _sm_src_r21
+    report.step(
+        "C110 A2 FTS5 trigram tokenizer 平行表 (R21, hermes 參考 messages_fts_trigram, CJK 召回升級)",
+        has_a2_tag and has_a2_trigram_create and has_a2_trigram_func
+        and has_a2_trigram_dedupe and has_a2_trigram_flag,
+        f"tag={has_a2_tag} create={has_a2_trigram_create} func={has_a2_trigram_func} "
+        f"dedupe={has_a2_trigram_dedupe} flag={has_a2_trigram_flag}",
+    )
+
+    # 30.2 — C111 A1 auxiliary.* LLM 分工 source check + functional priority test
+    import agent_memory.llm_routing as _lr_mod_r21
+    _lr_src_r21 = Path(_lr_mod_r21.__file__).read_text(encoding="utf-8")
+    has_a1_tag = "R21 C111 (A1)" in _lr_src_r21
+    has_a1_default = "auxiliary_default" in _lr_src_r21
+    has_a1_overrides = "auxiliary_overrides" in _lr_src_r21
+    has_a1_kwarg = "auxiliary: str | None = None" in _lr_src_r21
+    has_a1_priority = "auxiliary_override" in _lr_src_r21
+
+    # functional: priority order (override > auxiliary > persona > global)
+    from agent_memory.llm_routing import resolve_llm_route as _rlr_r21
+    _config_r21 = {
+        "global_default": {"profile": "global_p", "model": "global_m"},
+        "persona_overrides": {"advisor": {"profile": "persona_p", "model": "persona_m"}},
+        "auxiliary_overrides": {"umbrella": {"profile": "aux_p", "model": "aux_m"}},
+        "providers": {"global_p": {"kind": "x"}, "persona_p": {"kind": "x"}, "aux_p": {"kind": "x"}},
+    }
+    _route_persona = _rlr_r21(_config_r21, persona_id="advisor")
+    c111_persona_path = (
+        _route_persona.get("selected_profile") == "persona_p"
+        and _route_persona.get("selected_model") == "persona_m"
+    )
+    _route_aux = _rlr_r21(_config_r21, persona_id="advisor", auxiliary="umbrella")
+    c111_aux_path = (
+        _route_aux.get("selected_profile") == "aux_p"
+        and _route_aux.get("selected_model") == "aux_m"
+    )
+    _route_unknown = _rlr_r21(_config_r21, persona_id="advisor", auxiliary="unknown_task")
+    c111_unknown_fallback = _route_unknown.get("selected_profile") == "persona_p"
+
+    report.step(
+        "C111 A1 auxiliary.* 子任務 LLM 分工 (R21, hermes 參考 auxiliary.*, 子任務 best fit model)",
+        has_a1_tag and has_a1_default and has_a1_overrides and has_a1_kwarg and has_a1_priority
+        and c111_persona_path and c111_aux_path and c111_unknown_fallback,
+        f"tag={has_a1_tag} default={has_a1_default} overrides={has_a1_overrides} "
+        f"kwarg={has_a1_kwarg} priority={has_a1_priority} "
+        f"persona_path={c111_persona_path} aux_path={c111_aux_path} "
+        f"unknown_fb={c111_unknown_fallback}",
+    )
+
+    # 30.3 — C112 A3 (persona, platform) → tools 矩陣 source check + functional
+    import agent_memory.persona_governance as _pg_mod_r21
+    _pg_src_r21 = Path(_pg_mod_r21.__file__).read_text(encoding="utf-8")
+    has_a3_tag = "R21 C112 (A3)" in _pg_src_r21
+    has_a3_normalize = "def _normalize_platform_toolsets" in _pg_src_r21
+    has_a3_helper = "def is_tool_allowed_on_platform" in _pg_src_r21
+
+    from agent_memory.persona_governance import (
+        _normalize_platform_toolsets as _norm_pt,
+        is_tool_allowed_on_platform as _is_tool_ok,
+    )
+    _norm_result = _norm_pt(
+        {"discord": ["memory", "search"]},
+        {"cli": ["memory", "files", "search"]},
+    )
+    c112_normalize_ok = (
+        _norm_result.get("cli") == ["memory", "files", "search"]
+        and _norm_result.get("discord") == ["memory", "search"]
+    )
+    _gov_with_matrix = {
+        "platform_toolsets": {
+            "discord": ["memory", "search"],
+            "cli": ["memory", "files", "search"],
+        }
+    }
+    c112_allowed_in_list = _is_tool_ok(_gov_with_matrix, tool_name="memory", platform="discord") is True
+    c112_denied_not_in_list = _is_tool_ok(_gov_with_matrix, tool_name="files", platform="discord") is False
+    c112_allowed_unlisted_platform = _is_tool_ok(_gov_with_matrix, tool_name="memory", platform="telegram") is True
+    _gov_no_matrix = {"platform_toolsets": {}}
+    c112_empty_matrix_allows = _is_tool_ok(_gov_no_matrix, tool_name="memory", platform="discord") is True
+
+    report.step(
+        "C112 A3 (persona, platform) → tools 矩陣 (R21, hermes 參考 platform_toolsets, 權限細化)",
+        has_a3_tag and has_a3_normalize and has_a3_helper
+        and c112_normalize_ok and c112_allowed_in_list and c112_denied_not_in_list
+        and c112_allowed_unlisted_platform and c112_empty_matrix_allows,
+        f"tag={has_a3_tag} normalize={has_a3_normalize} helper={has_a3_helper} "
+        f"norm_ok={c112_normalize_ok} allow_in={c112_allowed_in_list} "
+        f"deny_not_in={c112_denied_not_in_list} allow_unlisted={c112_allowed_unlisted_platform} "
+        f"empty_allows={c112_empty_matrix_allows}",
+    )
+
     return report.summary()
 
 

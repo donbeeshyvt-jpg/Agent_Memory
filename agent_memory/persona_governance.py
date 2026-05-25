@@ -165,6 +165,60 @@ def _normalize_capabilities(raw: Any, fallback: dict[str, Any]) -> dict[str, boo
     }
 
 
+def _normalize_platform_toolsets(raw: Any, fallback: Any) -> dict[str, list[str]]:
+    """R21 C112 (A3): (persona, platform) → tools 矩陣 — per-platform 允許 toolset 白名單.
+
+    schema:
+      platform_toolsets:
+        cli: ["memory", "files", "search"]      # CLI 可用全套
+        discord: ["memory", "search"]            # Discord 不給 files (避免外部寫檔)
+        telegram: []                             # telegram 完全不給 tool
+    backward compat: 空 dict {} (default) → persona 既有 tools_enabled 行為不變 (不過濾).
+    當 platform_toolsets 有設且 platform key 存在 → AND 邏輯 (persona.tools_enabled AND tool in platform_toolsets[platform]).
+    """
+    data = raw if isinstance(raw, dict) else {}
+    fallback_data = fallback if isinstance(fallback, dict) else {}
+    merged: dict[str, list[str]] = {}
+    for source in (fallback_data, data):  # data overrides fallback
+        if not isinstance(source, dict):
+            continue
+        for platform_key, tool_list in source.items():
+            if not isinstance(platform_key, str):
+                continue
+            if isinstance(tool_list, list):
+                merged[platform_key.strip().lower()] = [str(t).strip() for t in tool_list if str(t).strip()]
+            elif tool_list in (None, "", False):
+                merged[platform_key.strip().lower()] = []
+    return merged
+
+
+def is_tool_allowed_on_platform(
+    governance: dict[str, Any],
+    *,
+    tool_name: str,
+    platform: str | None,
+) -> bool:
+    """R21 C112 (A3): 判斷 (persona, platform, tool) 三元組是否允許.
+
+    用法: chat_runtime 套用 (R21+ 下批) — 先檢 persona.capabilities.tools_enabled,
+    再用本函式檢 platform_toolsets matrix.
+
+    Backward compat: platform_toolsets 空 / platform 沒在 matrix → 允許 (維持既有
+    persona-only capability 行為, 不引入 regression).
+    Allow-list: platform 在 matrix 且 tool 不在清單 → 拒絕 (預設 deny 比預設 allow 安全).
+    """
+    matrix = governance.get("platform_toolsets") if isinstance(governance, dict) else None
+    if not isinstance(matrix, dict) or not matrix:
+        return True  # 沒設 matrix → backward compat 不過濾
+    plat = (platform or "").strip().lower()
+    if not plat or plat not in matrix:
+        return True  # platform 沒在 matrix → 不過濾 (避免未列 platform 直接 deny)
+    allowed_tools = matrix.get(plat, [])
+    if not isinstance(allowed_tools, list):
+        return True
+    return tool_name.strip() in allowed_tools
+
+
 def ensure_persona_governance_file(vault_root: Path, *, overwrite: bool = False) -> Path:
     root = Path(vault_root).expanduser().resolve()
     target = (root / PERSONA_GOVERNANCE_RELATIVE_PATH).resolve()
@@ -244,11 +298,17 @@ def resolve_persona_governance(config: dict[str, Any], *, persona_id: str) -> di
         capabilities["persona_management_enabled"] = False
         # R16 C68: memory_capture_enabled **不**在這 block — 跟 tools_enabled 獨立.
         # tools_disabled persona 也能聰明接住「幫我記得 X」記憶提醒 (規格 §5.2 D2).
+    # R21 C112 (A3): resolve platform_toolsets 從 defaults + persona entry merge
+    platform_toolsets = _normalize_platform_toolsets(
+        entry.get("platform_toolsets"),
+        defaults.get("platform_toolsets"),
+    )
     return {
         "persona_id": pid,
         "status": str(entry.get("status", "active")),
         "supervision": supervision,
         "capabilities": capabilities,
+        "platform_toolsets": platform_toolsets,
         "source": str(entry.get("source", "defaults")),
         "updated_at": str(entry.get("updated_at", "")),
         "updated_by": str(entry.get("updated_by", "")),
