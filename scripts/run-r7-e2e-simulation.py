@@ -3060,6 +3060,83 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"explicit_deny={has_c118_explicit_deny} after_caps={has_c118_after_caps}",
     )
 
+    # ─── Step 33 (R22 stage 1 C120+C121): hermes bridge service stdlib HTTP + auth default deny ───
+    report.section("Step 33 (R22 stage 1 C120+C121): hermes bridge service stdlib HTTP + 3 endpoint + auth default deny")
+
+    # 33.1 — C120 bridge_service module loadable + 常數對 + 3 endpoint signature
+    import agent_memory.bridge_service as _bs_mod_c120
+    has_c120_service_name = _bs_mod_c120.SERVICE_NAME == "agent-memory-hermes-bridge"
+    has_c120_port = _bs_mod_c120.DEFAULT_PORT == 16001
+    has_c120_secret_header = _bs_mod_c120.SECRET_HEADER == "X-Bridge-Secret"
+    has_c120_version = _bs_mod_c120.HEALTH_VERSION == "r22-stage1"
+    has_c120_do_get = hasattr(_bs_mod_c120._HermesBridgeHandler, "do_GET")
+    has_c120_do_post = hasattr(_bs_mod_c120._HermesBridgeHandler, "do_POST")
+    has_c120_serve_entry = callable(_bs_mod_c120.serve_hermes_bridge)
+    has_c120_main_entry = callable(_bs_mod_c120.main)
+    # 對齊 transport_bridge_server.py 同 stdlib http.server pattern (零依賴)
+    _bs_src_c120 = Path(_bs_mod_c120.__file__).read_text(encoding="utf-8")
+    has_c120_stdlib_only = (
+        "from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer" in _bs_src_c120
+        and "fastapi" not in _bs_src_c120.lower()
+        and "uvicorn" not in _bs_src_c120.lower()
+    )
+
+    report.step(
+        "C120 bridge_service module 對齊 R22 stage 1 spec (stdlib only + 常數 + 3 endpoint + public entry)",
+        has_c120_service_name and has_c120_port and has_c120_secret_header
+        and has_c120_version and has_c120_do_get and has_c120_do_post
+        and has_c120_serve_entry and has_c120_main_entry and has_c120_stdlib_only,
+        f"service={has_c120_service_name} port={has_c120_port} header={has_c120_secret_header} "
+        f"version={has_c120_version} GET={has_c120_do_get} POST={has_c120_do_post} "
+        f"serve={has_c120_serve_entry} main={has_c120_main_entry} stdlib={has_c120_stdlib_only}",
+    )
+
+    # 33.2 — C121 auth default deny: 沒設 BRIDGE_SECRET + auth_disabled=False → _check_auth() returns False
+    # 用 minimal fake server / fake handler 驗 _check_auth 邏輯 (不需真起 socket)
+    class _FakeServerC121:
+        expected_secret = ""
+        auth_disabled = False
+
+    class _FakeHeadersC121:
+        def __init__(self, headers: dict[str, str]) -> None:
+            self._h = headers
+        def get(self, name: str, default: str = "") -> str:
+            return self._h.get(name, default)
+
+    # 直接拿 unbound _check_auth method 用 fake self 套
+    _check_auth_unbound = _bs_mod_c120._HermesBridgeHandler._check_auth
+
+    class _FakeHandlerC121:
+        def __init__(self, server, headers):
+            self.server = server
+            self.headers = headers
+
+    # case A: 沒 secret + 沒 disable → deny (False)
+    _fh_a = _FakeHandlerC121(_FakeServerC121(), _FakeHeadersC121({"X-Bridge-Secret": "anything"}))
+    c121_default_deny = _check_auth_unbound(_fh_a) is False  # type: ignore[arg-type]
+
+    # case B: 對 secret + 有 disable=False → allow (True)
+    _srv_b = _FakeServerC121(); _srv_b.expected_secret = "secret-r22"
+    _fh_b = _FakeHandlerC121(_srv_b, _FakeHeadersC121({"X-Bridge-Secret": "secret-r22"}))
+    c121_correct_allow = _check_auth_unbound(_fh_b) is True  # type: ignore[arg-type]
+
+    # case C: 錯 secret → deny
+    _srv_c = _FakeServerC121(); _srv_c.expected_secret = "secret-r22"
+    _fh_c = _FakeHandlerC121(_srv_c, _FakeHeadersC121({"X-Bridge-Secret": "wrong"}))
+    c121_wrong_deny = _check_auth_unbound(_fh_c) is False  # type: ignore[arg-type]
+
+    # case D: auth_disabled=True 全 bypass
+    _srv_d = _FakeServerC121(); _srv_d.auth_disabled = True
+    _fh_d = _FakeHandlerC121(_srv_d, _FakeHeadersC121({}))
+    c121_disabled_bypass = _check_auth_unbound(_fh_d) is True  # type: ignore[arg-type]
+
+    report.step(
+        "C121 _check_auth 預設 deny + 對/錯 secret + auth_disabled bypass (R22 stage 1 auth 矩陣 4 case)",
+        c121_default_deny and c121_correct_allow and c121_wrong_deny and c121_disabled_bypass,
+        f"default_deny={c121_default_deny} correct_allow={c121_correct_allow} "
+        f"wrong_deny={c121_wrong_deny} disabled_bypass={c121_disabled_bypass}",
+    )
+
     return report.summary()
 
 
