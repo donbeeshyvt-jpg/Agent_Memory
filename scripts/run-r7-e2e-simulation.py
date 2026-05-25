@@ -3137,6 +3137,60 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"wrong_deny={c121_wrong_deny} disabled_bypass={c121_disabled_bypass}",
     )
 
+    # 33.3 — C123 R22.1 _handle_chat 讀 result["memory_paths"] nested dict (修 Codex 第 43 輪 Phase 4 抓到的 mapping miss)
+    # transport_ingest.run_transport_event 把 session/daily/shared_channel 全收在 nested dict, 不是 flat key.
+    # 之前 bridge_service 寫成 result.get("memory_session_path") 一直拿到空字串 → session_path 空 → gate fail.
+    has_c123_tag = "R22.1 C123" in _bs_src_c120
+    has_c123_nested_access = 'result.get("memory_paths")' in _bs_src_c120
+    has_c123_session_get = 'memory_paths.get("session")' in _bs_src_c120
+    has_c123_daily_get = 'memory_paths.get("daily")' in _bs_src_c120
+    has_c123_shared_channel_get = 'memory_paths.get("shared_channel")' in _bs_src_c120
+    has_c123_no_flat_call = 'result.get("memory_session_path"' not in _bs_src_c120
+    # functional smoke: stub run_transport_event return memory_paths nested → 確認 _handle_chat mapping 對
+    from unittest.mock import patch as _patch_c123
+    _fake_result_c123 = {
+        "response": "FAKE_REPLY",
+        "memory_paths": {
+            "session": "70_Active_Plans/Session_Logs/fake/s.md",
+            "daily": "11_AI_Mirror/ingestion_logs/daily_flush/fake.md",
+            "shared_channel": "70_Active_Plans/SharedChannels/fake.md",
+        },
+    }
+    _td_c123 = tempfile.mkdtemp(prefix="r22_1_c123_")
+    c123_mapping_session = False
+    c123_mapping_daily = False
+    c123_mapping_shared = False
+    c123_mapping_reply = False
+    try:
+        _v_c123 = Path(_td_c123) / "vault"
+        _v_c123.mkdir(parents=True)
+        # 直接 call _handle_chat unbound, fake server + fake handler
+        class _FakeServerC123:
+            vault_root = _v_c123
+        class _FakeHandlerC123:
+            def __init__(self):
+                self.server = _FakeServerC123()
+        _fh = _FakeHandlerC123()
+        with _patch_c123.object(_bs_mod_c120, "run_transport_event", return_value=_fake_result_c123):
+            _out = _bs_mod_c120._HermesBridgeHandler._handle_chat(_fh, {"user_message": "hi", "persona": "core"})  # type: ignore[arg-type]
+        c123_mapping_session = _out.get("session_path") == "70_Active_Plans/Session_Logs/fake/s.md"
+        c123_mapping_daily = _out.get("daily_path") == "11_AI_Mirror/ingestion_logs/daily_flush/fake.md"
+        c123_mapping_shared = _out.get("shared_channel_path") == "70_Active_Plans/SharedChannels/fake.md"
+        c123_mapping_reply = _out.get("reply") == "FAKE_REPLY"
+    finally:
+        shutil.rmtree(_td_c123, ignore_errors=True)
+
+    report.step(
+        "C123 R22.1 _handle_chat 讀 result['memory_paths'] nested 修 mapping miss (Codex 第 43 輪 Phase 4 補)",
+        has_c123_tag and has_c123_nested_access and has_c123_session_get and has_c123_daily_get
+        and has_c123_shared_channel_get and has_c123_no_flat_call
+        and c123_mapping_session and c123_mapping_daily and c123_mapping_shared and c123_mapping_reply,
+        f"tag={has_c123_tag} nested={has_c123_nested_access} session={has_c123_session_get} "
+        f"daily={has_c123_daily_get} shared={has_c123_shared_channel_get} no_flat={has_c123_no_flat_call} "
+        f"map_session={c123_mapping_session} map_daily={c123_mapping_daily} "
+        f"map_shared={c123_mapping_shared} map_reply={c123_mapping_reply}",
+    )
+
     return report.summary()
 
 

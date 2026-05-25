@@ -184,12 +184,18 @@ class _HermesBridgeHandler(BaseHTTPRequestHandler):
             context_override=str(body.get("context", "")).strip() or None,
             session_override=str(body.get("session", "")).strip() or None,
         )
+        # R22.1 C123: transport_ingest.run_transport_event 把 session/daily/shared_channel 全收在
+        # nested dict `memory_paths` (line 488/593/747), 不是 flat `memory_session_path`.
+        # Codex 第 43 輪 Phase 4 抓到 mapping miss (session_path 一直空字串). 修讀法.
+        memory_paths_raw = result.get("memory_paths") or {}
+        memory_paths = memory_paths_raw if isinstance(memory_paths_raw, dict) else {}
         return {
             "ok": True,
             "persona": persona,
             "reply": str(result.get("response", "")),
-            "session_path": str(result.get("memory_session_path", "")),
-            "daily_path": str(result.get("memory_daily_path", "")),
+            "session_path": str(memory_paths.get("session") or ""),
+            "daily_path": str(memory_paths.get("daily") or ""),
+            "shared_channel_path": str(memory_paths.get("shared_channel") or ""),
             "hermes_augmentation_applied": bool(hermes_augmentation),
         }
 
