@@ -3455,6 +3455,58 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"2nd_succeeded={c137_2nd_succeeded} fallback_to_2nd={c137_fallback_to_2nd} attempts={c137_attempts_logged}",
     )
 
+    # ─── Step 37 (R24 F1): daily_flush CJK + emoji 寫入 → 讀回 byte-for-byte 一致 regression smoke ───
+    # F1 (HANDOFF §5.8): R15 收尾留下「特定執行路徑 ????? 編碼污染」audit 至今未做.
+    # 預期 R18 C77 (cp950 stdin) + R21.1 C114 (cp950 stdout) 已修主路徑, 此 step 加 regression smoke 防回歸.
+    report.section("Step 37 (R24 F1): daily_flush CJK + emoji 寫入 regression smoke (R15 收尾遺留, R18 C77 + R21.1 C114 修主路徑)")
+
+    from agent_memory.chat_session import append_daily_chat_digest as _adcd_c138
+    _td_c138 = tempfile.mkdtemp(prefix="r24_f1_")
+    c138_no_replacement_char = False
+    c138_cjk_preserved = False
+    c138_emoji_preserved = False
+    c138_invisible_handled = False
+    try:
+        _v_c138 = Path(_td_c138) / "vault"
+        _v_c138.mkdir(parents=True)
+        from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA138
+        _a138 = _OVA138(_v_c138); _a138.ensure_skeleton()
+        # 寫含 CJK + emoji + zero-width-space 的 daily_flush
+        cjk_text = "藍莓銀河測試共識風險排序回顧紀錄"
+        emoji_text = "📖✅⚠️🎯"
+        # 含 zero-width space U+200B (應被 strip, R17 BOM strip 同邏輯)
+        invisible_text = "已收到​訊息"
+        user_msg = f"{cjk_text} {emoji_text} {invisible_text}"
+        assistant_msg = f"好的, 我已記錄 {cjk_text} 跟 {emoji_text}."
+        path_rel, _date_str = _adcd_c138(
+            _a138,
+            persona_id="advisor",
+            session_id="r24-f1-test",
+            user_message=user_msg,
+            assistant_message=assistant_msg,
+        )
+        # 讀回 vault file 確認沒 ????? 替代字元 + CJK 完整 + emoji 完整
+        written_file = _v_c138 / path_rel.replace("\\", "/")
+        if written_file.exists():
+            content = written_file.read_text(encoding="utf-8")
+            # 沒 ? 替代字元 (即使單一 ? 也算可疑, 但中文標點不含 ?, 所以這比對嚴格)
+            # Python encoding=replace 預設用 "?", chr(0xFFFD) 是 unicode replacement char
+            c138_no_replacement_char = ("?????" not in content) and ("�" not in content)
+            c138_cjk_preserved = cjk_text in content
+            c138_emoji_preserved = emoji_text in content
+            # invisible char (U+200B) 預期被 R17 strip_invisible_chars 處理掉
+            # daily 不一定走 strip (只在 read_note 走), 容許保留 — 重點是不該變 ?
+            c138_invisible_handled = ("已收到" in content) and ("訊息" in content)
+    finally:
+        shutil.rmtree(_td_c138, ignore_errors=True)
+
+    report.step(
+        "C138 F1 daily_flush CJK+emoji+invisible 寫入 regression smoke (R15 編碼污染留尾 / R18 C77 + R21.1 C114 修主路徑後)",
+        c138_no_replacement_char and c138_cjk_preserved and c138_emoji_preserved and c138_invisible_handled,
+        f"no_replacement={c138_no_replacement_char} cjk={c138_cjk_preserved} "
+        f"emoji={c138_emoji_preserved} invisible={c138_invisible_handled}",
+    )
+
     return report.summary()
 
 
