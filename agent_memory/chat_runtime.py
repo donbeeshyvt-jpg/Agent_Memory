@@ -390,6 +390,20 @@ def run_chat_turn(
         if not isinstance(_caps, dict):
             _caps = {}
         tools_enabled = bool(_caps.get("tools_enabled", False))
+        # R21.x C118 (套 R21 C112 platform_toolsets 基礎建設):
+        # 粗粒度 platform filter — persona 設了 platform_toolsets matrix 且當前
+        # transport 對應 platform 在 matrix 內、但 allow list 為空 → 顯式禁 tools.
+        # backward compat: matrix 沒設 / platform 不在 matrix / allow list 含 tool →
+        # 維持 persona-only tools_enabled 行為 (既有 e2e 不退步).
+        # per-tool granular filter 用 is_tool_allowed_on_platform 留 R22+ tool execute 層套.
+        if tools_enabled:
+            _platform_toolsets = _resolved.get("platform_toolsets") if isinstance(_resolved, dict) else None
+            if isinstance(_platform_toolsets, dict) and _platform_toolsets:
+                _plat_check = (transport or "").strip().lower()
+                if _plat_check and _plat_check in _platform_toolsets:
+                    _allow_list = _platform_toolsets.get(_plat_check, [])
+                    if isinstance(_allow_list, list) and not _allow_list:
+                        tools_enabled = False  # explicit deny — platform 在 matrix 但 0 tools 允許
         # R16 C70: memory_capture_enabled 跟 tools_enabled 獨立. 對齊規格 §5.2
         # D2 — tools_disabled persona 也能聰明接住「幫我記得 X」記憶提醒.
         # backward-compat: 舊 schema 沒這欄位 → C68 _normalize_capabilities

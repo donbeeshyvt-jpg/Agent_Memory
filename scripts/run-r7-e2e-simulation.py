@@ -3015,6 +3015,51 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"short_empty={c115_short_returns_empty} long_queries={c115_long_attempts_query}",
     )
 
+    # ─── Step 32 (R21.x C117+C118): umbrella_llm 套 auxiliary + chat_runtime 套 platform_toolsets filter ─
+    report.section("Step 32 (R21.x C117+C118): umbrella_llm auxiliary 套用 + chat_runtime platform_toolsets filter")
+
+    # 32.1 — C117 umbrella_llm._default_call_llm 套 auxiliary="umbrella" + 三層 propagate (LLMClient/helpers/umbrella)
+    import agent_memory.umbrella_llm as _um_mod_c117
+    _um_src_c117 = Path(_um_mod_c117.__file__).read_text(encoding="utf-8")
+    has_c117_tag_um = "R21.x C117" in _um_src_c117
+    has_c117_aux_call = 'auxiliary="umbrella"' in _um_src_c117
+
+    import agent_memory.llm_text_helpers as _lth_mod_c117
+    _lth_src_c117 = Path(_lth_mod_c117.__file__).read_text(encoding="utf-8")
+    has_c117_helpers_kwarg = "auxiliary: str | None = None" in _lth_src_c117 and "auxiliary=auxiliary" in _lth_src_c117
+
+    import agent_memory.llm_client as _lc_mod_c117
+    _lc_src_c117 = Path(_lc_mod_c117.__file__).read_text(encoding="utf-8")
+    has_c117_client_kwarg = "auxiliary: str | None = None" in _lc_src_c117
+    has_c117_client_propagate = "auxiliary=auxiliary" in _lc_src_c117
+
+    report.step(
+        "C117 umbrella_llm 套 auxiliary='umbrella' + LLMClient/helpers propagate (R21.x 套 R21 C111 基礎建設)",
+        has_c117_tag_um and has_c117_aux_call and has_c117_helpers_kwarg
+        and has_c117_client_kwarg and has_c117_client_propagate,
+        f"um_tag={has_c117_tag_um} um_aux_call={has_c117_aux_call} "
+        f"helpers_kwarg={has_c117_helpers_kwarg} client_kwarg={has_c117_client_kwarg} "
+        f"client_propagate={has_c117_client_propagate}",
+    )
+
+    # 32.2 — C118 chat_runtime 套 platform_toolsets filter (粗粒度 — allow list 空 → tools_enabled 整體 False)
+    _crt_src_c118 = Path(_crt_c92.__file__).read_text(encoding="utf-8")
+    has_c118_tag = "R21.x C118" in _crt_src_c118
+    has_c118_filter_logic = "_platform_toolsets" in _crt_src_c118 and "_allow_list" in _crt_src_c118
+    has_c118_explicit_deny = "explicit deny" in _crt_src_c118.lower() or "tools_enabled = False" in _crt_src_c118
+    # 確認套用點在 tools_enabled 讀完之後 (在 chat_runtime 內 line 392 後)
+    has_c118_after_caps = (
+        "_caps.get(\"tools_enabled\"" in _crt_src_c118
+        and _crt_src_c118.index("R21.x C118") > _crt_src_c118.index("_caps.get(\"tools_enabled\"")
+    )
+
+    report.step(
+        "C118 chat_runtime 套 platform_toolsets filter (R21.x 套 R21 C112 基礎建設, 粗粒度 allow-empty → deny)",
+        has_c118_tag and has_c118_filter_logic and has_c118_explicit_deny and has_c118_after_caps,
+        f"tag={has_c118_tag} filter_logic={has_c118_filter_logic} "
+        f"explicit_deny={has_c118_explicit_deny} after_caps={has_c118_after_caps}",
+    )
+
     return report.summary()
 
 

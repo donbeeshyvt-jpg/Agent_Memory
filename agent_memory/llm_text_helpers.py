@@ -60,6 +60,7 @@ def call_llm_for_text(
     persona_id: str = "steward",
     temperature: float = 0.2,
     timeout_s: float = 60.0,
+    auxiliary: str | None = None,
 ) -> str:
     """Prompt → plain text. LLM 不可用拋 Exception.
 
@@ -69,6 +70,8 @@ def call_llm_for_text(
         persona_id: 用哪個 persona 的路由設定 (預設 steward)
         temperature: LLM 溫度
         timeout_s: 單次 generate 超時
+        auxiliary: R21.x C117 — 子任務 name (umbrella/curator/triage/etc), 傳給
+                   LLMClient.generate 走 auxiliary_overrides 路由. None = 既有行為.
 
     Returns: LLM 回傳純文字 (strip 過).
 
@@ -83,6 +86,7 @@ def call_llm_for_text(
         persona_id=persona_id,
         temperature=temperature,
         timeout_s=timeout_s,
+        auxiliary=auxiliary,
     )
     content = result.content if hasattr(result, "content") else str(result)
     return content.strip()
@@ -95,10 +99,12 @@ def call_llm_for_json(
     persona_id: str = "steward",
     temperature: float = 0.1,
     timeout_s: float = 60.0,
+    auxiliary: str | None = None,
 ) -> dict[str, Any]:
     """Prompt → JSON object (dict). LLM 不可用 / 回非 JSON → 拋 Exception.
 
     自動 strip ```json ... ``` fence + 找第一個 {} 塊.
+    R21.x C117: 加 auxiliary kwarg propagate 給 call_llm_for_text.
     """
     text = call_llm_for_text(
         vault_root,
@@ -106,6 +112,7 @@ def call_llm_for_json(
         persona_id=persona_id,
         temperature=temperature,
         timeout_s=timeout_s,
+        auxiliary=auxiliary,
     )
     raw = _extract_first_json_block(text, expect_array=False)
     parsed = json.loads(raw)
@@ -121,10 +128,12 @@ def call_llm_for_json_list(
     persona_id: str = "steward",
     temperature: float = 0.1,
     timeout_s: float = 60.0,
+    auxiliary: str | None = None,
 ) -> list[dict[str, Any]]:
     """Prompt → JSON array of objects. LLM 不可用 / 回非 array → 拋 Exception.
 
     自動 strip ```json ... ``` fence + 找第一個 [] 塊.
+    R21.x C117: 加 auxiliary kwarg propagate.
     """
     text = call_llm_for_text(
         vault_root,
@@ -132,6 +141,7 @@ def call_llm_for_json_list(
         persona_id=persona_id,
         temperature=temperature,
         timeout_s=timeout_s,
+        auxiliary=auxiliary,
     )
     raw = _extract_first_json_block(text, expect_array=True)
     parsed = json.loads(raw)

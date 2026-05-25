@@ -166,11 +166,20 @@ def _default_call_llm(prompt: str, vault_root: Path) -> dict[str, Any]:
     """Default LLM call — 透過 R11 C41 統一 helper.
 
     若 LLMClient 不可用 → 拋 Exception 讓上層 fallback skip.
+
+    R21.x C117: 套 auxiliary="umbrella" — 走 llm_router.yaml auxiliary_overrides.umbrella
+    路由 (若 yaml 有設, priority 高過 persona). 沒設就 fallback persona/global (backward compat).
     """
 
     from agent_memory.llm_text_helpers import call_llm_for_json  # lazy import
 
-    return call_llm_for_json(vault_root, prompt, temperature=0.1, timeout_s=60.0)
+    return call_llm_for_json(
+        vault_root,
+        prompt,
+        temperature=0.1,
+        timeout_s=60.0,
+        auxiliary="umbrella",
+    )
 
 
 # ─── Main entry ──────────────────────────────────────────────────────────────

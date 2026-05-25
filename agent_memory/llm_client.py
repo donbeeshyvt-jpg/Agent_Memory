@@ -169,7 +169,15 @@ class LLMClient:
         override_model: str | None = None,
         temperature: float = 0.2,
         timeout_s: float = 90.0,
+        auxiliary: str | None = None,
     ) -> LLMGenerateResult:
+        """Generate one assistant response from routed provider chain.
+
+        R21.x C117: 加 auxiliary kwarg, 對應 R21 C111 auxiliary.* LLM 分工.
+        子任務 (umbrella/curator/triage/etc) 傳 auxiliary="<task_name>" → 走
+        llm_router.yaml auxiliary_overrides[task_name] (priority 高過 persona, 低過 override).
+        backward compat: 不傳 auxiliary → 完全跟既有行為一致.
+        """
         """Generate one assistant response from routed provider chain."""
         serialize_text = os.getenv("AGENT_MEMORY_SERIALIZE_LLM", "1").strip().lower()
         serialize = serialize_text not in {"0", "false", "no", "off"}
@@ -190,6 +198,7 @@ class LLMClient:
                 persona_id=persona_id,
                 override_profile=override_profile,
                 override_model=override_model,
+                auxiliary=auxiliary,  # R21.x C117: 子任務 LLM 分工 propagate
             )
             providers = cfg.get("providers", {})
             if not isinstance(providers, dict):
