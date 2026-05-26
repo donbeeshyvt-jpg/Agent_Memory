@@ -35,6 +35,7 @@ from agent_memory.security.scanner import scan_incoming_user_text
 from agent_memory.transport_profiles import load_transport_profiles, resolve_transport_profile
 from agent_memory.types import MemoryType
 from agent_memory.vault import ObsidianVaultAdapter
+from agent_memory.vault.obsidian import read_brain_type
 
 
 @dataclass(slots=True)
@@ -279,6 +280,127 @@ def _persist_local_response(
     }
 
 
+def _map_companion_channel_type(transport: str, payload: dict[str, Any]) -> str:
+    """V3-D-DC1: transport → companion channel_type 4 種對映."""
+    t = (transport or "").lower()
+    if t in ("cli", "repl"):
+        return "cli"
+    # discord DM 看 payload 是否有 guild_id (DM 沒)
+    if t == "discord":
+        guild_id = payload.get("guild_id") or _get_by_path(payload, "context.guild_id")
+        if not guild_id:
+            return "dm"
+        # 直播 channel? 假設 channel_type 從 payload "channel_kind" 或預設 public_text_channel
+        kind = payload.get("channel_kind") or _get_by_path(payload, "context.channel_kind")
+        if kind in ("public_stream", "stream", "live"):
+            return "public_stream"
+        return "public_text_channel"
+    return "public_text_channel"
+
+
+def _check_is_owner(vault_root: Path, user_id: str) -> bool:
+    """V3-D-DC1: 對比 companion.db owner_state.owner_user_id."""
+    if not user_id:
+        return False
+    try:
+        from agent_memory.companion.companion_db import open_companion_db
+        with open_companion_db(vault_root) as conn:
+            row = conn.execute(
+                "SELECT owner_user_id FROM owner_state LIMIT 1"
+            ).fetchone()
+        if row and row["owner_user_id"] == user_id:
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def _append_companion_session_log(vault_root: Path, user_id: str, message: str, response_text: str, channel_type: str) -> None:
+    """V3-D-DC1: 對齊 §5.1 10_Working_Memory/11_Session_Logs/ markdown append (Phase 1 minimal)."""
+    from datetime import datetime
+    day = datetime.now().strftime("%Y-%m-%d")
+    log_dir = vault_root / "10_Working_Memory" / "11_Session_Logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / f"live-{day}_{channel_type}.md"
+    ts = datetime.now().strftime("%H:%M:%S")
+    line = f"\n## {ts} {user_id} ({channel_type})\n\n**user**: {message}\n\n**bot**: {response_text}\n"
+    if not path.exists():
+        path.write_text(f"---\ntype: session_log\nschema_version: 10\nday: {day}\nchannel_type: {channel_type}\n---\n\n# Live Session — {day}\n", encoding="utf-8")
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(line)
+
+
+def _run_companion_transport_event(
+    *, vault_root: Path, transport: str, payload: dict[str, Any],
+    explicit_persona: str | None = None,
+    context_override: str | None = None, session_override: str | None = None,
+    allow_llm_degraded: bool = False,
+) -> dict[str, Any]:
+    """V3-D-DC1: companion brain_type 走 V3 22-step pipeline.
+
+    對齊 V3 §3.4 strategy pattern + §4.1 Mode A standalone.
+    Phase 1 stub LLM 內建在 companion_chat_runtime, 不接 LLMClient.
+    """
+    from agent_memory.companion.companion_chat_runtime import (
+        run_companion_chat_turn, ChatRequest,
+    )
+
+    profiles = load_transport_profiles(vault_root)
+    turn = parse_inbound_turn(transport, payload, profiles)
+    injection_scan = scan_incoming_user_text(turn.message)
+
+    is_owner = _check_is_owner(vault_root, turn.user_id)
+    channel_type = _map_companion_channel_type(turn.transport, payload)
+
+    req = ChatRequest(
+        user_id=turn.user_id or "anonymous",
+        session_id=session_override or turn.session or f"{turn.transport}-{turn.channel_id}",
+        channel_id=turn.channel_id or "default",
+        channel_type=channel_type,
+        message=turn.message,
+        is_owner=is_owner,
+        concurrent_viewers=int(payload.get("concurrent_viewers", 0) or 0),
+        idle_seconds=float(payload.get("idle_seconds", 0.0) or 0.0),
+        chat_velocity=float(payload.get("chat_velocity", 0.5) or 0.5),
+    )
+
+    resp = run_companion_chat_turn(req, vault_root)
+
+    # 寫 markdown session log (companion 10_Working_Memory/11_Session_Logs/)
+    try:
+        _append_companion_session_log(
+            vault_root, req.user_id, req.message, resp.response_text, channel_type,
+        )
+    except Exception:
+        pass  # 不破整個 transport
+
+    result: dict[str, Any] = {
+        "transport": turn.transport,
+        "channel_id": turn.channel_id,
+        "user_id": turn.user_id,
+        "persona": "companion",
+        "brain_type": "companion",
+        "response": resp.response_text,
+        "decision": resp.decision,
+        "affect_state": resp.affect_state,
+        "emotion_state": resp.emotion_state,
+        "balance_state": resp.balance_state,
+        "intimacy": resp.intimacy,
+        "og_blocked": resp.og_blocked,
+        "og_rule_triggered": resp.og_rule_triggered,
+        "scanner_hits_count": resp.scanner_hits_count,
+        "injection_risk": resp.injection_risk,
+        "pipeline_steps_done": resp.pipeline_steps_done,
+        "trace_id": resp.trace_id,
+        "channel_type": channel_type,
+        "is_owner": is_owner,
+        "degraded": False,
+    }
+    if injection_scan.get("detected"):
+        result["security_scan"] = injection_scan
+    return result
+
+
 def run_transport_event(
     *,
     vault_root: Path,
@@ -296,6 +418,18 @@ def run_transport_event(
     allow_llm_degraded: bool = False,
 ) -> dict[str, Any]:
     root = Path(vault_root).expanduser().resolve()
+
+    # V3-D-DC1 brain_type dispatcher (對齊 V3 §3.4 strategy pattern)
+    # companion vault → 走 V3 22-step pipeline; steward → 既有 V2 chat_runtime
+    brain_type = read_brain_type(root)
+    if brain_type == "companion":
+        return _run_companion_transport_event(
+            vault_root=root, transport=transport, payload=payload,
+            explicit_persona=explicit_persona,
+            context_override=context_override, session_override=session_override,
+            allow_llm_degraded=allow_llm_degraded,
+        )
+
     adapter = ObsidianVaultAdapter(root)
     adapter.ensure_skeleton()
 
