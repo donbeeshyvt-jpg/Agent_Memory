@@ -53,8 +53,16 @@ from agent_memory.companion.daydream_engine import (
     generate_daydream, maybe_emit_daydream,
 )
 from agent_memory.companion.decision_engine import DecisionInput, decide
+from agent_memory.companion.embodied_state import EmbodiedState
+from agent_memory.companion.emotion_contagion import apply_contagion
+from agent_memory.companion.expectation_state import (
+    list_session_expectations as _list_expectations,
+)
 from agent_memory.companion.flow_mode_detector import (
     FlowModeContext, detect_flow_mode,
+)
+from agent_memory.companion.metacognition import (
+    check_self_consistency, maybe_prefix_correction,
 )
 from agent_memory.companion.inner_monologue import (
     generate_inner_monologue, maybe_inject_into_response,
@@ -601,6 +609,30 @@ def _build_companion_system_prompt(
         # 之前截 600 = 截掉 80% (L1+L2+L3+L4 算出 3000 char 但 prompt 只用 600)
         # 改 2400 留 600 char buffer 給其他 sections, LLM 看到完整 4-layer memory
         lines.append(memory_ctx[:2400])
+    # ⭐ V3-G3 (user 2026-05-27 audit Plan A): H4 身體感 (§29.4)
+    embodied_dict = prompt_packet.get("embodied") or {}
+    if embodied_dict and embodied_dict.get("stream_duration_minutes", 0) > 0:
+        e_energy = float(embodied_dict.get("energy", 0.8))
+        e_thirst = float(embodied_dict.get("thirst", 0.0))
+        e_strain = float(embodied_dict.get("voice_strain", 0.0))
+        e_sleep = float(embodied_dict.get("sleepiness", 0.0))
+        e_mins = int(embodied_dict.get("stream_duration_minutes", 0))
+        body_parts = []
+        if e_energy < 0.5:
+            body_parts.append(f"能量低 ({e_energy:.2f}) — 反應變慢, 想休息")
+        if e_thirst > 0.3:
+            body_parts.append(f"渴 ({e_thirst:.2f}) — 想喝水, 聲音變沙")
+        if e_strain > 0.3:
+            body_parts.append(f"嗓子有點啞 ({e_strain:.2f})")
+        if e_sleep > 0.4:
+            body_parts.append(f"想睡 ({e_sleep:.2f}) — 對話節奏變慢")
+        if body_parts:
+            lines.append("")
+            lines.append(f"[E2. 我的身體感 (H4, 直播 {e_mins} min)] ⭐ V3-G3")
+            for bp in body_parts:
+                lines.append(f"- {bp}")
+            lines.append("- (自然帶進回應, 不要假裝不累 / 不渴)")
+
     # ⭐ V3-G2 (user 2026-05-27 audit Plan A): H3 白日夢 + 流量模式 (§29.3 + §26.2.E)
     daydream_text = (prompt_packet.get("daydream") or "").strip()
     flow_mode = (prompt_packet.get("flow_mode") or "").strip()
@@ -895,6 +927,48 @@ def run_companion_chat_turn(
     resp.pipeline_steps_done.append(4)
     resp.pipeline_steps_done.append(5)
 
+    # ─── Step 5.5: H11 Emotion Contagion (V3-G3, §29.11) ───
+    # 對 owner factor=0.4 / VIP intim≥0.4 factor=0.2 / 其他 factor=0
+    # mixing: own (neutral baseline) + viewer (user-derived) → 反映「跟對方共情強度」
+    _intim_for_contagion = (
+        read_intimacy(vault_root, request.user_id) or IntimacyState(user_id=request.user_id)
+    ).intimacy_score
+    new_affect = apply_contagion(
+        AffectState(),  # own baseline (Phase 2+ 改從 DB 讀 agent 上回 affect)
+        new_affect,     # viewer affect (這回 user 訊息算出來的)
+        is_owner=request.is_owner,
+        intimacy_score=_intim_for_contagion,
+    )
+    resp.pipeline_steps_done.append(55)
+
+    # ─── Step 5.6: H12 Expectation State (V3-G3, §29.12) ───
+    # 撈 session 內既有 expectation_state, 看 delta → affect 微調
+    try:
+        _expects = _list_expectations(vault_root, request.session_id)
+    except Exception:
+        _expects = []
+    if _expects:
+        # 取最大 |delta| 那筆當代表
+        _max_delta_row = max(_expects, key=lambda r: abs(r.get("delta", 0.0)))
+        _delta = float(_max_delta_row.get("delta", 0.0))
+        if _delta > 0.3:
+            # 超預期 → joy + arousal 微加
+            new_affect = AffectState(
+                valence=min(1.0, new_affect.valence + 0.05),
+                arousal=min(1.0, new_affect.arousal + 0.10),
+                dominance=new_affect.dominance,
+                uncertainty=new_affect.uncertainty,
+            )
+        elif _delta < -0.3:
+            # 沒達標 → valence 微降
+            new_affect = AffectState(
+                valence=max(-1.0, new_affect.valence - 0.08),
+                arousal=new_affect.arousal,
+                dominance=new_affect.dominance,
+                uncertainty=min(1.0, new_affect.uncertainty + 0.05),
+            )
+    resp.pipeline_steps_done.append(56)
+
     # ─── Step 6+7: seven_emotions_balance update ───
     prev_emo = read_latest_emotion_state(vault_root, request.user_id) or EmotionState()
     new_emo = update_emotion_state(prev_emo, new_affect, appraisal)
@@ -1012,6 +1086,22 @@ def run_companion_chat_turn(
     )
     resp.pipeline_steps_done.append(118)
 
+    # ─── Step 11.9: H4 Embodied State (V3-G3, §29.4) ───
+    # 模擬 energy/hunger/thirst/sleepiness/voice_strain — 直播時長隨自然消耗
+    # Phase 1 stub: 用 session 內 raw_events 數估 stream_duration (60 turn ≈ 1h)
+    try:
+        with open_companion_db(vault_root) as conn:
+            _turn_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM raw_events WHERE session_id=? AND actor='user'",
+                (request.session_id,),
+            ).fetchone()["c"] or 0
+        _stream_minutes = max(0, int(_turn_count * 1.0))  # 1 turn ≈ 1 min 簡化
+        from agent_memory.companion.embodied_state import update_embodied_over_time
+        embodied = update_embodied_over_time(EmbodiedState(), elapsed_minutes=_stream_minutes)
+    except Exception:
+        embodied = EmbodiedState()
+    resp.pipeline_steps_done.append(119)
+
     # ─── Step 12: Decision Engine ───
     dec_input = DecisionInput(
         goal_alignment=max(0.0, appraisal.goal_congruence),
@@ -1056,6 +1146,8 @@ def run_companion_chat_turn(
         # ⭐ V3-G2 (user 2026-05-27 audit Plan A 接 H3+flow_mode):
         "daydream": daydream_result.daydream_text if daydream_result.daydream_text else "",
         "flow_mode": current_flow_mode,
+        # ⭐ V3-G3 (user 2026-05-27 audit Plan A 接 H4 embodied):
+        "embodied": embodied.as_dict(),
     }
     resp.pipeline_steps_done.append(14)
 
@@ -1105,7 +1197,19 @@ def run_companion_chat_turn(
     response_with_tic = maybe_inject_tic_into_response(response_with_monologue, tic_sel.tic)
     # ⭐ V3-G2: H3 daydream dead_chat_mode 外顯 (D-V3-45 + §29.3)
     # daydream.externally_visible 已在 generate_daydream 內判 (flow_mode==dead_chat 才 True)
-    final_response = maybe_emit_daydream(response_with_tic, daydream_result)
+    response_with_dd = maybe_emit_daydream(response_with_tic, daydream_result)
+    # ⭐ V3-G3: H10 Metacognition self_consistency check (§29.10)
+    # 對近 5 turn raw_events actor='bot' 找矛盾 keyword pair, 偵測到 → 加修正前綴
+    try:
+        _meta_result = check_self_consistency(
+            vault_root,
+            candidate_response=response_with_dd,
+            session_id=request.session_id,
+            look_back_turns=5,
+        )
+        final_response = maybe_prefix_correction(response_with_dd, _meta_result)
+    except Exception:
+        final_response = response_with_dd
     resp.pipeline_steps_done.append(166)
 
     # ─── Step 17: Memory Write Gate (raw_event user+bot + episodic + injection_detected) ───

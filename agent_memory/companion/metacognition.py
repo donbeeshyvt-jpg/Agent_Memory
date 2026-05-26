@@ -55,9 +55,11 @@ def check_self_consistency(
     look_back_turns: int = 5,
 ) -> MetacognitionResult:
     """V3 §29.10: 跟近 N turn agent response 比對矛盾."""
+    # V3-G3: 兼容 'agent' (Phase 1 早期) 和 'bot' (V3-E1 Bug 12 後對齊)
+    # raw_events 實際寫入用 'bot' (chat_runtime Step 17), 但留 'agent' 不破 V3 stress section T mock
     with open_companion_db(vault_root) as conn:
         rows = conn.execute(
-            "SELECT content FROM raw_events WHERE session_id=? AND actor='agent' ORDER BY created_at DESC LIMIT ?",
+            "SELECT content FROM raw_events WHERE session_id=? AND actor IN ('agent','bot') ORDER BY created_at DESC LIMIT ?",
             (session_id, look_back_turns),
         ).fetchall()
     if not rows:
