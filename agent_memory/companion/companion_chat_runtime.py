@@ -969,6 +969,18 @@ def run_companion_chat_turn(
     write_balance_state(vault_root, request.user_id, new_bal, channel_id=request.channel_id)
     resp.pipeline_steps_done.append(17)
 
+    # ─── Step 17.5: V3-F1 viewer profile markdown (對 non-owner 寫) ───
+    # user 2026-05-27 第 3 輪深度觀察 Q2+Q3 拍板 — 觀眾應該有個別記憶塊.
+    # 對齊 V3 §5 vault skeleton 雙寫 + V3 §13 Memory Router L3 viewer 擴展.
+    # owner 不寫 (已有 00.08_Owner_Profile.md, V3-E5 動態讀).
+    if not request.is_owner:
+        try:
+            from agent_memory.companion.audience_writer import write_viewer_profile
+            write_viewer_profile(vault_root, request.user_id)
+        except Exception:
+            pass  # non-critical, 失敗不阻塞 chat
+    resp.pipeline_steps_done.append(175)
+
     # ─── Step 18: Self-Modification check (channel-aware flush) ───
     # 簡單算 turn_count = raw_events in this session
     with open_companion_db(vault_root) as conn:

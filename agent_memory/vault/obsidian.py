@@ -376,8 +376,38 @@ class ObsidianVaultAdapter(VaultAdapter):
             )
 
         # 99_Templates 五個 TPL
+        # V3-F1 (V3-E8 2026-05-27): TPL_Viewer 升真實 schema (對齊 audience_writer.py 寫入格式)
+        # 其他 4 個 TPL 留 V3-F2/F3/F8 對應 commit 升 schema
+        tpl_viewer_body = (
+            "---\n"
+            "type: viewer_profile\n"
+            "schema_version: 10\n"
+            "user_id: <user_id>\n"
+            "display_name: <display_name>\n"
+            "loyalty_tier: casual | vip | banned\n"
+            "intimacy_score: 0.0  # 0~1\n"
+            "intimacy_stage: stranger | approaching | acquaintance | familiar | close\n"
+            "interaction_count: 0\n"
+            "emotional_resonance_density: 0.0  # 強情緒 turn / 總 turn\n"
+            "last_interaction_at: <iso8601>\n"
+            "first_seen_at: <iso8601>\n"
+            "updated_at: <iso8601>\n"
+            "role: audience | owner\n"
+            "---\n"
+            "# TPL_Viewer — Viewer Profile schema\n\n"
+            "> 模板 — 對齊 V3 §10.5 / §10.6 + V3-F1.\n"
+            "> 實際寫入由 `agent_memory/companion/audience_writer.py:write_viewer_profile()` 處理.\n\n"
+            "## 我對這個觀眾的觀察 (auto)\n\n"
+            "- loyalty / 親密度 / 互動次數 / 情緒共鳴密度 / 首次見面 / 最近互動\n\n"
+            "## 偏好觀察 (我學到的)\n\n"
+            "- 引 preference_memories 表的 topic + claim + strength + status\n\n"
+            "## 對話 highlight (近 5 pair)\n\n"
+            "- 引 raw_events 表的 user + bot 對話\n\n"
+            "## 我下次對這個觀眾的策略 (dispatcher hint)\n\n"
+            "- 依 loyalty_tier + intimacy_score 自動寫策略提示\n"
+        )
+        self._write_companion_baseline_file("99_Templates/TPL_Viewer.md", tpl_viewer_body)
         for tpl_name, tpl_purpose in [
-            ("TPL_Viewer", "viewer_profile"),
             ("TPL_Emotion_Event", "emotional_memory"),
             ("TPL_Learned_Skill", "learned_skill"),
             ("TPL_Inside_Joke", "inside_joke"),
@@ -386,7 +416,7 @@ class ObsidianVaultAdapter(VaultAdapter):
             self._write_companion_baseline_file(
                 f"99_Templates/{tpl_name}.md",
                 f"---\ntype: {tpl_purpose}\nschema_version: 10\n---\n"
-                f"# {tpl_name}\n\n> 模板 — 對齊 V3 規劃書附錄 C.\n",
+                f"# {tpl_name}\n\n> 模板 — 對齊 V3 規劃書附錄 C. 真實 schema 留 V3-F2/F3/F8 補.\n",
             )
 
     def _write_companion_baseline_file(self, rel_path: str, content: str) -> None:
