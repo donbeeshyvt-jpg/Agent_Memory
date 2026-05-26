@@ -28,11 +28,11 @@ from agent_memory.companion.companion_db import open_companion_db
 
 
 _STAGES = (
-    (0.2, 5, "初識"),
-    (0.4, 5, "熟悉"),
-    (0.6, 20, "信任"),
-    (0.8, 50, "親密"),
-    (1.0, 100, "深度理解"),
+    (0.0, 0, "初識"),
+    (0.2, 5, "熟悉"),
+    (0.4, 20, "信任"),
+    (0.6, 50, "親密"),
+    (0.8, 100, "深度理解"),
 )
 
 
@@ -69,13 +69,11 @@ def compute_intimacy(state: IntimacyState) -> tuple[float, str]:
         + 0.4 * _normalize(state.emotional_resonance_density, 1.0)
         + 0.3 * _normalize(state.narrative_identification, 1.0)
     )
-    # 5 階段 lookup (對齊 §10.4 + interaction_count 雙條件)
+    # 5 階段 lookup (對齊 §10.4 雙條件 — score AND interaction_count 都達到才升級)
     stage = "初識"
     for threshold, ic_min, name in _STAGES:
-        if score < threshold and state.interaction_count < ic_min:
+        if score >= threshold and state.interaction_count >= ic_min:
             stage = name
-            break
-        stage = name  # 過了門檻就一路 update
     return score, stage
 
 
