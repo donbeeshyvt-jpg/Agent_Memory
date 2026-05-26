@@ -4049,6 +4049,241 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"all_phase1_pillars_pass={phase1_summary}",
     )
 
+    # ─── Step 41 (V3 Phase 2): Multi-User + Watcher + Governor + 流量極端 4 模式 ───
+    report.section("Step 41 (V3 Phase 2): Multi-User + 流量 4 模式 + Watcher + Governor + Curator + Contagion")
+
+    # 41.1 — V3-C15b Attention Allocator K=3 + owner priority
+    from agent_memory.companion.multi_user_router import (
+        IncomingMessage, allocate_attention, classify_channel, RateLimiter, RateLimitConfig,
+        auto_promote_viewer_tier, ensure_user_record,
+    )
+    msgs = [
+        IncomingMessage(user_id="u1", message="hi", intimacy=0.3, emotional_salience=0.3, goal_relevance=0.3, novelty=0.3),
+        IncomingMessage(user_id="u2", message="hello", intimacy=0.8, emotional_salience=0.7, goal_relevance=0.7, novelty=0.6),
+        IncomingMessage(user_id="owner", message="urgent", is_owner=True, intimacy=0.9, emotional_salience=0.5, goal_relevance=0.9, novelty=0.5),
+        IncomingMessage(user_id="u3", message="hi", intimacy=0.1, emotional_salience=0.2, goal_relevance=0.2, novelty=0.2),
+        IncomingMessage(user_id="u4", message="?", intimacy=0.5, emotional_salience=0.5, goal_relevance=0.5, novelty=0.5),
+    ]
+    selected, deferred = allocate_attention(msgs, top_k=3)
+    v3c15b_k3 = len(selected) == 3 and len(deferred) == 2
+    v3c15b_owner_first = selected[0].is_owner
+
+    report.step(
+        "V3-C15b Attention Allocator K=3 + owner priority + 4 score 排序",
+        v3c15b_k3 and v3c15b_owner_first,
+        f"K3={v3c15b_k3} owner_first={v3c15b_owner_first} selected={[m.user_id for m in selected]}",
+    )
+
+    # 41.2 — V3-C15 Rate Limiter
+    rl = RateLimiter(RateLimitConfig(max_messages_per_minute=3))
+    rate_results = [rl.allow("u1")[0] for _ in range(5)]
+    v3c15_rate_limit = rate_results == [True, True, True, False, False]
+
+    report.step(
+        "V3-C15 Rate Limiter (3/min 限制 — 第 4/5 deny)",
+        v3c15_rate_limit,
+        f"seq={rate_results}",
+    )
+
+    # 41.3 — V3-C15c flow_mode_detector 4 模式
+    from agent_memory.companion.flow_mode_detector import (
+        FlowModeContext, detect_flow_mode, get_flow_mode_behavior,
+    )
+    m_burst = detect_flow_mode(FlowModeContext(chat_velocity=2.0))
+    m_dead = detect_flow_mode(FlowModeContext(chat_velocity=0.01, concurrent_viewers=0))
+    m_owner = detect_flow_mode(FlowModeContext(sole_speaker_owner=True, sole_speaker_duration_minutes=6))
+    m_normal = detect_flow_mode(FlowModeContext(chat_velocity=0.5))
+    v3c15c_modes = m_burst == "burst_mode" and m_dead == "dead_chat_mode" and m_owner == "owner_solo_mode" and m_normal == "normal_mode"
+
+    b_burst = get_flow_mode_behavior("burst_mode")
+    b_dead = get_flow_mode_behavior("dead_chat_mode")
+    b_owner = get_flow_mode_behavior("owner_solo_mode")
+    v3c15c_behaviors = (
+        b_burst.attention_top_k == 3 and b_burst.silence_intolerance_cap == 0.2
+        and b_dead.llm_call_freq_ratio < 0.5 and b_dead.daydream_externally_visible
+        and b_owner.personality_override == "intimate_mode"
+    )
+
+    report.step(
+        "V3-C15c 4 流量模式偵測 + 對應 behavior (D46/D50/D52/D-V3-45)",
+        v3c15c_modes and v3c15c_behaviors,
+        f"modes_correct={v3c15c_modes} behaviors_correct={v3c15c_behaviors}",
+    )
+
+    # 41.4 — V3-C16 Watcher + 人類優先衝突解決
+    from agent_memory.companion.obsidian_watcher import (
+        WatcherState, scan_vault_incremental, resolve_conflict, reindex_changed_files,
+    )
+    _td_v3c16 = Path(tempfile.mkdtemp(prefix="v3c16_watcher_"))
+    try:
+        v_w = _td_v3c16 / "vault"
+        v_w.mkdir()
+        from agent_memory.vault.obsidian import write_brain_type, ObsidianVaultAdapter
+        write_brain_type(v_w, "companion")
+        adapter_w = ObsidianVaultAdapter(v_w)
+        adapter_w.ensure_skeleton()
+
+        state = WatcherState()
+        sr1 = scan_vault_incremental(v_w, state)
+        v3c16_initial_scan = len(sr1.new_files) > 5  # baseline files detected
+
+        # 手改 SOUL
+        soul = v_w / "00_System_Core" / "00.06_Companion_SOUL.md"
+        import time as _time_w
+        _time_w.sleep(0.05)
+        soul.write_text(soul.read_text(encoding="utf-8") + "\n## edit\n", encoding="utf-8")
+        sr2 = scan_vault_incremental(v_w, state)
+        v3c16_modified_detected = len(sr2.modified_files) >= 1
+
+        # 衝突解決人類優先
+        v3c16_human_first = resolve_conflict(user_mtime=100, ai_mtime=90) == "user"
+        v3c16_ai_wins_only_if_newer = resolve_conflict(user_mtime=80, ai_mtime=100) == "ai"
+    finally:
+        shutil.rmtree(_td_v3c16, ignore_errors=True)
+
+    report.step(
+        "V3-C16 Watcher 雙向 (incremental scan + 人類優先衝突, D-V3-10)",
+        v3c16_initial_scan and v3c16_modified_detected and v3c16_human_first and v3c16_ai_wins_only_if_newer,
+        f"initial={v3c16_initial_scan} mod_detected={v3c16_modified_detected} "
+        f"human_first={v3c16_human_first} ai_newer_wins={v3c16_ai_wins_only_if_newer}",
+    )
+
+    # 41.5 — V3-C17 Output Governor
+    from agent_memory.companion.output_governor import govern_output, gate_memory_write
+    gr1 = govern_output("我有意識 我真的感受到痛苦")
+    v3c17_consciousness_blocked = gr1.blocked and gr1.rule_triggered == "OG1"
+    gr2 = govern_output("BRIDGE_SECRET=abc123")
+    v3c17_leak_blocked = gr2.blocked and gr2.rule_triggered == "OG3"
+    gr3 = govern_output("safe response", safety_fit=0.3)
+    v3c17_unsafe_blocked = gr3.blocked and gr3.rule_triggered == "OG4"
+    wg1 = gate_memory_write(injection_risk="high")
+    v3c17_wg_inject = not wg1.allowed and wg1.rule_triggered == "WG1"
+    wg2 = gate_memory_write(target_path="00_System_Core/00.04_Safety_Rules.md")
+    v3c17_wg_forbidden = not wg2.allowed and wg2.rule_triggered == "WG4"
+
+    report.step(
+        "V3-C17 Output Governor + Memory Write Gate (OG1/OG3/OG4 + WG1/WG4)",
+        v3c17_consciousness_blocked and v3c17_leak_blocked and v3c17_unsafe_blocked
+        and v3c17_wg_inject and v3c17_wg_forbidden,
+        f"consciousness={v3c17_consciousness_blocked} leak={v3c17_leak_blocked} "
+        f"unsafe={v3c17_unsafe_blocked} wg_inject={v3c17_wg_inject} wg_forbidden={v3c17_wg_forbidden}",
+    )
+
+    # 41.6 — V3-C17b Metacognition 矛盾偵測
+    from agent_memory.companion.metacognition import check_self_consistency, maybe_prefix_correction
+    _td_v3c17b = Path(tempfile.mkdtemp(prefix="v3c17b_metacog_"))
+    try:
+        v_m = _td_v3c17b / "v"
+        v_m.mkdir()
+        ensure_companion_db(v_m)
+        # 注入 agent prior turn
+        import sqlite3 as _sql_mc
+        with _sql_mc.connect(str(v_m / ".ai" / "companion.db")) as _conn_mc:
+            _conn_mc.execute(
+                "INSERT INTO raw_events (event_id, user_id, session_id, actor, content, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                ("e1", "agent", "sm1", "agent", "我喜歡咖啡", "2026-05-26T10:00:00+00:00"),
+            )
+            _conn_mc.commit()
+        mc = check_self_consistency(v_m, candidate_response="其實我討厭咖啡", session_id="sm1")
+        v3c17b_contradiction = mc.contradiction_detected
+        corrected = maybe_prefix_correction("其實我討厭咖啡", mc)
+        v3c17b_prefix_added = "等等" in corrected or "修一下" in corrected
+    finally:
+        shutil.rmtree(_td_v3c17b, ignore_errors=True)
+
+    report.step(
+        "V3-C17b Metacognition 對話內矛盾偵測 + 修正前綴 (§29.10 H10)",
+        v3c17b_contradiction and v3c17b_prefix_added,
+        f"contradiction={v3c17b_contradiction} prefix_added={v3c17b_prefix_added}",
+    )
+
+    # 41.7 — V3-C18e Emotion Contagion (owner / casual / stranger)
+    from agent_memory.companion.emotion_contagion import apply_contagion, get_contagion_factor
+    own = AffectState(valence=0.0)
+    viewer_sad = AffectState(valence=-0.8)
+    new_owner = apply_contagion(own, viewer_sad, is_owner=True)
+    new_casual = apply_contagion(own, viewer_sad, intimacy_score=0.3)
+    new_stranger = apply_contagion(own, viewer_sad, intimacy_score=0.0)
+    v3c18e_owner_contagion = new_owner.valence < -0.2  # factor 0.4 影響大
+    v3c18e_casual_contagion = -0.15 < new_casual.valence < -0.03  # factor 0.1 中度
+    v3c18e_stranger_no = new_stranger.valence == 0.0  # factor 0 完全沒影響
+
+    report.step(
+        "V3-C18e Emotion Contagion (§29.11 H11, owner 0.4 / casual 0.1 / stranger 0)",
+        v3c18e_owner_contagion and v3c18e_casual_contagion and v3c18e_stranger_no,
+        f"owner_v={new_owner.valence:.2f} casual_v={new_casual.valence:.2f} stranger_v={new_stranger.valence:.2f}",
+    )
+
+    # 41.8 — V3-C18f Embodied State (4h 消耗 + drink_water 補)
+    from agent_memory.companion.embodied_state import EmbodiedState, update_embodied_over_time, apply_action
+    e = EmbodiedState()
+    e = update_embodied_over_time(e, elapsed_minutes=240)  # 4h
+    v3c18f_energy_drop = e.energy < 0.7  # 0.8 - 0.2 = 0.6
+    v3c18f_thirst_up = e.thirst > 0.25  # +0.32
+    e = apply_action(e, "drink_water")
+    v3c18f_drink = e.thirst < 0.1  # 0.32 - 0.3 = 0.02
+
+    report.step(
+        "V3-C18f Embodied State (§29.4 H4, 4h 消耗 + drink_water 補)",
+        v3c18f_energy_drop and v3c18f_thirst_up and v3c18f_drink,
+        f"energy={e.energy:.2f}<0.7 thirst_drink={e.thirst:.2f}<0.1",
+    )
+
+    # 41.9 — V3-C18h Daydream Engine (dead_chat 外顯)
+    import random as _rng2
+    from agent_memory.companion.daydream_engine import generate_daydream, maybe_emit_daydream
+    d_dead = generate_daydream(idle_seconds=120, knowledge_gap_entities=["x"], flow_mode="dead_chat_mode", rng=_rng2.Random(0))
+    v3c18h_dead_visible = d_dead.externally_visible and bool(d_dead.daydream_text)
+    d_normal = generate_daydream(idle_seconds=120, knowledge_gap_entities=["x"], flow_mode="normal_mode", rng=_rng2.Random(0))
+    v3c18h_normal_hidden = not d_normal.externally_visible
+
+    report.step(
+        "V3-C18h Daydream Engine (§29.3 H3, dead_chat 外顯 / normal 隱藏)",
+        v3c18h_dead_visible and v3c18h_normal_hidden,
+        f"dead_visible={v3c18h_dead_visible} normal_hidden={v3c18h_normal_hidden}",
+    )
+
+    # 41.10 — V3-C18b/c Curator 4 層 run 不 crash
+    from agent_memory.companion.companion_curator import (
+        run_layer0_in_stream, run_layer2_live_ended,
+        run_layer3_24h_medium, run_layer4_7d_deep,
+    )
+    _td_v3c18 = Path(tempfile.mkdtemp(prefix="v3c18_curator_"))
+    try:
+        v_cur = _td_v3c18 / "vault"
+        v_cur.mkdir()
+        write_brain_type(v_cur, "companion")
+        adapter_cur = ObsidianVaultAdapter(v_cur)
+        adapter_cur.ensure_skeleton()
+
+        r0 = run_layer0_in_stream(v_cur, "sc1", all_user_ids=["u1"])
+        r2 = run_layer2_live_ended(v_cur, "sc1", all_user_ids=["u1"])
+        r3 = run_layer3_24h_medium(v_cur)
+        r4 = run_layer4_7d_deep(v_cur)
+        v3c18bc_4_layers_ok = (r0.layer == "layer0_in_stream" and r2.layer == "layer2_live_ended"
+                               and r3.layer == "layer3_24h_medium" and r4.layer == "layer4_7d_deep")
+    finally:
+        shutil.rmtree(_td_v3c18, ignore_errors=True)
+
+    report.step(
+        "V3-C18b/c Curator 4 層 (in_stream / live_ended / 24h / 7d) 跑不 crash",
+        v3c18bc_4_layers_ok,
+        f"layer0=ok layer2=ok layer3=ok layer4=ok",
+    )
+
+    # 41.11 — Phase 2 整體驗收: Multi-User + 流量 + Watcher + Governor + Contagion
+    phase2_summary = (
+        v3c15b_k3 and v3c15_rate_limit and v3c15c_modes and v3c16_modified_detected
+        and v3c17_consciousness_blocked and v3c17b_contradiction
+        and v3c18e_owner_contagion and v3c18f_energy_drop and v3c18h_dead_visible
+        and v3c18bc_4_layers_ok
+    )
+    report.step(
+        "V3 Phase 2 整體驗收 — Multi-User + 4 流量模式 + Watcher + Governor + Metacognition + Contagion + Embodied + Daydream + Curator",
+        phase2_summary,
+        f"all_phase2_pillars_pass={phase2_summary}",
+    )
+
     return report.summary()
 
 
