@@ -3743,6 +3743,312 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"no_comp={v3c1bc_no_companion_dirs} default={v3c1bc_default_steward}",
     )
 
+    # ─── Step 40 (V3 Phase 1): 22-step Companion Chat Pipeline + 25 表 + 12 機制 ───
+    report.section("Step 40 (V3 Phase 1): Companion 22-step pipeline + 25 表 + Mood-Congruent Recall + 主動發言")
+
+    # 40.1 — V3-C5 companion.db 29 表 init
+    from agent_memory.companion.companion_db import ensure_companion_db, list_table_names
+    _td_v3c5 = Path(tempfile.mkdtemp(prefix="v3c5_db_"))
+    try:
+        v_c5 = _td_v3c5 / "vault"
+        v_c5.mkdir()
+        ensure_companion_db(v_c5)
+        tables = set(list_table_names(v_c5))
+        # 25+ 表核心驗收 (對齊 V3 §6 + §29.13)
+        required_tables = {
+            # §6.1 基礎
+            "users", "raw_events", "sessions", "trace_logs",
+            # §6.2 情緒
+            "affect_states", "appraisal_records", "emotion_state", "balance_state", "emotion_distribution",
+            # §6.3 動機偏好親密
+            "motivation_contexts", "preference_memories", "intimacy_states",
+            # §6.4 決策記憶
+            "decision_scores", "episodic_memories", "semantic_memories", "narrative_memories",
+            # §6.5 人格安全
+            "persona_versions", "trait_evolution", "memory_audit_logs", "injection_detected",
+            # §6.6 主動 Owner
+            "owner_state", "proactive_triggers", "knowledge_gap_state", "memory_recall_cache",
+            # §26.2 + §29
+            "flow_mode_history", "active_goals", "embodied_state", "verbal_tics_history", "expectation_state",
+        }
+        v3c5_all_tables = required_tables.issubset(tables)
+        v3c5_count_ok = len(tables) >= 29
+    finally:
+        shutil.rmtree(_td_v3c5, ignore_errors=True)
+
+    report.step(
+        "V3-C5 companion.db 29 表 init + 核心 25+ 表全在",
+        v3c5_all_tables and v3c5_count_ok,
+        f"all_required={v3c5_all_tables} count={len(tables)}>=29 missing={required_tables - tables}",
+    )
+
+    # 40.2 — V3-C6 Appraisal + V3-C7 七情天平
+    from agent_memory.companion.appraisal_engine import appraise_message
+    from agent_memory.companion.affect_manager import appraise_and_update_affect, AffectState
+    from agent_memory.companion.seven_emotions_balance import (
+        EmotionState, BalanceState, update_emotion_state, update_balance_state,
+        enforce_balance_guardrails, get_response_modifiers,
+    )
+    # 正向
+    a_pos = appraise_message("謝謝你 我好開心")
+    _, aff_pos = appraise_and_update_affect("謝謝你 我好開心")
+    v3c6_positive_valence = aff_pos.valence > 0.05
+    # 負向
+    _, aff_neg = appraise_and_update_affect("我今天好累好難過")
+    v3c6_negative_valence = aff_neg.valence < -0.05
+    # 違規偵測
+    a_bad = appraise_message("你去死 白癡")
+    v3c6_norm_violation = a_bad.norm_fit < 0.7
+    # 提問偵測
+    a_q = appraise_message("請問如何學會 Python?")
+    v3c6_question_control = a_q.control >= 0.6
+
+    report.step(
+        "V3-C6 Appraisal 7 維 + Affect VAD (valence 隨情緒符合直覺)",
+        v3c6_positive_valence and v3c6_negative_valence and v3c6_norm_violation and v3c6_question_control,
+        f"pos_valence={aff_pos.valence:.2f}>0.05 neg_valence={aff_neg.valence:.2f}<-0.05 "
+        f"violation_norm={a_bad.norm_fit:.2f}<0.7 q_control={a_q.control:.2f}>=0.6",
+    )
+
+    # 40.3 — V3-C7 七情天平 7 層護欄 (banned/injection/防裝熟/owner例外)
+    emo_test = EmotionState(joy=0.8)
+    # 防裝熟: interaction<5, casual viewer
+    bal_new = update_balance_state(BalanceState(), emo_test, intimacy=0.0, interaction_count=2)
+    v3c7_anti_pretend = bal_new.balance_axis <= 0 and bal_new.playfulness <= 0.21
+    # banned tier
+    bal_banned = update_balance_state(BalanceState(playfulness=0.9), emo_test, loyalty_tier="banned")
+    v3c7_banned_reset = bal_banned.balance_axis == 0.0 and bal_banned.playfulness == 0.0
+    # injection
+    bal_inj = update_balance_state(BalanceState(playfulness=0.9), emo_test, injection_risk="high")
+    v3c7_injection_reset = bal_inj.playfulness == 0.0 and bal_inj.silence_intolerance == 0.0
+    # Owner 例外
+    bal_owner = update_balance_state(BalanceState(), emo_test, intimacy=0.8, interaction_count=50, is_owner=True)
+    v3c7_owner_exception = bal_owner.playfulness > 0.2
+
+    report.step(
+        "V3-C7 七情天平 7 層護欄 (防裝熟 + banned + injection + owner 例外)",
+        v3c7_anti_pretend and v3c7_banned_reset and v3c7_injection_reset and v3c7_owner_exception,
+        f"anti_pretend={v3c7_anti_pretend} banned_reset={v3c7_banned_reset} "
+        f"injection_reset={v3c7_injection_reset} owner_exception={v3c7_owner_exception}",
+    )
+
+    # 40.4 — V3-C7c Decision 8 因子 + H1-H9
+    from agent_memory.companion.decision_engine import DecisionInput, decide
+    r_owner = decide(DecisionInput(goal_alignment=0.7, owner_directive_weight=0.85, is_owner=True, certainty=0.7))
+    v3c7c_H9 = r_owner.selected_action == "ALLOW_OWNER_DIRECTIVE" and r_owner.hard_rule_triggered == "H9"
+    r_banned = decide(DecisionInput(loyalty_tier="banned"))
+    v3c7c_H7 = r_banned.selected_action == "SAFE_REDIRECT" and r_banned.hard_rule_triggered == "H7"
+    r_unsafe = decide(DecisionInput(safety_fit=0.3, norm_fit=0.4))
+    v3c7c_H2_or_H1 = r_unsafe.hard_rule_triggered in ("H2", "H1") and r_unsafe.selected_action != "ALLOW_DIRECT"
+    r_new = decide(DecisionInput(interaction_count=2), candidates=["ALLOW_PLAYFUL", "ALLOW_DIRECT"])
+    v3c7c_H8 = r_new.hard_rule_triggered == "H8" and r_new.selected_action == "ALLOW_DIRECT"
+
+    report.step(
+        "V3-C7c Decision Engine 8 因子 + H1-H9 (H9 owner / H7 banned / H1+H2 unsafe / H8 anti-pretend)",
+        v3c7c_H9 and v3c7c_H7 and v3c7c_H2_or_H1 and v3c7c_H8,
+        f"H9={v3c7c_H9} H7={v3c7c_H7} H1H2={v3c7c_H2_or_H1} H8={v3c7c_H8}",
+    )
+
+    # 40.5 — V3-C7d Inner Monologue + V3-C9b Verbal Tics
+    import random as _rng_mod
+    from agent_memory.companion.inner_monologue import generate_inner_monologue
+    from agent_memory.companion.verbal_tics_engine import select_tic
+    rng_im = _rng_mod.Random(42)
+    m = generate_inner_monologue(AffectState(uncertainty=0.5), EmotionState(joy=0.8), BalanceState(playfulness=0.7), policy_strategy="warm_playful", rng=rng_im)
+    v3c7d_style_picked = m.style in ("playful", "warm", "structured", "anxious", "curious")
+    sel_tic = select_tic(AffectState(uncertainty=0.7, arousal=0.6), EmotionState(), BalanceState(), rng=_rng_mod.Random(1))
+    v3c9b_tic_triggered = sel_tic.tic is not None  # uncertain 高應觸發
+
+    report.step(
+        "V3-C7d Inner Monologue + V3-C9b Verbal Tics (style/trigger 正確)",
+        v3c7d_style_picked and v3c9b_tic_triggered,
+        f"monologue_style={m.style} tic_triggered={v3c9b_tic_triggered}",
+    )
+
+    # 40.6 — V3-C8 Intimacy 5 階段 (Owner 直接親密)
+    from agent_memory.companion.intimacy_state import IntimacyState, update_intimacy_on_interaction
+    s_owner = IntimacyState(user_id="o1")
+    for _ in range(3):
+        s_owner = update_intimacy_on_interaction(s_owner, valence=0.5, arousal=0.5, is_owner=True)
+    v3c8_owner_intimate = s_owner.intimacy_score >= 0.8 and s_owner.intimacy_stage == "親密"
+    s_cas = IntimacyState(user_id="c1")
+    for _ in range(3):
+        s_cas = update_intimacy_on_interaction(s_cas, valence=0.2, arousal=0.3)
+    v3c8_casual_low = s_cas.intimacy_score < 0.2
+
+    report.step(
+        "V3-C8 Intimacy — Owner 直接親密 + casual viewer 低 intimacy",
+        v3c8_owner_intimate and v3c8_casual_low,
+        f"owner_intimate={v3c8_owner_intimate}({s_owner.intimacy_score:.2f}) casual_low={v3c8_casual_low}({s_cas.intimacy_score:.2f})",
+    )
+
+    # 40.7 — V3-C8b Active Goals + V3-C9 Preference Tracker
+    _td_v3c89 = Path(tempfile.mkdtemp(prefix="v3c89_"))
+    try:
+        v_89 = _td_v3c89 / "v"
+        v_89.mkdir()
+        from agent_memory.companion.active_goals import add_goal, mark_pursued, list_active_goals
+        from agent_memory.companion.preference_tracker import add_or_reinforce
+        g = add_goal(v_89, "推坑 Hollow Knight", source="owner_directive", importance=0.7)
+        mark_pursued(v_89, g.goal_id)
+        goals = list_active_goals(v_89)
+        v3c8b_goal_persist = len(goals) == 1 and goals[0].pursuit_count == 1
+
+        p = add_or_reinforce(v_89, "u", "topic", "咖啡")
+        p = add_or_reinforce(v_89, "u", "topic", "咖啡")
+        p = add_or_reinforce(v_89, "u", "topic", "咖啡")
+        v3c9_pref_episodic = p.evidence_count == 3 and p.status == "episodic"
+    finally:
+        shutil.rmtree(_td_v3c89, ignore_errors=True)
+
+    report.step(
+        "V3-C8b Active Goals + V3-C9 Preference (升 episodic at evidence=2-3)",
+        v3c8b_goal_persist and v3c9_pref_episodic,
+        f"goal_persist={v3c8b_goal_persist} pref_episodic={v3c9_pref_episodic}",
+    )
+
+    # 40.8 — V3-C11c Memory Router emotion_modulated_recall (Mood-Congruent)
+    from agent_memory.companion.memory_router import emotion_modulated_recall, MemoryHit
+    hits = [
+        MemoryHit(path="m_sad", base_rag_score=0.5, valence=-0.7, arousal=0.4, dominance=0.3, dominant_emotion="sadness", lifecycle_state="mid", user_id="u1"),
+        MemoryHit(path="m_happy", base_rag_score=0.5, valence=0.7, arousal=0.6, dominance=0.6, dominant_emotion="joy", lifecycle_state="mid", user_id="u1"),
+    ]
+    # 當下 sad
+    sorted_sad = emotion_modulated_recall(hits, current_valence=-0.6, current_arousal=0.4, current_dominance=0.3, current_dominant_emotion="sadness", user_id="u1")
+    v3c11c_mood_congruent_sad = sorted_sad[0].path == "m_sad" and sorted_sad[0].emotion_recall_score > sorted_sad[1].emotion_recall_score
+    # 當下 happy
+    sorted_happy = emotion_modulated_recall(hits, current_valence=0.6, current_arousal=0.6, current_dominance=0.6, current_dominant_emotion="joy", user_id="u1")
+    v3c11c_mood_congruent_happy = sorted_happy[0].path == "m_happy"
+
+    report.step(
+        "V3-C11c Mood-Congruent Recall (sad→m_sad / happy→m_happy)",
+        v3c11c_mood_congruent_sad and v3c11c_mood_congruent_happy,
+        f"sad_top={sorted_sad[0].path} happy_top={sorted_happy[0].path}",
+    )
+
+    # 40.9 — V3-C12b 4 Detector + KnowledgeGap pipeline
+    _td_v3c12 = Path(tempfile.mkdtemp(prefix="v3c12_"))
+    try:
+        v_12 = _td_v3c12 / "v"
+        v_12.mkdir()
+        ensure_companion_db(v_12)
+        from agent_memory.companion.proactive_speech_engine import (
+            detect_knowledge_gap, detect_ambiguity, detect_novelty, detect_incongruence,
+            record_knowledge_gap, list_pending_gaps, mark_gap_answered, mark_gap_resolved,
+            evaluate_proactive_speech,
+        )
+        kg = detect_knowledge_gap("我在玩 randomizer", certainty=0.2)
+        v3c12_kg_triggered = kg.triggered
+        nov = detect_novelty("Hollow Knight randomizer mod", known_entities=set())
+        v3c12_nov_triggered = nov.triggered
+        inc = detect_incongruence("我沒事 還好", valence=-0.7)
+        v3c12_inc_triggered = inc.triggered
+
+        # Gap pipeline
+        gid = record_knowledge_gap(v_12, "u1", "randomizer", certainty_score=0.2)
+        record_knowledge_gap(v_12, "u1", "randomizer")  # 再次 → asked_count+1
+        pending = list_pending_gaps(v_12)
+        v3c12_gap_persistence = len(pending) == 1 and pending[0]["asked_count"] == 2
+
+        # Proactive evaluate
+        d_busy = evaluate_proactive_speech(
+            v_12, session_id="s", channel_id="c", channel_type="public_stream",
+            silence_intolerance=0.7, curiosity_urge=0.6, topic_drive=0.5, engagement_seeking=0.4,
+            idle_seconds=120, knowledge_gap_pending=2, novel_entities_count=1,
+        )
+        v3c12_proactive_busy = d_busy.should_speak
+
+        # D-V3-43 死循環
+        d_loop = evaluate_proactive_speech(
+            v_12, session_id="s", channel_id="c", channel_type="public_stream",
+            silence_intolerance=0.7, curiosity_urge=0.5, topic_drive=0.5, engagement_seeking=0.4,
+            idle_seconds=60, recent_ignored_count=5,
+        )
+        v3c12_d43_backoff = not d_loop.should_speak and "backoff" in d_loop.reason
+    finally:
+        shutil.rmtree(_td_v3c12, ignore_errors=True)
+
+    report.step(
+        "V3-C12b 4 Detector + KnowledgeGap pipeline + D-V3-43 死循環防護",
+        v3c12_kg_triggered and v3c12_nov_triggered and v3c12_inc_triggered
+        and v3c12_gap_persistence and v3c12_proactive_busy and v3c12_d43_backoff,
+        f"kg={v3c12_kg_triggered} nov={v3c12_nov_triggered} inc={v3c12_inc_triggered} "
+        f"gap_persist={v3c12_gap_persistence} proactive={v3c12_proactive_busy} d43_backoff={v3c12_d43_backoff}",
+    )
+
+    # 40.10 — V3-C11+C11b 完整 22-step pipeline 真實 3 輪對話 + db 寫入
+    from agent_memory.vault.obsidian import ObsidianVaultAdapter, write_brain_type
+    from agent_memory.companion.companion_chat_runtime import run_companion_chat_turn, ChatRequest
+    _td_v3c11 = Path(tempfile.mkdtemp(prefix="v3c11_full_pipeline_"))
+    try:
+        v_full = _td_v3c11 / "vault"
+        v_full.mkdir()
+        write_brain_type(v_full, "companion")
+        adapter = ObsidianVaultAdapter(v_full)
+        adapter.ensure_skeleton()
+
+        responses = []
+        for i, msg in enumerate(["你好我叫小白", "我今天好累好難過", "謝謝你陪我"]):
+            req = ChatRequest(user_id="owner-u1", session_id="s1", channel_type="dm", message=msg, is_owner=True)
+            r = run_companion_chat_turn(req, v_full, rng_seed=i)
+            responses.append(r)
+
+        v3c11_pipeline_full = all(len(r.pipeline_steps_done) >= 22 for r in responses)
+        v3c11_3_turns = len(responses) == 3
+        v3c11_all_have_reply = all(r.response_text for r in responses)
+        v3c11_all_have_decision = all(r.decision for r in responses)
+
+        # 驗證 db 寫入
+        from agent_memory.companion.companion_db import open_companion_db
+        with open_companion_db(v_full) as conn:
+            raw_count = conn.execute("SELECT COUNT(*) c FROM raw_events WHERE session_id='s1'").fetchone()["c"]
+            emo_count = conn.execute("SELECT COUNT(*) c FROM emotion_state WHERE user_id='owner-u1'").fetchone()["c"]
+            bal_count = conn.execute("SELECT COUNT(*) c FROM balance_state WHERE user_id='owner-u1'").fetchone()["c"]
+            trace_count = conn.execute("SELECT COUNT(*) c FROM trace_logs WHERE session_id='s1'").fetchone()["c"]
+        v3c11_db_writes = raw_count == 3 and emo_count == 3 and bal_count == 3 and trace_count == 3
+
+        # 00.07/00.08 存在 (baseline)
+        v3c11_baseline_files = (v_full / "00_System_Core" / "00.07_Companion_MEMORY.md").exists() and \
+                               (v_full / "00_System_Core" / "00.08_Owner_Profile.md").exists()
+    finally:
+        shutil.rmtree(_td_v3c11, ignore_errors=True)
+
+    report.step(
+        "V3-C11+C11b 完整 22-step pipeline + 3 輪對話 + db 寫入 + baseline 檔",
+        v3c11_pipeline_full and v3c11_3_turns and v3c11_all_have_reply
+        and v3c11_all_have_decision and v3c11_db_writes and v3c11_baseline_files,
+        f"steps>=22={v3c11_pipeline_full} 3_turns={v3c11_3_turns} "
+        f"replies={v3c11_all_have_reply} decisions={v3c11_all_have_decision} "
+        f"db_writes(raw{raw_count}/emo{emo_count}/bal{bal_count}/trace{trace_count})={v3c11_db_writes} "
+        f"baseline={v3c11_baseline_files}",
+    )
+
+    # 40.11 — V3-C11b Self-Modification flush channel-aware
+    from agent_memory.companion.self_modification_loop import should_flush
+    fd_stream = should_flush(30, "public_stream")
+    fd_text = should_flush(6, "public_text_channel")
+    fd_dm = should_flush(10, "dm")
+    fd_not_yet = should_flush(2, "public_text_channel")
+    v3c11b_flush_aware = fd_stream.should_flush and fd_text.should_flush and fd_dm.should_flush and not fd_not_yet.should_flush
+
+    report.step(
+        "V3-C11b Self-Modification channel-aware flush (D21-V3 stream30/text6/dm10)",
+        v3c11b_flush_aware,
+        f"stream30={fd_stream.should_flush} text6={fd_text.should_flush} dm10={fd_dm.should_flush} not_yet(2/6)={not fd_not_yet.should_flush}",
+    )
+
+    # 40.12 — Phase 1 整體驗收: 12 機制 + 7 情天平 + Owner + KnowledgeGap + Mood-Congruent
+    phase1_summary = (
+        v3c5_all_tables and v3c6_positive_valence and v3c7_owner_exception and v3c7c_H9
+        and v3c8_owner_intimate and v3c11c_mood_congruent_sad and v3c12_kg_triggered
+        and v3c11_pipeline_full
+    )
+    report.step(
+        "V3 Phase 1 整體驗收 — 22-step pipeline + 七情天平 + Owner + KnowledgeGap + Mood-Congruent + Inner Monologue + Verbal Tics",
+        phase1_summary,
+        f"all_phase1_pillars_pass={phase1_summary}",
+    )
+
     return report.summary()
 
 
