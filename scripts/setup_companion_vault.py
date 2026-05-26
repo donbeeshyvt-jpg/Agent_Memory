@@ -35,6 +35,7 @@ sys.path.insert(0, str(ROOT))
 
 from agent_memory.vault.obsidian import ObsidianVaultAdapter, write_brain_type, read_brain_type
 from agent_memory.companion.companion_db import ensure_companion_db, open_companion_db
+from agent_memory.llm_routing import save_llm_router_config
 
 
 def setup_companion_vault(
@@ -70,6 +71,50 @@ def setup_companion_vault(
     # Step 6 (後): companion.db 29 表 schema migration
     ensure_companion_db(vault)
     print(f"[step 6b] companion.db 29 SQLite 表 ensure")
+
+    # V3-D6: 寫 llm_router.yaml — 預設 openrouter 為 global_default, gemini fallback
+    companion_router = {
+        "schema_version": 1,
+        "description": "V3 companion: OpenRouter 為主, Gemini fallback. Phase 1 stub 透過 env AGENT_MEMORY_COMPANION_LLM_FORCE_STUB=1 切回.",
+        "resolution_order": [
+            "request_override", "auxiliary_override", "persona_override",
+            "global_default", "fallback_chain",
+        ],
+        "global_default": {
+            "profile": "openrouter",
+            "model": "google/gemma-2-9b-it:free",
+        },
+        "fallback_chain": [
+            {"profile": "openrouter", "model": "meta-llama/llama-3.1-8b-instruct:free"},
+            {"profile": "gemini", "model": "gemma-4-31b-it"},
+        ],
+        "persona_overrides": {
+            "companion": {
+                "profile": "openrouter",
+                "model": "google/gemma-2-9b-it:free",
+            },
+        },
+        "auxiliary_default": {"profile": "", "model": ""},
+        "auxiliary_overrides": {},
+        "providers": {
+            "openrouter": {
+                "kind": "openai_compatible",
+                "zh_label": "OpenRouter 聚合 API",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key_env": "OPENROUTER_API_KEY",
+                "requires_api_key": True,
+            },
+            "gemini": {
+                "kind": "openai_compatible",
+                "zh_label": "Google Gemini / Gemma API",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                "api_key_env": "GOOGLE_API_KEY",
+                "requires_api_key": True,
+            },
+        },
+    }
+    save_llm_router_config(vault, companion_router)
+    print(f"[step 5] llm_router.yaml 寫入: openrouter(google/gemma-2-9b-it:free) → 對齊 V3-D6 接真實 LLM")
 
     # Step 3: Owner Identity 寫入 owner_state
     with open_companion_db(vault) as conn:
