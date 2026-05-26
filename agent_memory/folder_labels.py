@@ -48,6 +48,56 @@ _CANONICAL_ZH_PURPOSE: dict[str, str] = {
 }
 
 
+# V3 C3: companion vault 專屬 zh purpose labels (對齊 V3_夥伴大腦_新規劃 §5)
+_COMPANION_ZH_PURPOSE: dict[str, str] = {
+    "00_System_Core": "系統核心層（夥伴）",
+    "00_System_Core/personalities": "多 personality 模式（daily/stream/intimate）",
+    "10_Working_Memory": "短期工作記憶",
+    "10_Working_Memory/11_Session_Logs": "直播會話記錄",
+    "10_Working_Memory/12_Active_Tasks": "活躍任務",
+    "20_Audience_Graph": "觀眾記憶圖譜",
+    "20_Audience_Graph/21_VIP_Viewers": "VIP 觀眾檔案",
+    "20_Audience_Graph/22_Casual_Viewers": "一般觀眾檔案",
+    "20_Audience_Graph/23_Inside_Jokes": "直播間專屬迷因",
+    "20_Audience_Graph/24_Banned": "黑名單",
+    "30_Emotional_State": "情緒記憶與特質演化",
+    "30_Emotional_State/31_Core_Affect_Logs": "VAD + 七情天平 時序紀錄",
+    "30_Emotional_State/32_Appraisal_Events": "重大情緒事件",
+    "30_Emotional_State/33_Trait_Evolution": "慢速性格變化",
+    "30_Emotional_State/34_Mood_Diary": "每日心情總覽",
+    "40_Knowledge_Base": "靜態知識",
+    "40_Knowledge_Base/41_Lore_Worldview": "VTuber 角色背景 / 世界觀",
+    "40_Knowledge_Base/42_Game_Strategies": "遊戲攻略",
+    "40_Knowledge_Base/43_Common_Topics": "常聊話題庫",
+    "40_Knowledge_Base/44_External_Ingest": "中之人投餵",
+    "50_Skills_Tools": "技能進化",
+    "50_Skills_Tools/51_Hermes_Learned": "Hermes Learning Loop 自學技能",
+    "50_Skills_Tools/52_OpenClaw_MCP": "外部工具橋接",
+    "50_Skills_Tools/53_Tool_Audit_Log": "tool 呼叫稽核",
+    "60_Preference_Memory": "偏好記憶",
+    "60_Preference_Memory/61_Owner_Preferences": "中之人偏好",
+    "60_Preference_Memory/62_Viewer_Preferences": "各觀眾偏好聚合",
+    "70_Persona_Versions": "人格版本控制",
+    "70_Persona_Versions/71_Active": "當前啟用版本",
+    "70_Persona_Versions/72_History": "歷史版本",
+    "70_Persona_Versions/73_Candidates": "drift guard 候選（待中之人審）",
+    "80_Audit_Trace": "Trace / Audit",
+    "80_Audit_Trace/81_Decision_Traces": "決策 trace",
+    "80_Audit_Trace/82_Memory_Audit": "記憶 audit",
+    "80_Audit_Trace/83_Injection_Detected": "注入偵測紀錄",
+    "90_Daily_Journal": "每日總覽",
+    "99_Templates": "雙向關聯模板",
+    "99_Archive": "封存層",
+    "99_Archive/auto_archived": "自動封存區（curator 180d 無命中移入）",
+}
+
+
+def companion_dir_info_targets() -> dict[str, str]:
+    """V3 C3: companion vault canonical zh purpose labels."""
+
+    return dict(_COMPANION_ZH_PURPOSE)
+
+
 def normalize_relative(path: str) -> str:
     """Normalize path to vault-style relative path."""
 
