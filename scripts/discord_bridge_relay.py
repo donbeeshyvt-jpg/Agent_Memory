@@ -58,6 +58,7 @@ class BridgeRelayClient(discord.Client):
         enable_response_reaction: bool,
         enable_message_content_intent: bool,
         mention_only_channels: set[int],
+        allow_bot_author_ids: set[int] | None = None,
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = bool(enable_message_content_intent)
@@ -77,6 +78,9 @@ class BridgeRelayClient(discord.Client):
         self.enable_response_reaction = enable_response_reaction
         self.enable_message_content_intent = bool(enable_message_content_intent)
         self.mention_only_channels = set(mention_only_channels)
+        # V3-D7 2026-05-26: bot author whitelist (給 AI 模擬觀眾 用)
+        # 自己 (self.user.id) 一律 ignore (避免無限 loop), 白名單內其他 bot 可被處理
+        self.allow_bot_author_ids = set(allow_bot_author_ids or set())
 
     async def _try_add_reaction(self, target: discord.Message, emoji: str) -> bool:
         try:
@@ -105,7 +109,14 @@ class BridgeRelayClient(discord.Client):
             print("[WARN] message_content intent disabled; guild text content may be unavailable.")
 
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot:
+        # V3-D7 2026-05-26: bot author handling
+        # 1. 自己 (self.user) 一律 ignore (避免無限 loop)
+        # 2. 其他 bot: 白名單內過, 不在白名單 ignore
+        # 3. 真人 (author.bot=False) 一律過
+        me = self.user
+        if me is not None and message.author.id == me.id:
+            return
+        if message.author.bot and message.author.id not in self.allow_bot_author_ids:
             return
         if self.allowed_channels and message.channel.id not in self.allowed_channels:
             return
@@ -221,6 +232,10 @@ def _parse_args() -> argparse.Namespace:
         help="Allow degraded responses from bridge.",
     )
     parser.add_argument("--timeout", type=float, default=90.0, help="Bridge HTTP timeout in seconds.")
+    parser.add_argument(
+        "--allow-bot-author", action="append", default=[],
+        help="V3-D7: 允許處理該 bot id 送的訊息 (給 AI 模擬觀眾用, 可重複). 自己一律 ignore."
+    )
     parser.add_argument("--read-reaction", default="\U0001F440", help="Emoji for read-ack on incoming message.")
     parser.add_argument("--processing-reaction", default="\U0001F9E0", help="Emoji while waiting bridge response.")
     parser.add_argument("--no-read-reaction", action="store_true", help="Disable read reaction.")
@@ -262,6 +277,17 @@ def main() -> int:
             print(f"[ERR] invalid mention-only channel id: {text}")
             return 2
 
+    allow_bot_author_ids: set[int] = set()
+    for raw in args.allow_bot_author:
+        text = str(raw).strip()
+        if not text:
+            continue
+        try:
+            allow_bot_author_ids.add(int(text))
+        except ValueError:
+            print(f"[ERR] invalid allow-bot-author id: {text}")
+            return 2
+
     client = BridgeRelayClient(
         bridge_url=args.bridge_url,
         allowed_channels=allowed_channels,
@@ -276,6 +302,7 @@ def main() -> int:
         enable_response_reaction=not bool(args.no_response_reaction),
         enable_message_content_intent=not bool(args.disable_message_content_intent),
         mention_only_channels=mention_only_channels,
+        allow_bot_author_ids=allow_bot_author_ids,
     )
     client.run(token)
     return 0
