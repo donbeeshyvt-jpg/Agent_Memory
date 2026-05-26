@@ -4284,6 +4284,212 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"all_phase2_pillars_pass={phase2_summary}",
     )
 
+    # ─── Step 42 (V3 Phase 3): Preference 升 + Trait Evolution + Drift Guard + Skill + Narrative + Expectation ───
+    report.section("Step 42 (V3 Phase 3): 成熟期 — Preference Consolidator + Trait Evolution + Drift Guard + Skill Learning + Narrative + Expectation + Personality 切換")
+
+    # 42.1 — V3-C20 Preference Consolidator (episodic→semantic)
+    from agent_memory.companion.preference_consolidator import consolidate_preferences
+    from agent_memory.companion.preference_tracker import add_or_reinforce
+    _td_v3c20 = Path(tempfile.mkdtemp(prefix="v3c20_pref_"))
+    try:
+        v_p = _td_v3c20 / "vault"
+        v_p.mkdir()
+        write_brain_type(v_p, "companion")
+        adapter_p = ObsidianVaultAdapter(v_p)
+        adapter_p.ensure_skeleton()
+        for _ in range(5):
+            add_or_reinforce(v_p, "u1", "topic", "咖啡")
+        stat = consolidate_preferences(v_p)
+        v3c20_promote_semantic = stat["promoted_to_semantic"] >= 1
+    finally:
+        shutil.rmtree(_td_v3c20, ignore_errors=True)
+
+    report.step(
+        "V3-C20 Preference Consolidator (episodic 5 evidence → semantic)",
+        v3c20_promote_semantic,
+        f"promoted_to_semantic={stat.get('promoted_to_semantic', 0)}",
+    )
+
+    # 42.2 — V3-C20b Personality Switcher (hot reload, D-V3-27 對齊 hermes)
+    from agent_memory.companion.personality_switcher import switch_personality, get_current_baselines
+    _td_v3c20b = Path(tempfile.mkdtemp(prefix="v3c20b_ps_"))
+    try:
+        v_ps = _td_v3c20b / "vault"
+        v_ps.mkdir()
+        write_brain_type(v_ps, "companion")
+        adapter_ps = ObsidianVaultAdapter(v_ps)
+        adapter_ps.ensure_skeleton()
+        b1 = get_current_baselines(v_ps)
+        r_switch = switch_personality(v_ps, "stream_mode")
+        b2 = get_current_baselines(v_ps)
+        v3c20b_default = b1["current"] == "daily_mode" and b1["baseline_balance"] == 0.3
+        v3c20b_switched = r_switch["switched"] and b2["current"] == "stream_mode" and b2["baseline_balance"] == 0.6
+        # Unknown mode reject
+        r_bad = switch_personality(v_ps, "evil_mode")
+        v3c20b_unknown_reject = not r_bad["switched"]
+    finally:
+        shutil.rmtree(_td_v3c20b, ignore_errors=True)
+
+    report.step(
+        "V3-C20b Personality Switcher (default daily / hot reload stream / unknown reject)",
+        v3c20b_default and v3c20b_switched and v3c20b_unknown_reject,
+        f"default_daily={v3c20b_default} switched_stream={v3c20b_switched} unknown_reject={v3c20b_unknown_reject}",
+    )
+
+    # 42.3 — V3-C21 Trait Evolution (8 evidence → awaiting)
+    from agent_memory.companion.trait_evolution import add_trait_evidence, list_pending_candidates
+    _td_v3c21 = Path(tempfile.mkdtemp(prefix="v3c21_trait_"))
+    try:
+        v_t = _td_v3c21 / "vault"
+        v_t.mkdir()
+        write_brain_type(v_t, "companion")
+        adapter_t = ObsidianVaultAdapter(v_t)
+        adapter_t.ensure_skeleton()
+        for i in range(8):
+            add_trait_evidence(v_t, "owner", "curiosity_seeking", observation_value=0.8, event_id=f"e{i}")
+        pending = list_pending_candidates(v_t)
+        v3c21_candidate_proposed = len(pending) == 1 and pending[0]["evidence_count"] == 8
+    finally:
+        shutil.rmtree(_td_v3c21, ignore_errors=True)
+
+    report.step(
+        "V3-C21 Trait Evolution (evidence>=7 → awaiting_drift_guard candidate)",
+        v3c21_candidate_proposed,
+        f"pending_count={len(pending)} first_evidence={pending[0]['evidence_count'] if pending else 0}",
+    )
+
+    # 42.4 — V3-C22 Drift Guard (drift>=0.5 寫 73_Candidates/ + persona 人工確認)
+    from agent_memory.companion.drift_guard import audit_candidate, compute_drift_score
+    _td_v3c22 = Path(tempfile.mkdtemp(prefix="v3c22_drift_"))
+    try:
+        v_dg = _td_v3c22 / "vault"
+        v_dg.mkdir()
+        write_brain_type(v_dg, "companion")
+        adapter_dg = ObsidianVaultAdapter(v_dg)
+        adapter_dg.ensure_skeleton()
+        for i in range(8):
+            add_trait_evidence(v_dg, "owner", "trait_x", observation_value=0.8, event_id=f"ev{i}")
+        ar = audit_candidate(v_dg, "owner", "trait_x")
+        v3c22_audit_passed = ar.passed and ar.drift_score >= 0.5
+        v3c22_candidate_file = ar.candidate_path and (v_dg / ar.candidate_path).exists()
+        # 太低 drift 拒
+        ds_low = compute_drift_score(current_value=0.5, proposed_value=0.52, evidence_count=10)
+        v3c22_drift_too_low = ds_low < 0.5
+        # 太激烈 防社工拒
+        ds_high = compute_drift_score(current_value=0.0, proposed_value=2.0, evidence_count=20)
+        v3c22_drift_too_high = ds_high > 1.2
+    finally:
+        shutil.rmtree(_td_v3c22, ignore_errors=True)
+
+    report.step(
+        "V3-C22 Drift Guard (drift>=0.5 寫 73_Candidates/ + too_low 拒 + too_extreme 防社工拒)",
+        v3c22_audit_passed and v3c22_candidate_file and v3c22_drift_too_low and v3c22_drift_too_high,
+        f"audit_passed={v3c22_audit_passed} candidate_file={v3c22_candidate_file} "
+        f"too_low_rejected={v3c22_drift_too_low} too_extreme_rejected={v3c22_drift_too_high}",
+    )
+
+    # 42.5 — V3-C23 Skill Learning Loop (寫 51_Hermes_Learned/<skill>/SKILL.md)
+    from agent_memory.companion.skill_learning_loop import register_skill, list_learned_skills, SkillRegistration
+    _td_v3c23 = Path(tempfile.mkdtemp(prefix="v3c23_skill_"))
+    try:
+        v_s = _td_v3c23 / "vault"
+        v_s.mkdir()
+        write_brain_type(v_s, "companion")
+        adapter_s = ObsidianVaultAdapter(v_s)
+        adapter_s.ensure_skeleton()
+        r = register_skill(v_s, SkillRegistration(
+            skill_name="calm_angry_viewer",
+            description="安撫暴怒觀眾",
+            trigger_situation="多條負面情緒 + arousal 高",
+            procedure_steps=["承認", "解釋", "補償"],
+            emotional_origin="emo-ev-1",
+            success_rate=0.8,
+        ))
+        v3c23_skill_registered = r["registered"] and (v_s / r["path"]).exists()
+        skills = list_learned_skills(v_s)
+        v3c23_listed = "calm_angry_viewer" in skills
+    finally:
+        shutil.rmtree(_td_v3c23, ignore_errors=True)
+
+    report.step(
+        "V3-C23 Skill Learning Loop (寫 51_Hermes_Learned/ + frontmatter schema_v10)",
+        v3c23_skill_registered and v3c23_listed,
+        f"registered={v3c23_skill_registered} listed={v3c23_listed}",
+    )
+
+    # 42.6 — V3-C24 Narrative Memory + emotional_arc
+    from agent_memory.companion.narrative_memory import build_narrative_for_user, extract_emotional_arc
+    import sqlite3 as _sql_n
+    _td_v3c24 = Path(tempfile.mkdtemp(prefix="v3c24_narr_"))
+    try:
+        v_n = _td_v3c24 / "vault"
+        v_n.mkdir()
+        write_brain_type(v_n, "companion")
+        adapter_n = ObsidianVaultAdapter(v_n)
+        adapter_n.ensure_skeleton()
+        from agent_memory.companion.companion_db import ensure_companion_db as _ec
+        _ec(v_n)
+        # 注 4 episodic 演化 -0.5 → 0.6
+        with _sql_n.connect(str(v_n / ".ai" / "companion.db")) as _conn_n:
+            import uuid as _uu
+            for i, v_val in enumerate([-0.5, -0.2, 0.3, 0.6]):
+                _conn_n.execute(
+                    "INSERT INTO episodic_memories (memory_id, user_id, summary, valence, arousal, dominance, salience, emotional_salience, lifecycle_state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (str(_uu.uuid4()), "viewer-A", f"t{i}", v_val, 0.4, 0.5, 0.6, 0.5, "mid", f"2026-05-2{i+1}T10:00:00+00:00"),
+                )
+            _conn_n.commit()
+        n = build_narrative_for_user(v_n, "viewer-A")
+        v3c24_narrative_built = n is not None
+        v3c24_growth_theme = "成長" in (n.theme if n else "")
+        arc = extract_emotional_arc([{"valence": -0.5}, {"valence": 0.6}])
+        v3c24_arc_correct = arc["start_valence"] == -0.5 and arc["end_valence"] == 0.6
+    finally:
+        shutil.rmtree(_td_v3c24, ignore_errors=True)
+
+    report.step(
+        "V3-C24 Narrative Memory + emotional_arc (start=-0.5 → end=0.6 → 成長敘事)",
+        v3c24_narrative_built and v3c24_growth_theme and v3c24_arc_correct,
+        f"built={v3c24_narrative_built} growth_theme={v3c24_growth_theme} arc_correct={v3c24_arc_correct}",
+    )
+
+    # 42.7 — V3-C24b Expectation State (over / under 兩種 affect_impact)
+    from agent_memory.companion.expectation_state import set_baseline, update_actual
+    _td_v3c24b = Path(tempfile.mkdtemp(prefix="v3c24b_exp_"))
+    try:
+        v_e = _td_v3c24b / "vault"
+        v_e.mkdir()
+        write_brain_type(v_e, "companion")
+        adapter_e = ObsidianVaultAdapter(v_e)
+        adapter_e.ensure_skeleton()
+        # over expected
+        eid1 = set_baseline(v_e, "sess1", "viewers", expected_value=30.0)
+        r_over = update_actual(v_e, eid1, 45.0)
+        v3c24b_over_joy = r_over["affect_impact"].get("joy_offset", 0) > 0 and r_over["affect_impact"].get("arousal_offset", 0) > 0
+        # under expected
+        eid2 = set_baseline(v_e, "sess2", "viewers", expected_value=30.0)
+        r_under = update_actual(v_e, eid2, 15.0)
+        v3c24b_under_sadness = r_under["affect_impact"].get("valence_offset", 0) < 0 and r_under["affect_impact"].get("sadness_offset", 0) > 0
+    finally:
+        shutil.rmtree(_td_v3c24b, ignore_errors=True)
+
+    report.step(
+        "V3-C24b Expectation State (§29.12 H12, over→joy+arousal / under→valence-sadness)",
+        v3c24b_over_joy and v3c24b_under_sadness,
+        f"over_joy_arousal={v3c24b_over_joy} under_valence_sadness={v3c24b_under_sadness}",
+    )
+
+    # 42.8 — Phase 3 整體驗收
+    phase3_summary = (
+        v3c20_promote_semantic and v3c20b_switched and v3c21_candidate_proposed
+        and v3c22_audit_passed and v3c23_skill_registered
+        and v3c24_growth_theme and v3c24b_over_joy and v3c24b_under_sadness
+    )
+    report.step(
+        "V3 Phase 3 整體驗收 — Preference Consolidator + Personality 切換 + Trait Evolution + Drift Guard + Skill + Narrative + Expectation",
+        phase3_summary,
+        f"all_phase3_pillars_pass={phase3_summary}",
+    )
+
     return report.summary()
 
 
