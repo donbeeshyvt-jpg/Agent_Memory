@@ -712,10 +712,11 @@ def section_J_monologue_tics(report: TestReport):
                    expected=f"style includes {expected_style}")
 
     # J2: Verbal Tics global cap (D32-V3 = 0.7)
-    report.add("J", "verbal_tics_global_cap_0_7",
-               _GLOBAL_PROBABILITY_CAP == 0.7,
+    # V3-E1 Bug 13 (user 2026-05-26): cap 0.7→0.3 對齊真實聊天 verbal tic 頻率
+    report.add("J", "verbal_tics_global_cap_0_3",
+               _GLOBAL_PROBABILITY_CAP == 0.3,
                actual=f"cap={_GLOBAL_PROBABILITY_CAP}",
-               expected="0.7")
+               expected="0.3")
 
     # J3: cooldown 機制 — 同一 tic 不能立刻再用
     cooldown_set = {"ㄜㄜㄜ"}

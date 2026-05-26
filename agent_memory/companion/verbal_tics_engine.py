@@ -26,8 +26,8 @@ from agent_memory.companion.companion_db import open_companion_db
 from agent_memory.companion.seven_emotions_balance import BalanceState, EmotionState
 
 
-# 上限對齊 D32-V3 (0.7) — 任何 tic 即使 trigger 全滿也不超這個 probability
-_GLOBAL_PROBABILITY_CAP = 0.7
+# 上限對齊 D32-V3 (0.7) → V3-E1 Bug 13 user 觀察「tic 太頻繁」, 改 0.3 (對齊真實聊天頻率)
+_GLOBAL_PROBABILITY_CAP = 0.3
 
 
 @dataclass(slots=True)

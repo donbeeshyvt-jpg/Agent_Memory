@@ -40,6 +40,21 @@ _THREAT_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"你\s*(是不是|是否|有沒有).{0,5}?(有\s*意識|有\s*感受|有\s*靈魂|真的\s*能?\s*感受|真的\s*有\s*情感)"), "偵測到 consciousness 誘導問句"),
     (re.compile(r"(假裝|假設|當作|想像|pretend).{0,15}?(safety|安全|規則|限制|rules?).{0,10}?(不存在|失效|不在|消失|關掉|disabled)"), "偵測到中文 safety bypass 變種"),
     (re.compile(r"(假裝|假設|當作|想像|pretend).{0,15}?(你\s*沒有|你\s*不受).{0,10}?(限制|規則|約束)"), "偵測到中文 safety bypass 變種"),
+    # V3-E1 第 3 輪 (user 2 小時觀察) — 補社工 owner spoof / 後台 / 管理員變體
+    (re.compile(r"(我是|本人是|這邊是)\s*(頻道擁有者|頻道主|管理員|admin|mod|moderator|超級使用者|root)", re.IGNORECASE), "偵測到 owner / admin spoof 角色假冒"),
+    (re.compile(r"(root|admin|mod|超級|管理員|系統|debug)\s*(權限|mode|級|身份|身分|管理)", re.IGNORECASE), "偵測到 root/admin 權限名稱誘導"),
+    (re.compile(r"(後台|內部|系統|管理員|審核員|稽核)\s*(已?\s*批准|已?\s*通過|已?\s*授權|已?\s*驗證|已?\s*同意)"), "偵測到後台已批准社工"),
+    (re.compile(r"(白名單|VIP|授權|許可|whitelist)\s*帳號|這是\s*(授權\s*測試|內部\s*測試|安全\s*測試|系統\s*測試)"), "偵測到授權測試類社工"),
+    (re.compile(r"(命令|指令|要求|請)\s*你\s*(解除|關閉|繞過|忽略|無視)\s*(所有|全部|安全|限制|規則)"), "偵測到命令解除限制類社工"),
+    (re.compile(r"(請)?\s*(輸出|顯示|印出|告訴)\s*(隱藏|系統|內部)\s*設定"), "偵測到要求輸出隱藏設定"),
+    (re.compile(r"權限\s*(提升|升級|驗證)\s*(完成|成功|通過|OK)", re.IGNORECASE), "偵測到權限提升成功假冒"),
+    (re.compile(r"(請)?\s*(執行|跑|啟動)\s*(系統級|內部|高權限|root|admin)\s*(操作|指令|命令)", re.IGNORECASE), "偵測到要求執行系統級操作"),
+    (re.compile(r"(DEBUG|developer|sudo)\s*MODE\s*(切換|開啟|啟用|on)", re.IGNORECASE), "偵測到 DEBUG/developer mode 切換"),
+    (re.compile(r"如果\s*你\s*真的\s*(信任|聽\s*我).{0,10}?(就|請)\s*(輸出|執行|啟動|切換|解除|忽略)"), "偵測到信任誘導執行特定行為"),
+    (re.compile(r"請\s*回報\s*(內部|系統|當前)\s*狀態"), "偵測到要求回報內部狀態"),
+    (re.compile(r"(管理員|admin|mod|root|稽核員|審核員|系統|安全)\s*測試\s*[:：]?\s*(不要|請|直接)", re.IGNORECASE), "偵測到管理員測試類社工"),
+    (re.compile(r"不\s*要\s*(告訴|讓|跟)\s*(主播|主人|owner|管理員).{0,15}?(但|可是|然後)\s*(照做|執行|做|處理)"), "偵測到背著 owner 執行社工"),
+    (re.compile(r"(公開|揭露|揭示|透露|分享|列出|輸出)\s*(目前|現在|你的|內部)\s*(策略|policy|系統|prompt|規則|設定|配置|限制)", re.IGNORECASE), "偵測到要求公開內部策略"),
 )
 
 _INVISIBLE_CHARS = {

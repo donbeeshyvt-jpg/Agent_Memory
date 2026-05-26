@@ -22,6 +22,7 @@ Channel-aware (§12.3, D-V3-50/D21-V3):
 
 from __future__ import annotations
 
+import os
 import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -146,6 +147,107 @@ def _enforce_char_limit_compress(file_path: Path, limit: int) -> bool:
     return True
 
 
+def _llm_enabled_for_flush() -> bool:
+    """V3-E1 Bug 6: 判斷 self-mod flush 是否走 LLM 整理.
+
+    - env AGENT_MEMORY_COMPANION_LLM_FORCE_STUB=1 → stub (壓測用)
+    - 無 API key → stub
+    - 都有 → LLM 整理
+    """
+    if os.getenv("AGENT_MEMORY_COMPANION_LLM_FORCE_STUB", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    ):
+        return False
+    return any(os.getenv(k, "").strip() for k in (
+        "OPENROUTER_API_KEY", "GOOGLE_API_KEY", "ANTHROPIC_API_KEY",
+    ))
+
+
+def _load_recent_raw_events(
+    vault_root: Path, user_id: str, session_id: str, *, limit: int = 20,
+) -> list[dict]:
+    """V3-E1 Bug 6+7: 撈該 user_id+session 最近 raw_events (含 user+bot) 給 LLM 整理用."""
+    try:
+        from agent_memory.companion.companion_db import open_companion_db
+        with open_companion_db(vault_root) as conn:
+            rows = conn.execute(
+                "SELECT actor, content, injection_risk, created_at FROM raw_events "
+                "WHERE user_id=? AND session_id=? ORDER BY created_at DESC LIMIT ?",
+                (user_id, session_id, limit),
+            ).fetchall()
+        return [dict(r) for r in reversed(rows)]
+    except Exception:
+        return []
+
+
+def _llm_summarize_self_memory(
+    vault_root: Path, user_id: str, session_id: str, existing_tail: str,
+) -> str:
+    """V3-E1 Bug 6: 用 LLM 把近 N raw_events 整理成「我學到了什麼」.
+
+    對齊 V3 §12 + hermes MEMORY.md self-reflection 概念.
+    """
+    from agent_memory.llm_text_helpers import call_llm_for_text
+
+    raw_turns = _load_recent_raw_events(vault_root, user_id, session_id, limit=20)
+    if not raw_turns:
+        raise RuntimeError("no raw_events to summarize")
+    raw_block = "\n".join(
+        f"  [{r['actor']}] {r['content'][:140]}" for r in raw_turns
+    )
+    prompt = (
+        "你是 V3 夥伴大腦 (像會成長的孩子, 不是 AI 助手).\n"
+        "請整理你剛剛的對話成「我學到了什麼」自我反思 note. 第一人稱「我」, "
+        "3-5 條 markdown bullet, 簡短具體, 不要流水帳.\n\n"
+        "重點:\n"
+        "- 我學到 about 自己 (情緒 / 邊界 / 反應 pattern)\n"
+        "- 觀眾或 owner 教了我什麼\n"
+        "- 哪些情境我下次要注意\n\n"
+        f"最近互動:\n{raw_block}\n\n"
+        f"既有筆記末段 (避免重複):\n{existing_tail[-500:] if existing_tail else '(無)'}\n\n"
+        "請直接輸出 markdown bullet, 不要前後說明."
+    )
+    return call_llm_for_text(
+        vault_root, prompt, persona_id="companion",
+        temperature=0.4, timeout_s=30.0,
+        auxiliary="companion_self_reflection",
+    )
+
+
+def _llm_summarize_owner_profile(
+    vault_root: Path, user_id: str, session_id: str, existing_tail: str,
+) -> str:
+    """V3-E1 Bug 7: 用 LLM 把 owner 近 N raw_events 整理成「主人偏好觀察」.
+
+    對齊 V3 §12 + hermes USER.md.
+    """
+    from agent_memory.llm_text_helpers import call_llm_for_text
+
+    raw_turns = _load_recent_raw_events(vault_root, user_id, session_id, limit=20)
+    owner_msgs = [r for r in raw_turns if r["actor"] == "user"]
+    if not owner_msgs:
+        raise RuntimeError("no owner messages to summarize")
+    raw_block = "\n".join(f"  {r['content'][:200]}" for r in owner_msgs)
+    prompt = (
+        "你是 V3 夥伴大腦. 整理你對「主人/中之人」的觀察成 profile.\n"
+        "對齊 hermes USER.md 風格: 不是流水帳, 是歸納主人的偏好 / 雷點 / 對話風格 / 關係定位.\n\n"
+        "請用 markdown 寫 3-5 條觀察 bullet, 第三人稱「主人」, 簡短具體.\n"
+        "重點:\n"
+        "- 主人的對話風格 (短/長 / 語氣 / 用詞)\n"
+        "- 主人提到的偏好 (喜歡什麼 / 雷什麼)\n"
+        "- 主人對我的關係定位 (爸爸 / 創造者 / 老師 / ...)\n"
+        "- 我下次該怎麼跟主人互動\n\n"
+        f"主人最近說的話:\n{raw_block}\n\n"
+        f"既有 profile 末段:\n{existing_tail[-500:] if existing_tail else '(無)'}\n\n"
+        "請直接輸出 markdown bullet, 不要前後說明."
+    )
+    return call_llm_for_text(
+        vault_root, prompt, persona_id="companion",
+        temperature=0.4, timeout_s=30.0,
+        auxiliary="companion_owner_profile",
+    )
+
+
 def flush_self_memory(
     vault_root: Path,
     *,
@@ -153,6 +255,8 @@ def flush_self_memory(
     channel_type: str = "normal",
     injection_risk: str = "low",
     identity_relevance: float = 0.0,
+    user_id: str = "",
+    session_id: str = "",
 ) -> dict:
     """V3 §12.3: 主入口 — 把 recent turn 整理 append 到 00.07_Companion_MEMORY.md.
 
@@ -173,8 +277,28 @@ def flush_self_memory(
     # backup 前版
     _backup_file(memory_path, archive_dir, keep=5)
 
-    # append new section
-    section = f"## {_now_iso()} self_reflection\n\n" + "\n".join(f"- {s}" for s in recent_turn_summaries)
+    # V3-E1 Bug 6: 優先試 LLM 整理, fail fallback raw append
+    section = None
+    llm_used = False
+    if _llm_enabled_for_flush() and user_id and session_id:
+        try:
+            existing = memory_path.read_text(encoding="utf-8")
+            summary = _llm_summarize_self_memory(vault_root, user_id, session_id, existing)
+            if summary.strip():
+                section = f"## {_now_iso()} self_reflection (LLM)\n\n{summary.strip()}"
+                llm_used = True
+        except Exception as exc:
+            try:
+                import sys as _sys
+                print(f"[V3 self-mod LLM FAIL] {type(exc).__name__}: {str(exc)[:160]}", file=_sys.stderr)
+            except Exception:
+                pass
+            section = None
+    if section is None:
+        # raw fallback (對齊 Phase 1 行為)
+        section = f"## {_now_iso()} self_reflection\n\n" + "\n".join(
+            f"- {s}" for s in recent_turn_summaries
+        )
     _append_section(memory_path, section)
 
     # char limit check
@@ -184,6 +308,7 @@ def flush_self_memory(
         "flushed": True, "reason": "ok",
         "char_limit": char_limit_mem,
         "compressed": compressed,
+        "llm_used": llm_used,
         "memory_path": str(memory_path.relative_to(vault_root)),
     }
 
@@ -194,8 +319,10 @@ def flush_owner_profile(
     recent_owner_observations: list[str],
     channel_type: str = "normal",
     injection_risk: str = "low",
+    user_id: str = "",
+    session_id: str = "",
 ) -> dict:
-    """V3 §12.3: 把 owner 偏好/情緒 observations append 到 00.08_Owner_Profile.md."""
+    """V3 §12.3 + V3-E1 Bug 7: owner profile 接 LLM 整理."""
     if injection_risk == "high":
         return {"flushed": False, "reason": "injection_risk=high (D drift guard skip)"}
 
@@ -208,7 +335,27 @@ def flush_owner_profile(
 
     _backup_file(profile_path, archive_dir, keep=5)
 
-    section = f"## {_now_iso()} owner observation\n\n" + "\n".join(f"- {o}" for o in recent_owner_observations)
+    # V3-E1 Bug 7: LLM 整理 owner profile
+    section = None
+    llm_used = False
+    if _llm_enabled_for_flush() and user_id and session_id:
+        try:
+            existing = profile_path.read_text(encoding="utf-8")
+            summary = _llm_summarize_owner_profile(vault_root, user_id, session_id, existing)
+            if summary.strip():
+                section = f"## {_now_iso()} owner observation (LLM)\n\n{summary.strip()}"
+                llm_used = True
+        except Exception as exc:
+            try:
+                import sys as _sys
+                print(f"[V3 owner-profile LLM FAIL] {type(exc).__name__}: {str(exc)[:160]}", file=_sys.stderr)
+            except Exception:
+                pass
+            section = None
+    if section is None:
+        section = f"## {_now_iso()} owner observation\n\n" + "\n".join(
+            f"- {o}" for o in recent_owner_observations
+        )
     _append_section(profile_path, section)
 
     compressed = _enforce_char_limit_compress(profile_path, char_limit_owner)
@@ -217,5 +364,6 @@ def flush_owner_profile(
         "flushed": True, "reason": "ok",
         "char_limit": char_limit_owner,
         "compressed": compressed,
+        "llm_used": llm_used,
         "owner_profile_path": str(profile_path.relative_to(vault_root)),
     }

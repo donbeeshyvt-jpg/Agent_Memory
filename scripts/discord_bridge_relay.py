@@ -162,10 +162,19 @@ class BridgeRelayClient(discord.Client):
             except Exception:  # noqa: BLE001
                 continue
 
+        # V3-E1 Bug 2: 帶 guild_id + channel_kind 給 V3 dispatcher 對齊 channel_type
+        guild_id = ""
+        try:
+            if message.guild is not None:
+                guild_id = str(message.guild.id)
+        except Exception:
+            pass
         payload = {
             "content": text,
             "channel_id": str(message.channel.id),
-            "author": {"id": str(message.author.id)},
+            "guild_id": guild_id,
+            "channel_kind": ("dm" if not guild_id else "public_text_channel"),
+            "author": {"id": str(message.author.id), "bot": bool(getattr(message.author, "bot", False))},
             "mode": self.mode,
             "allow_llm_degraded": self.allow_llm_degraded,
         }

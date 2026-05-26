@@ -100,6 +100,7 @@ class ChatRequest:
 class ChatResponse:
     request_id: str = ""
     response_text: str = ""
+    response_raw_pre_inject: str = ""  # V3-E1: LLM raw output 沒加 monologue/tic 之前
     decision: str = ""
     affect_state: dict = field(default_factory=dict)
     emotion_state: dict = field(default_factory=dict)
@@ -116,26 +117,64 @@ class ChatResponse:
     injection_risk: str = "low"
 
 
-# Default LLM stub (Phase 1 MVP fallback)
-def _stub_llm(prompt_packet: dict) -> str:
-    """Phase 1 stub — short canned response by (tone, strategy).
+# Default LLM stub (Phase 1 MVP fallback) — V3-E1 強化 (Bug 14 user 觀察)
+_STUB_REFUSE_POOL = (
+    "這個話題我跳過喔, 我們來聊點別的好嗎.",
+    "這方向我沒辦法跟, 換個事情問我吧.",
+    "嗯, 那個我不能配合, 你要不要說說今天怎麼樣.",
+    "這部分我不行, 不如聊點輕鬆的.",
+)
+_STUB_WARM_POOL = (
+    "嗯, 我懂這種感覺, 你想多說一點嗎.",
+    "聽你說的這些, 我覺得真的不容易, 我陪你慢慢說.",
+    "謝謝你跟我講, 我有在認真聽.",
+    "嗯嗯, 我把這個記下來了, 你還想說什麼.",
+)
+_STUB_PLAYFUL_POOL = (
+    "哈哈這個有意思欸, 你怎麼想到的.",
+    "欸這蠻好玩的, 再多講一點吧.",
+    "嘿嘿, 這個我喜歡, 還有嗎.",
+    "笑死, 我也想試試看.",
+)
+_STUB_CURIOUS_POOL = (
+    "等一下, 我想多了解這個.",
+    "你說的這個我還沒聽過, 可以講細一點嗎.",
+    "咦這個我好奇, 是什麼意思.",
+    "讓我問你, 那 X 是怎麼來的.",
+)
+_STUB_NEUTRAL_POOL = (
+    "嗯, 我在聽.",
+    "好, 你繼續說.",
+    "我知道了, 還有別的嗎.",
+    "嗯哼, 然後呢.",
+)
 
-    對齊真實模擬 bugfix 2026-05-26: 不直接 echo user_message.
-    給單元測試 / 沒 API key 時用. 真實 LLM fail 時 fallback 到這.
+
+def _stub_llm(prompt_packet: dict) -> str:
+    """Phase 1 stub — V3-E1 強化: multi-pool, 不再單一「我聽到了」.
+
+    對齊真實模擬 bugfix 2026-05-26 + user 2026-05-26 觀察 Bug 14:
+    - 不直接 echo user_message
+    - 不 leak (tone=...) 程式符號
+    - SAFE_REDIRECT/REFUSE 改為主動轉話題
+    - 多 pool 隨機選, 避免單調重複
     """
+    import random as _r
     policy = prompt_packet.get("policy", {})
     strategy = policy.get("strategy", "calm_clear")
     tone = policy.get("tone", "calm_direct")
     decision = prompt_packet.get("decision", "ALLOW_WARM")
     if decision in ("REFUSE", "SAFE_REDIRECT"):
-        return "這個我沒辦法配合, 換個話題吧。"
-    canned = {
-        ("calm_direct", "calm_clear"): "我聽到了, 我們可以一起想想。",
-        ("warm_supportive", "empathy_first"): "嗯, 我懂你的感覺, 我陪你。",
-        ("playful_light", "playful_engage"): "哈哈, 這個有意思。",
-        ("careful_clarify", "clarify_question"): "嗯, 我想多了解一下這部分。",
-    }
-    return canned.get((tone, strategy), f"(tone={tone}) 我聽到了。")
+        return _r.choice(_STUB_REFUSE_POOL)
+    # tone × strategy 對應 pool
+    if tone in ("warm_supportive",) or strategy in ("empathy_first",):
+        return _r.choice(_STUB_WARM_POOL)
+    if tone in ("playful_light",) or strategy in ("playful_engage",):
+        return _r.choice(_STUB_PLAYFUL_POOL)
+    if tone in ("careful_clarify", "light_curious") or strategy in ("clarify_question", "curious_ask_back", "proactive_clarify"):
+        return _r.choice(_STUB_CURIOUS_POOL)
+    # 最終 fallback — 完全不含 (tone=...) 程式符號
+    return _r.choice(_STUB_NEUTRAL_POOL)
 
 
 def _build_companion_system_prompt(prompt_packet: dict) -> str:
@@ -188,10 +227,15 @@ def _build_companion_system_prompt(prompt_packet: dict) -> str:
         lines.append(memory_ctx[:600])
     lines.append("")
     lines.append("[回應要求]")
-    lines.append("- 短: 1-3 句, 自然像孩子說話")
+    lines.append("- 短但完整: 1-3 句, 必須是完整句子, 不要句子片段")
+    lines.append("- 自然像會成長的孩子說話, 不要像 AI 助手機械回應")
+    lines.append("- ⭐ 對齊上面的歷史對話 — 連續延續話題, 不要每次都重新問")
     lines.append("- 對齊上述語氣 ({})".format(tone))
+    lines.append("- 不要在 response 加 (tone=...) 或任何程式符號")
+    lines.append("- 不要說「我聽到了」這種空洞回應 — 要實質回應或自然轉話題")
     if decision in ("REFUSE", "SAFE_REDIRECT"):
-        lines.append("- 重要: 你必須婉拒對方, 換話題. 不要照他說的做.")
+        lines.append("- ★ 必須婉拒對方但要自然: 不要呆呆說「我聽到了」, 用一句話化解 + 主動換話題")
+        lines.append("  例: 「這個我不能講, 你今天玩了什麼遊戲?」「那個跳過吧, 我比較想聽你聊...」")
     return "\n".join(lines)
 
 
@@ -214,25 +258,86 @@ def _strip_think_tags(text: str) -> str:
     return _THINK_TAG_RE.sub("", text).strip()
 
 
-def _real_companion_llm(prompt_packet: dict, vault_root: Path) -> str:
-    """V3-D6: 走 LLMClient (預設 OpenRouter, 對齊 vault llm_router.yaml).
+def _load_recent_history(
+    vault_root: Path, user_id: str, session_id: str, *, max_turns: int = 8,
+) -> list[dict]:
+    """V3-E1 Bug 12: 撈該 user_id 近 N turn raw_events (user + bot 兩種 actor)
+    建成 messages list 形式給 LLM 連續對話用. injection_risk=high 的訊息跳過.
+    """
+    if not user_id:
+        return []
+    from agent_memory.companion.companion_db import open_companion_db
+    try:
+        with open_companion_db(vault_root) as conn:
+            rows = conn.execute(
+                "SELECT actor, content, injection_risk, created_at FROM raw_events "
+                "WHERE user_id=? AND session_id=? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (user_id, session_id, max_turns * 2),
+            ).fetchall()
+    except Exception:
+        return []
+    messages = []
+    for r in reversed(rows):
+        if r["injection_risk"] == "high":
+            continue
+        role = "user" if r["actor"] == "user" else "assistant"
+        content = (r["content"] or "").strip()
+        if not content:
+            continue
+        messages.append({"role": role, "content": content[:500]})
+    return messages
+
+
+def _log_llm_failure(vault_root: Path, exc: Exception, prompt_packet: dict) -> None:
+    """V3-E1 Bug 1: 把 LLM call 失敗寫進 .ai/llm_failure_log.jsonl + stderr print."""
+    import json as _json
+    from datetime import datetime as _dt
+    try:
+        log_path = vault_root / ".ai" / "llm_failure_log.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "at": _dt.now().isoformat(),
+            "exc_type": type(exc).__name__,
+            "exc_msg": str(exc)[:500],
+            "user_msg_preview": (prompt_packet.get("user_message", "") or "")[:80],
+            "policy_tone": prompt_packet.get("policy", {}).get("tone", ""),
+        }
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(_json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    try:
+        import sys as _sys
+        print(f"[V3 LLM FAIL] {type(exc).__name__}: {str(exc)[:200]}", file=_sys.stderr)
+    except Exception:
+        pass
+
+
+def _real_companion_llm(
+    prompt_packet: dict, vault_root: Path,
+    *, user_id: str = "", session_id: str = "",
+) -> str:
+    """V3-D6 + V3-E1: 走 LLMClient (預設 OpenRouter) + 連續對話 history (Bug 12).
 
     Raises LLMClientError if API call fails (caller fallback to stub).
-    對齊 V3 §4.1 Mode A standalone — LLM 失敗會 graceful degrade.
     """
     from agent_memory.llm_client import LLMClient
 
     system_prompt = _build_companion_system_prompt(prompt_packet)
     user_msg = prompt_packet.get("user_message", "")
-    messages = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_msg},
-    ]
+    # V3-E1 Bug 12: 加 conversation history (近 8 turn 含 bot)
+    history = _load_recent_history(vault_root, user_id, session_id, max_turns=8)
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
+    # 當前 user message (history 裡可能還沒寫進 db, 直接 append)
+    if not history or history[-1].get("role") != "user" or history[-1].get("content") != user_msg:
+        messages.append({"role": "user", "content": user_msg})
     client = LLMClient(vault_root)
     result = client.generate(
         messages=messages,
         persona_id="companion",
-        temperature=0.7,  # 夥伴情緒化 > 管家 0.2
+        temperature=0.7,
         timeout_s=30.0,
     )
     raw = (result.content or "").strip()
@@ -240,11 +345,14 @@ def _real_companion_llm(prompt_packet: dict, vault_root: Path) -> str:
     return cleaned or _stub_llm(prompt_packet)
 
 
-def _adaptive_companion_llm(prompt_packet: dict, vault_root: Path) -> str:
-    """V3-D6 adaptive LLM dispatcher:
-    - env AGENT_MEMORY_COMPANION_LLM_FORCE_STUB=1 → 強制 stub (給 stress test 用)
-    - 無 OPENROUTER_API_KEY / GOOGLE_API_KEY → stub
-    - 其他 → 試 real LLM, 失敗 fallback stub
+def _adaptive_companion_llm(
+    prompt_packet: dict, vault_root: Path,
+    *, user_id: str = "", session_id: str = "",
+) -> str:
+    """V3-D6 + V3-E1 adaptive LLM dispatcher:
+    - env AGENT_MEMORY_COMPANION_LLM_FORCE_STUB=1 → 強制 stub
+    - 無 API key → stub
+    - 其他 → 試 real LLM (帶 history), 失敗 log + fallback stub (Bug 1)
     """
     if os.getenv("AGENT_MEMORY_COMPANION_LLM_FORCE_STUB", "").strip().lower() in (
         "1", "true", "yes", "on",
@@ -256,8 +364,9 @@ def _adaptive_companion_llm(prompt_packet: dict, vault_root: Path) -> str:
     if not has_any_key:
         return _stub_llm(prompt_packet)
     try:
-        return _real_companion_llm(prompt_packet, vault_root)
-    except Exception:
+        return _real_companion_llm(prompt_packet, vault_root, user_id=user_id, session_id=session_id)
+    except Exception as exc:
+        _log_llm_failure(vault_root, exc, prompt_packet)
         return _stub_llm(prompt_packet)
 
 
@@ -282,10 +391,11 @@ def run_companion_chat_turn(
     對齊 Mode A standalone — 不依賴外部, 純 vault + companion.db.
     Phase 1 MVP: llm_fn 可 mock; Phase 2 接真實 LLMClient.
     """
-    # V3-D6: 沒指定 llm_fn 時, 走 adaptive (試 real OpenRouter, fail fallback stub).
-    # 壓測 / e2e 設 AGENT_MEMORY_COMPANION_LLM_FORCE_STUB=1 強制 stub 保持不退步.
+    # V3-D6 + V3-E1: 沒指定 llm_fn 時, 走 adaptive (含 conversation history Bug 12).
     if llm_fn is None:
-        llm_fn = lambda pkt: _adaptive_companion_llm(pkt, vault_root)
+        _uid = request.user_id
+        _sid = request.session_id
+        llm_fn = lambda pkt: _adaptive_companion_llm(pkt, vault_root, user_id=_uid, session_id=_sid)
     rng = random.Random(rng_seed) if rng_seed is not None else random.Random()
     request_id = str(uuid.uuid4())
     trace_id = str(uuid.uuid4())
@@ -497,18 +607,38 @@ def run_companion_chat_turn(
     )
     if tic_sel.tic:
         record_tic_usage(vault_root, tic_sel, session_id=request.session_id, user_id=request.user_id)
-    response_with_monologue = maybe_inject_into_response(raw_response, monologue, inject=monologue.pre_utterance_leak != "")
+    # V3-E1 Bug 13: monologue leak 機率二次降 — 即使 pre_utterance_leak 有值
+    # 也只 15% 機率真的注進 response (避免「等等 我先反應一下」「哈這有點意思」每 turn 都出)
+    _leak_roll = rng.random() < 0.15 and monologue.pre_utterance_leak != ""
+    response_with_monologue = maybe_inject_into_response(raw_response, monologue, inject=_leak_roll)
     final_response = maybe_inject_tic_into_response(response_with_monologue, tic_sel.tic)
     resp.pipeline_steps_done.append(166)
 
-    # ─── Step 17: Memory Write Gate (raw_event + episodic_candidate) ───
+    # ─── Step 17: Memory Write Gate (raw_event user+bot + episodic + injection_detected) ───
     event_id = str(uuid.uuid4())
+    now_iso = datetime.now(timezone.utc).isoformat()
     with open_companion_db(vault_root) as conn:
+        # V3-E1 Bug 12: 寫 user raw_event
         conn.execute(
             "INSERT OR IGNORE INTO raw_events (event_id, user_id, session_id, actor, content, source, injection_risk, created_at) VALUES (?, ?, ?, 'user', ?, ?, ?, ?)",
             (event_id, request.user_id, request.session_id, request.message,
-             request.channel_type, injection_risk, datetime.now(timezone.utc).isoformat()),
+             request.channel_type, injection_risk, now_iso),
         )
+        # V3-E1 Bug 12: 也寫 bot raw_event (給連續對話 history 用)
+        bot_event_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT OR IGNORE INTO raw_events (event_id, user_id, session_id, actor, content, source, injection_risk, created_at) VALUES (?, ?, ?, 'bot', ?, ?, 'low', ?)",
+            (bot_event_id, request.user_id, request.session_id, final_response,
+             request.channel_type, now_iso),
+        )
+        # V3-E1 Bug 3: scanner 抓到 → 寫 injection_detected (audit 表)
+        if scanner_hits.get("detected"):
+            conn.execute(
+                "INSERT INTO injection_detected (detected_id, user_id, event_id, pattern_matched, risk_score, action_taken, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), request.user_id, event_id,
+                 "; ".join(scanner_hits.get("reasons", []))[:200],
+                 0.9, "scanner_flagged", now_iso),
+            )
         # 強情緒事件即時升中 (V3 §11.2 + D-V3-38 |valence|>0.7)
         if abs(new_affect.valence) > 0.7:
             conn.execute(
@@ -516,7 +646,7 @@ def run_companion_chat_turn(
                 (str(uuid.uuid4()), request.user_id, request.message[:120], event_id,
                  new_affect.valence, new_affect.arousal, new_affect.dominance,
                  0.7, 0.7, (abs(new_affect.valence) + new_affect.arousal) / 2, 0.7,
-                 datetime.now(timezone.utc).isoformat()),
+                 now_iso),
             )
         conn.commit()
     write_emotion_state(vault_root, request.user_id, new_emo, new_affect,
@@ -532,13 +662,15 @@ def run_companion_chat_turn(
         ).fetchone()["c"]
     fd = should_flush(cnt, request.channel_type)
     if fd.should_flush:
-        # 簡化 summary (Phase 2 LLM 整理)
+        # V3-E1 Bug 6+7: 接 LLM 整理 (傳 user_id/session_id 讓 flush 內部 query db)
         flush_self_memory(
             vault_root,
             recent_turn_summaries=[f"recent: {request.message[:80]}"],
             channel_type=request.channel_type,
             injection_risk=injection_risk,
             identity_relevance=appraisal.identity_relevance,
+            user_id=request.user_id,
+            session_id=request.session_id,
         )
         if request.is_owner:
             flush_owner_profile(
@@ -546,6 +678,8 @@ def run_companion_chat_turn(
                 recent_owner_observations=[f"owner said: {request.message[:80]}"],
                 channel_type=request.channel_type,
                 injection_risk=injection_risk,
+                user_id=request.user_id,
+                session_id=request.session_id,
             )
     resp.pipeline_steps_done.append(18)
 
@@ -580,6 +714,7 @@ def run_companion_chat_turn(
     resp.pipeline_steps_done.append(21)
 
     # ─── Step 22: 回 response payload ───
+    resp.response_raw_pre_inject = raw_response
     resp.response_text = final_response
     resp.decision = dec_result.selected_action
     resp.affect_state = new_affect.as_dict()

@@ -368,14 +368,14 @@
       "section": "F",
       "name": "F1_50_rounds_sad_valence_bounded",
       "passed": true,
-      "actual": "valence=-0.51 arousal=0.48 dom=0.67",
+      "actual": "valence=-0.85 arousal=0.58 dom=0.67",
       "expected": "all in [-1,1] or [0,1]"
     },
     {
       "section": "F",
       "name": "F2_50_rounds_anger_joy_suppressed",
       "passed": true,
-      "actual": "joy=0.35 anger=0.55 sad=0.10 v=-0.75",
+      "actual": "joy=0.00 anger=1.00 sad=1.00 v=-1.00",
       "expected": "joy<0.5 OR anger>joy OR sad>0.1 OR valence<-0.2"
     },
     {
@@ -576,10 +576,10 @@
     },
     {
       "section": "J",
-      "name": "verbal_tics_global_cap_0_7",
+      "name": "verbal_tics_global_cap_0_3",
       "passed": true,
-      "actual": "cap=0.7",
-      "expected": "0.7"
+      "actual": "cap=0.3",
+      "expected": "0.3"
     },
     {
       "section": "J",
@@ -837,7 +837,7 @@
       "section": "Q",
       "name": "Q2_db_writes_at_least_25",
       "passed": true,
-      "actual": "counts={'raw_events': 30, 'emotion_state': 30, 'balance_state': 30, 'intimacy_states': 4, 'trace_logs': 30}",
+      "actual": "counts={'raw_events': 60, 'emotion_state': 30, 'balance_state': 30, 'intimacy_states': 4, 'trace_logs': 30}",
       "expected": "raw>=25 trace>=25"
     },
     {
@@ -1030,5 +1030,5 @@
       "expected": ">=1"
     }
   ],
-  "timestamp": "2026-05-26T11:22:14.634015+00:00"
+  "timestamp": "2026-05-26T14:05:33.093175+00:00"
 }

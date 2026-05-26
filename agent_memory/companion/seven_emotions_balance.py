@@ -136,12 +136,20 @@ def update_emotion_state(
     u = affect.uncertainty
 
     # 預測 (rule-based 公式)
-    joy_pred = _clamp(0.5 + v * 0.4 + (appraisal.goal_congruence + 1) * 0.15)
-    anger_pred = _clamp(max(0, -v) * a * d * 1.5)
-    sadness_pred = _clamp(max(0, -v) * (1 - a) * (1 - d) * 1.5)
+    # V3-E1 Bug 5: joy baseline 對負 valence 真的降, 倍率拉強, sadness/anger 加 appraisal emotion offset
+    appraisal_neg_emo = max(0, -appraisal.emotion_valence_offset)  # 0~1, 負面情緒詞強度
+    appraisal_pos_emo = max(0, appraisal.emotion_valence_offset)
+
+    joy_pred = _clamp(
+        max(0.0, 0.3 + v * 0.6) + max(0, appraisal.goal_congruence) * 0.2 + appraisal_pos_emo * 0.3
+    )
+    anger_pred = _clamp(max(0, -v) * (0.5 + a) * d * 2.0 + appraisal_neg_emo * a * 0.3)
+    sadness_pred = _clamp(
+        max(0, -v) * (0.5 + (1 - a)) * (0.5 + (1 - d)) * 2.0 + appraisal_neg_emo * 0.4
+    )
     fear_pred = _clamp(max(0, -v) * a * (1 - d) * u * 2.0)
     love_pred = _clamp(max(0, v) * max(0, appraisal.relationship_impact) * 1.3)
-    disgust_pred = _clamp(max(0, -v) * a * (1 - appraisal.norm_fit) * 1.5)
+    disgust_pred = _clamp(max(0, -v) * (0.5 + a) * (1 - appraisal.norm_fit) * 2.0)
     desire_pred = _clamp(max(0, appraisal.goal_congruence) * max(0, v) * appraisal.control * 1.3)
 
     # 指數平滑

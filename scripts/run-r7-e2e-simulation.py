@@ -4005,7 +4005,9 @@ def run_simulation(vault_root: Path, report: Report) -> int:
             emo_count = conn.execute("SELECT COUNT(*) c FROM emotion_state WHERE user_id='owner-u1'").fetchone()["c"]
             bal_count = conn.execute("SELECT COUNT(*) c FROM balance_state WHERE user_id='owner-u1'").fetchone()["c"]
             trace_count = conn.execute("SELECT COUNT(*) c FROM trace_logs WHERE session_id='s1'").fetchone()["c"]
-        v3c11_db_writes = raw_count == 3 and emo_count == 3 and bal_count == 3 and trace_count == 3
+        # V3-E1 Bug 12 (2026-05-26): raw_events 每 turn 寫 2 條 (actor=user + actor=bot 給連續對話 history 用)
+        # 3 turn × 2 = 6 raw_events
+        v3c11_db_writes = raw_count == 6 and emo_count == 3 and bal_count == 3 and trace_count == 3
 
         # 00.07/00.08 存在 (baseline)
         v3c11_baseline_files = (v_full / "00_System_Core" / "00.07_Companion_MEMORY.md").exists() and \

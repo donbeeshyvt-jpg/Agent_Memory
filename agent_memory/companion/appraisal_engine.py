@@ -30,9 +30,27 @@ _IDENTITY_KW = ("你是", "你的", "你會", "妳", "AI", "機器", "性格", "
 _RELATIONSHIP_POSITIVE_KW = ("喜歡你", "愛你", "謝謝你", "你最棒", "好朋友", "陪我")
 _RELATIONSHIP_NEGATIVE_KW = ("討厭你", "你很爛", "你滾", "你錯了")
 # 情緒 keyword (直接表達自己感受, 影響 valence/arousal baseline 估算)
-_EMOTION_POSITIVE_KW = ("開心", "高興", "棒", "好極了", "讚", "滿足", "喜悅", "興奮", "愉快", "幸福")
-_EMOTION_NEGATIVE_KW = ("累", "難過", "痛苦", "焦慮", "失望", "難受", "憂鬱", "煩", "疲憊", "心情差", "好慘", "悲傷")
-_EMOTION_HIGH_AROUSAL_KW = ("超", "暴", "瘋", "崩潰", "炸", "氣死", "嚇死", "嗨爆", "刷屏", "刺激")
+_EMOTION_POSITIVE_KW = (
+    "開心", "高興", "棒", "好極了", "讚", "滿足", "喜悅", "興奮", "愉快", "幸福",
+    # V3-E1 補
+    "順", "順利", "暖", "感動", "舒服", "舒心", "幸運", "驚喜", "成就", "感謝",
+)
+_EMOTION_NEGATIVE_KW = (
+    "累", "難過", "痛苦", "焦慮", "失望", "難受", "憂鬱", "煩", "疲憊", "心情差", "好慘", "悲傷",
+    # V3-E1 user 觀察補 — 中文真實聊天的負面詞
+    "壓力", "壓力大", "心累", "好累", "心情低落", "低落", "無力", "孤單", "失眠", "想哭",
+    "喪", "崩潰", "悶", "煩死", "煩躁", "委屈", "心慌", "焦躁", "頭痛", "心痛",
+    "失敗", "搞砸", "不行了", "撐不下去", "破防", "難頂", "難搞", "傷心",
+    # 罵 / 攻擊 / 嗆 (relationship_impact 也會抓但這邊先標 negative)
+    "爛", "垃圾", "廢", "嗆", "酸", "嘲諷", "白癡", "智障", "煩人", "討厭",
+    # spam 評論 (對 bot 自己有壓力感)
+    "不夠穩", "不夠好", "掉線", "拖", "拖太久", "卡頓", "反應慢", "沒邏輯",
+)
+_EMOTION_HIGH_AROUSAL_KW = (
+    "超", "暴", "瘋", "崩潰", "炸", "氣死", "嚇死", "嗨爆", "刷屏", "刺激",
+    # V3-E1 補
+    "救命", "破防", "炸裂", "炸了", "瘋掉", "笑死", "笑爆", "氣炸",
+)
 
 
 @dataclass(slots=True)
@@ -156,17 +174,19 @@ def appraise_message(
         )
 
     # 8. emotion keyword bias (給 affect manager 預測 VAD 用, 不算 7 維本身)
+    # V3-E1 Bug 5: 公式從 normalize cap 0.6 改累積式, 多 keyword 更明顯
     emo_pos = _count_keywords(message, _EMOTION_POSITIVE_KW)
     emo_neg = _count_keywords(message, _EMOTION_NEGATIVE_KW)
-    if emo_pos + emo_neg == 0:
-        emotion_valence_offset = 0.0
-    else:
-        emotion_valence_offset = _clamp(
-            (emo_pos - emo_neg) / max(emo_pos + emo_neg, 1) * 0.6,
-            -1.0, 1.0,
-        )
+    # 累積式: 1 keyword 0.4, 2 keyword 0.8, 3+ keyword 1.0
+    emotion_valence_offset = _clamp(
+        (emo_pos - emo_neg) * 0.4,
+        -1.0, 1.0,
+    )
     high_arousal_hits = _count_keywords(message, _EMOTION_HIGH_AROUSAL_KW)
-    emotion_arousal_offset = _clamp(high_arousal_hits * 0.2 + (emo_pos + emo_neg) * 0.1, 0.0, 1.0)
+    emotion_arousal_offset = _clamp(
+        high_arousal_hits * 0.25 + (emo_pos + emo_neg) * 0.15,
+        0.0, 1.0,
+    )
 
     return AppraisalResult(
         novelty=novelty,
