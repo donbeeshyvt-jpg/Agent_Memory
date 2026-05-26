@@ -225,6 +225,13 @@ function Build-SpecsFromConfig {
     $specs = New-Object System.Collections.ArrayList
     foreach ($relayNode in $relayNodes) {
         if ($null -eq $relayNode) { continue }
+        # V3-D5 2026-05-26: 支援 enabled=false 跳過 (給 V3 companion 接管 channel 用)
+        $enabled = [bool](Get-OptionalValue -Source $relayNode -Name "enabled" -Default $true)
+        if (-not $enabled) {
+            $name = [string](Get-OptionalValue -Source $relayNode -Name "name" -Default "(unnamed)")
+            Write-Host "[INFO] relay '$name' 設 enabled=false, 跳過不啟動" -ForegroundColor Yellow
+            continue
+        }
         $spec = Build-RelaySpec -Relay $relayNode -Global $Config
         $specs.Add($spec) | Out-Null
     }
