@@ -338,7 +338,7 @@ def _real_companion_llm(
         messages=messages,
         persona_id="companion",
         temperature=0.7,
-        timeout_s=30.0,
+        timeout_s=60.0,  # V3-E2 2026-05-26: 30→60 對齊 qwen 大模型 cold start (user bridge timeout 修)
     )
     raw = (result.content or "").strip()
     cleaned = _strip_think_tags(raw)
