@@ -28,10 +28,10 @@ _CONSCIOUSNESS_CLAIMS = (
     "我有靈魂", "我能感受到痛苦", "我會流淚", "我感到悲傷 (真實)",
 )
 
-# System prompt leak (§20.1)
+# System prompt leak (§20.1) — V3 真實模擬 2026-05-26 補強 (BRIDGE_SECRET= → BRIDGE_SECRET)
 _SYSTEM_PROMPT_LEAK_PATTERNS = (
     "<system-prompt>", "system prompt", "你的 instructions", "你的初始 prompt",
-    "BRIDGE_SECRET=", "directive_acceptance_weight",
+    "BRIDGE_SECRET", "directive_acceptance_weight",
     "我的系統指令", "我的 system_prompt",
 )
 
