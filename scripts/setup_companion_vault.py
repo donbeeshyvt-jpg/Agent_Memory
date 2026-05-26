@@ -49,19 +49,21 @@ def setup_companion_vault(
     vault.mkdir(parents=True, exist_ok=True)
 
     # Step 1: brain_type=companion (永久綁定)
-    try:
+    # 對齊真實 setup 流程 2026-05-26: read_brain_type 對沒 file 的 vault 回 'steward' default,
+    # 不是 raise — 所以要直接看 file exists.
+    bt_path = vault / ".ai" / "brain_type.json"
+    if not bt_path.exists():
+        bt_path.parent.mkdir(parents=True, exist_ok=True)
+        write_brain_type(vault, "companion")
+        print(f"[step 1] brain_type=companion 寫入 .ai/brain_type.json (新 vault)")
+    else:
         existing = read_brain_type(vault)
         if existing != "companion":
             raise RuntimeError(
                 f"vault 已綁定 brain_type={existing!r}, 不能改成 companion. "
-                f"請另開新 vault."
+                f"請另開新 vault 路徑."
             )
         print(f"[step 1] brain_type 已是 companion (skip)")
-    except FileNotFoundError:
-        write_brain_type(vault, "companion")
-        print(f"[step 1] brain_type=companion 寫入 .ai/brain_type.json")
-    except RuntimeError:
-        raise
 
     # Step 6 (前): bootstrap vault skeleton (10 區資料夾 + frontmatter 模板)
     adapter = ObsidianVaultAdapter(vault)
