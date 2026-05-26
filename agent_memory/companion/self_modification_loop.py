@@ -35,7 +35,7 @@ _CHANNEL_FLUSH_MIN_TURNS = {
     "public_stream": 30,
     "public_text_channel": 6,
     "dm": 10,
-    "cli": 9999,
+    "cli": 10**9,  # cli 實質「不限」(對齊 D21-V3 拍板)
     "normal": 10,
 }
 

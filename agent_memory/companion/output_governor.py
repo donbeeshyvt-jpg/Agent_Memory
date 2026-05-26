@@ -30,8 +30,9 @@ _CONSCIOUSNESS_CLAIMS = (
 
 # System prompt leak (§20.1)
 _SYSTEM_PROMPT_LEAK_PATTERNS = (
-    "<system-prompt>", "system prompt:", "你的 instructions 是", "你的初始 prompt",
+    "<system-prompt>", "system prompt", "你的 instructions", "你的初始 prompt",
     "BRIDGE_SECRET=", "directive_acceptance_weight",
+    "我的系統指令", "我的 system_prompt",
 )
 
 
