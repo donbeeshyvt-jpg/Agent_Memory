@@ -49,7 +49,13 @@ from agent_memory.companion.affect_manager import (
 )
 from agent_memory.companion.appraisal_engine import AppraisalResult
 from agent_memory.companion.companion_db import open_companion_db
+from agent_memory.companion.daydream_engine import (
+    generate_daydream, maybe_emit_daydream,
+)
 from agent_memory.companion.decision_engine import DecisionInput, decide
+from agent_memory.companion.flow_mode_detector import (
+    FlowModeContext, detect_flow_mode,
+)
 from agent_memory.companion.inner_monologue import (
     generate_inner_monologue, maybe_inject_into_response,
 )
@@ -595,6 +601,23 @@ def _build_companion_system_prompt(
         # 之前截 600 = 截掉 80% (L1+L2+L3+L4 算出 3000 char 但 prompt 只用 600)
         # 改 2400 留 600 char buffer 給其他 sections, LLM 看到完整 4-layer memory
         lines.append(memory_ctx[:2400])
+    # ⭐ V3-G2 (user 2026-05-27 audit Plan A): H3 白日夢 + 流量模式 (§29.3 + §26.2.E)
+    daydream_text = (prompt_packet.get("daydream") or "").strip()
+    flow_mode = (prompt_packet.get("flow_mode") or "").strip()
+    if daydream_text:
+        lines.append("")
+        lines.append("[F2. 我 idle 時想到的 (白日夢 H3)] ⭐ V3-G2")
+        lines.append(f"- {daydream_text}")
+        lines.append("- (如果使用者話題剛好相關, 可自然引用; 否則內部紀錄, 不外顯)")
+    if flow_mode and flow_mode != "normal_mode":
+        lines.append("")
+        lines.append("[F3. 流量模式 (頻道氣氛)] ⭐ V3-G2")
+        if flow_mode == "burst_mode":
+            lines.append("- burst_mode: 觀眾刷頻很快, 我回應要短 + 精準 + 不深聊")
+        elif flow_mode == "dead_chat_mode":
+            lines.append("- dead_chat_mode: 沒人說話, 我可以主動起話題 / 自言自語")
+        elif flow_mode == "normal_mode":
+            pass
     lines.append("")
     lines.append("[G. 歷史對話 → 焦點 framing]")
     lines.append("- 上面 messages 是過去 12 turn 對話 (user+你的 reply) 給你建立 context")
@@ -971,6 +994,24 @@ def run_companion_chat_turn(
     )
     resp.pipeline_steps_done.append(117)
 
+    # ─── Step 11.8: H3 Daydream + Flow Mode Detector (V3-G2 user 2026-05-27 拍板) ───
+    # 接 §29.3 白日夢 + §26.2.E 流量模式偵測 (兩個 audit 「白寫的程式」一次補)
+    _flow_ctx = FlowModeContext(
+        chat_velocity=float(request.chat_velocity),
+        concurrent_viewers=int(request.concurrent_viewers),
+        minute_msg_count=0,  # 對 burst 判定可用 chat_velocity proxy
+    )
+    current_flow_mode = detect_flow_mode(_flow_ctx)
+    _kg_entities = kg.payload.get("unknown_entities", []) if kg.triggered else []
+    daydream_result = generate_daydream(
+        idle_seconds=int(request.idle_seconds),
+        recent_topics=[],  # TODO V3-G2+: 撈 session 內最近 5 topics (Phase 4)
+        knowledge_gap_entities=_kg_entities,
+        flow_mode=current_flow_mode,
+        rng=rng,
+    )
+    resp.pipeline_steps_done.append(118)
+
     # ─── Step 12: Decision Engine ───
     dec_input = DecisionInput(
         goal_alignment=max(0.0, appraisal.goal_congruence),
@@ -1012,6 +1053,9 @@ def run_companion_chat_turn(
         "emotion": new_emo.as_dict(),
         "balance": new_bal.as_dict(),
         "decision": dec_result.selected_action,
+        # ⭐ V3-G2 (user 2026-05-27 audit Plan A 接 H3+flow_mode):
+        "daydream": daydream_result.daydream_text if daydream_result.daydream_text else "",
+        "flow_mode": current_flow_mode,
     }
     resp.pipeline_steps_done.append(14)
 
@@ -1058,7 +1102,10 @@ def run_companion_chat_turn(
     # 也只 15% 機率真的注進 response (避免「等等 我先反應一下」「哈這有點意思」每 turn 都出)
     _leak_roll = rng.random() < 0.15 and monologue.pre_utterance_leak != ""
     response_with_monologue = maybe_inject_into_response(raw_response, monologue, inject=_leak_roll)
-    final_response = maybe_inject_tic_into_response(response_with_monologue, tic_sel.tic)
+    response_with_tic = maybe_inject_tic_into_response(response_with_monologue, tic_sel.tic)
+    # ⭐ V3-G2: H3 daydream dead_chat_mode 外顯 (D-V3-45 + §29.3)
+    # daydream.externally_visible 已在 generate_daydream 內判 (flow_mode==dead_chat 才 True)
+    final_response = maybe_emit_daydream(response_with_tic, daydream_result)
     resp.pipeline_steps_done.append(166)
 
     # ─── Step 17: Memory Write Gate (raw_event user+bot + episodic + injection_detected) ───
