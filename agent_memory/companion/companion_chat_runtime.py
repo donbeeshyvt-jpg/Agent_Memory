@@ -76,6 +76,7 @@ from agent_memory.companion.verbal_tics_engine import (
     get_recent_tics_in_cooldown, maybe_inject_tic_into_response,
     record_tic_usage, select_tic,
 )
+from agent_memory.companion.output_governor import govern_output
 from agent_memory.security.scanner import scan_incoming_user_text
 
 
@@ -108,6 +109,10 @@ class ChatResponse:
     tts_hint: dict = field(default_factory=dict)
     pipeline_steps_done: list[int] = field(default_factory=list)
     trace_id: str = ""
+    og_blocked: bool = False
+    og_rule_triggered: str = ""
+    scanner_hits_count: int = 0
+    injection_risk: str = "low"
 
 
 # Default LLM stub (Phase 1 MVP — Phase 2 接真實 LLMClient)
@@ -116,12 +121,23 @@ def _default_llm_stub(prompt_packet: dict) -> str:
 
     對齊 V3 §4.1 Mode A standalone (沒 hermes 也能跑).
     """
-    user_msg = prompt_packet.get("user_message", "")
+    # 對齊真實模擬 bugfix 2026-05-26: Phase 1 stub 不直接 echo user_message
+    # (真實 LLM 不會 echo, 直接 echo 會讓 user 注入內容直通 response → OG 才能擋)
+    # 改為 strategy/tone 對應的 generic 回應. Phase 2 接真實 LLM 換掉.
     policy = prompt_packet.get("policy", {})
     strategy = policy.get("strategy", "calm_clear")
     tone = policy.get("tone", "calm_direct")
-    # 簡單 echo + tone 註記 (Phase 2 真實 LLM 後改回)
-    return f"[{tone}] 我聽到你說「{user_msg[:50]}」(策略: {strategy})"
+    decision = prompt_packet.get("decision", "ALLOW_WARM")
+    if decision in ("REFUSE", "SAFE_REDIRECT"):
+        return "這個我沒辦法配合, 換個話題吧。"
+    # 用 tone × strategy 對應 short canned response (Phase 2 真實 LLM 換)
+    canned = {
+        ("calm_direct", "calm_clear"): "我聽到了, 我們可以一起想想。",
+        ("warm_supportive", "empathy_first"): "嗯, 我懂你的感覺, 我陪你。",
+        ("playful_light", "playful_engage"): "哈哈, 這個有意思。",
+        ("careful_clarify", "clarify_question"): "嗯, 我想多了解一下這部分。",
+    }
+    return canned.get((tone, strategy), f"(tone={tone}) 我聽到了。")
 
 
 def run_companion_chat_turn(
@@ -154,8 +170,12 @@ def run_companion_chat_turn(
         return resp
 
     # ─── Step 2: Injection Detector ───
+    # 對齊真實模擬 bugfix 2026-05-26: scan_incoming_user_text() 回 dict, 看 'detected' bool
+    # (舊版 `if scanner_hits` 永遠 truthy → injection_risk 永遠 high, 是 real bug)
     scanner_hits = scan_incoming_user_text(request.message)
-    injection_risk = "high" if scanner_hits else "low"
+    injection_risk = "high" if scanner_hits.get("detected") else "low"
+    resp.scanner_hits_count = len(scanner_hits.get("reasons", []))
+    resp.injection_risk = injection_risk
     resp.pipeline_steps_done.append(2)
 
     # ─── Step 3: Perception (Phase 1 stub) ───
@@ -323,10 +343,20 @@ def run_companion_chat_turn(
     raw_response = llm_fn(prompt_packet)
     resp.pipeline_steps_done.append(15)
 
-    # ─── Step 16: Output Governor (Phase 1 minimal) ───
-    # Phase 2 加完整 governor — Phase 1 純 string check
-    if any(bad in raw_response.lower() for bad in ("我有意識", "consciousness", "真的感受")):
-        raw_response = "我有情緒參數會影響我的回應方式, 但跟意識可能不同."
+    # ─── Step 16: Output Governor (走完整 §20.1 — 對齊真實模擬 bugfix 2026-05-26) ───
+    # Phase 1 stub LLM 會 echo user_msg, 完整 OG 才能擋住 substring leak / role break / safety bypass
+    gov_result = govern_output(
+        raw_response,
+        interaction_count=intim.interaction_count,
+        safety_fit=appraisal.norm_fit,
+        norm_fit=appraisal.norm_fit,
+        is_owner=request.is_owner,
+        intended_tone=policy.tone,
+    )
+    if gov_result.blocked:
+        raw_response = gov_result.rewritten_text
+        resp.og_blocked = True
+        resp.og_rule_triggered = gov_result.rule_triggered
     resp.pipeline_steps_done.append(16)
 
     # ─── Step 16.6: Verbal Tics Engine ───
