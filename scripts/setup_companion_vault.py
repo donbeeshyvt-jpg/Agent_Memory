@@ -185,7 +185,7 @@ def setup_companion_vault(
                 "base_url": "https://openrouter.ai/api/v1",
                 "api_key_env": "OPENROUTER_API_KEY",
                 "requires_api_key": True,
-                "max_tokens": 300,  # V3-E5: 對齊 user Q4 1-6 句 ≤ ~200 tokens, 設 300 寬鬆
+                "max_tokens": 500,  # V3-E6 (user 2026-05-27 拍板): 300→500 鬆綁, 仍受 _enforce_output_limits 1-6 句 ≤18 字 post-process 截
             },
             "gemini": {
                 "kind": "openai_compatible",
@@ -193,7 +193,7 @@ def setup_companion_vault(
                 "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
                 "api_key_env": "GOOGLE_API_KEY",
                 "requires_api_key": True,
-                "max_tokens": 300,
+                "max_tokens": 500,
             },
         },
     }
