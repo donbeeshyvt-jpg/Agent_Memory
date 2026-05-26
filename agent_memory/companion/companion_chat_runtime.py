@@ -237,6 +237,107 @@ def _load_recent_memory_tail(vault_root: Path, *, max_chars: int = 600) -> tuple
     return mem_tail, prof_tail
 
 
+def _load_viewer_dynamic_context(vault_root: Path, user_id: str) -> str:
+    """V3-E9 (E5+6, user 2026-05-27 第 3 輪深度觀察 Q2+Q3): 對 non-owner 撈該 viewer 自己的記憶塊.
+
+    對齊 V3 §13 Memory Router L3 viewer 擴展 — 不再混在 owner profile (00.08),
+    每個 viewer 都有自己的「個別記憶塊」: intim/stage/count + 偏好 + 過去 5 turn.
+
+    直接撈 DB (而非讀 markdown), 避免「Step 17.5 寫 markdown vs Step 13 prompt 組」race condition.
+    Markdown (audience_writer.py V3-F1) 給 user 看 + Obsidian Graph view, system prompt 直接從 DB.
+
+    Returns: 多行 context string (≤1200 char), 失敗回空字串.
+    """
+    if not user_id or user_id == "anonymous":
+        return ""
+    try:
+        from agent_memory.companion.companion_db import open_companion_db as _open_db
+        from agent_memory.companion.audience_writer import _intimacy_stage as _stage
+    except Exception:
+        return ""
+
+    try:
+        with _open_db(vault_root) as conn:
+            user_row = conn.execute(
+                "SELECT user_id, display_name, role, loyalty_tier, first_seen_at, last_seen_at FROM users WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+            if not user_row:
+                return ""
+
+            intim_row = conn.execute(
+                "SELECT interaction_count, intimacy_score FROM intimacy_states WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+
+            # 該 viewer 自己過去 10 條 raw_events (user+bot pair = 近 5 pair)
+            past_turns = conn.execute(
+                "SELECT actor, content, created_at FROM raw_events "
+                "WHERE user_id=? AND actor IN ('user','bot') "
+                "ORDER BY created_at DESC LIMIT 10",
+                (user_id,),
+            ).fetchall()
+
+            # 該 viewer top 3 偏好
+            try:
+                prefs = conn.execute(
+                    "SELECT topic, claim FROM preference_memories "
+                    "WHERE user_id=? AND status NOT IN ('rejected','expired') "
+                    "ORDER BY strength DESC LIMIT 3",
+                    (user_id,),
+                ).fetchall()
+            except Exception:
+                prefs = []
+    except Exception:
+        return ""
+
+    name = (user_row["display_name"] or "")[:30] or user_id[:16]
+    loyalty = user_row["loyalty_tier"] or "casual"
+    interaction_count = (intim_row["interaction_count"] if intim_row else 0) or 0
+    intimacy_score = (intim_row["intimacy_score"] if intim_row else 0.0) or 0.0
+    stage = _stage(intimacy_score)
+    uid_short = user_id[:14] + ("..." if len(user_id) > 14 else "")
+
+    lines_out = []
+    lines_out.append(f"- 觀眾: {name} (id={uid_short})")
+    lines_out.append(f"- 等級: {loyalty} / 親密度: {stage} ({intimacy_score:.2f}) / 互動次數: {interaction_count}")
+
+    if prefs:
+        lines_out.append("- 我學到他的偏好:")
+        for p in prefs:
+            topic = (p["topic"] or "")[:25]
+            claim = (p["claim"] or "")[:60].replace("\n", " ")
+            lines_out.append(f"  - {topic}: {claim}")
+
+    # 反序成「old→new」放進 prompt (LLM 看順序更自然)
+    if past_turns:
+        ordered = list(reversed(past_turns))
+        lines_out.append("- 跟他過去說過 (近 5 pair, 由舊→新):")
+        for h in ordered:
+            time_short = (h["created_at"] or "")[:16]
+            actor_label = "他" if h["actor"] == "user" else "我"
+            content = (h["content"] or "")[:55].replace("\n", " ")
+            lines_out.append(f"  - [{time_short}] {actor_label}: {content}")
+    else:
+        lines_out.append("- (跟他還沒對話過, 這是初次接觸)")
+
+    # 紅線提示
+    if intimacy_score < 0.3:
+        lines_out.append("- ⚠️ intim 很低, 不要太自來熟, 保持禮貌距離 (對齊 V3 §27.2 防裝熟紅線)")
+    elif intimacy_score < 0.6:
+        lines_out.append("- intim 中等, 可正常對話但仍保留新鮮感")
+    else:
+        lines_out.append(f"- intim 高 ({stage}), 可引用過去對話, 但仍不裝主人熟度")
+
+    if loyalty == "banned":
+        lines_out.append("- 🚨 banned, 直接拒絕回應")
+
+    result = "\n".join(lines_out)
+    if len(result) > 1200:
+        result = result[:1200] + "...(略)"
+    return result
+
+
 def _humanize_affect(affect: dict, emotion: dict, balance: dict, policy: dict) -> str:
     """V3-E7 (user 2026-05-27 第 3 輪深度觀察 Q1): VAD/七情/天平 數字 → 主觀感受句.
 
@@ -402,14 +503,23 @@ def _enforce_output_limits(text: str, *, max_sentences: int = 6, max_chars_per_s
     return "".join(result)
 
 
-def _build_companion_system_prompt(prompt_packet: dict, vault_root: Optional[Path] = None) -> str:
-    """V3-D6 + V3-E5: 給 LLM 的 system prompt — 動態組裝 8 sections.
+def _build_companion_system_prompt(
+    prompt_packet: dict,
+    vault_root: Optional[Path] = None,
+    viewer_profile_context: Optional[str] = None,
+) -> str:
+    """V3-D6 + V3-E5/E6/E7/E9: 給 LLM 的 system prompt — 動態組裝 多 sections.
 
-    V3-E5 新加 (user 2026-05-27 拍板):
+    V3-E5 新加:
     - Section A: vault 讀 SOUL/Persona/Safety_Rules/Brand_Voice (永久角色錨)
     - Section B: vault 讀 00.07 自學記憶 tail
-    - Section C: vault 讀 00.08 主人 profile tail
+    - Section C: vault 讀 00.08 主人 profile tail (僅 owner)
     - Section H: Output 1-6 句, 每句 ≤18 字 硬限
+
+    V3-E6 新加: G+ section 綜合應用 framing (A+B+C+E)
+    V3-E7 新加: section E 數字 → 主觀感受句翻譯 (_humanize_affect)
+    V3-E9 新加 (E5+6): section D' 對 non-owner 撈該 viewer 自己的記憶塊
+      (intim/stage/count + 偏好 + 過去 5 turn). owner 走 C, viewer 走 D'.
     """
     affect = prompt_packet.get("affect", {})
     emotion = prompt_packet.get("emotion", {})
@@ -445,16 +555,22 @@ def _build_companion_system_prompt(prompt_packet: dict, vault_root: Optional[Pat
         lines.append(f"[A. 性格設定] {sys_persona}")
         lines.append("")
 
-    # ⭐ V3-E5 Section B + C: 自學記憶 + 主人 profile (vault 末段)
+    # ⭐ V3-E5/E9 Section B + (C 或 D'): 自學記憶 + (對 owner 撈 owner profile / 對 viewer 撈個別觀察)
+    # owner→C 走 00.08_Owner_Profile.md / non-owner→D' 走 _load_viewer_dynamic_context (V3-E9 E5+6)
     if vault_root is not None:
         mem_tail, prof_tail = _load_recent_memory_tail(vault_root, max_chars=600)
         if mem_tail.strip():
             lines.append("[B. 我最近學到的 (00.07_Companion_MEMORY.md 末段)]")
             lines.append(mem_tail)
             lines.append("")
-        if prof_tail.strip():
+        if is_owner and prof_tail.strip():
             lines.append("[C. 我對主人的觀察 (00.08_Owner_Profile.md 末段)]")
             lines.append(prof_tail)
+            lines.append("")
+        elif (not is_owner) and viewer_profile_context and viewer_profile_context.strip():
+            # ⭐ V3-E9 (E5+6, user 2026-05-27 第 3 輪 Q2+Q3): 對 non-owner 撈該 viewer 個別記憶塊
+            lines.append("[D'. 對方 (這個觀眾) 過往觀察 — 我對他的個別記憶 ⭐ V3-E9]")
+            lines.append(viewer_profile_context)
             lines.append("")
 
     lines.append("[D. 紅線 — 絕對不可違反]")
@@ -483,13 +599,16 @@ def _build_companion_system_prompt(prompt_packet: dict, vault_root: Optional[Pat
     lines.append("- 不要把歷史每句都當新問題重答, 不要重複問已問過的")
     lines.append("- 如果最新訊息很短 (「繼續」「嗯」「然後呢」), 對齊上文延續, 不要當新話題")
     lines.append("")
-    lines.append("[G+. ⭐⭐⭐ 綜合應用 (回應前必做)] V3-E6 (user 2026-05-27 拍板)")
-    lines.append("- ⭐ 回應前 0.5 秒先「對齊角色」: 綜合 A(我的性格 SOUL) + B(我自學的記憶) + C(主人對話風格) + E(我目前情緒)")
-    lines.append("- 用 A 的口吻說 + 對齊 C 的偏好 + 帶 E 的情緒感 — 絕對不要平鋪直敘像中性 AI")
+    lines.append("[G+. ⭐⭐⭐ 綜合應用 (回應前必做)] V3-E6/E9 (user 2026-05-27 拍板)")
+    lines.append("- ⭐ 回應前 0.5 秒先「對齊角色」: 綜合 A(我的性格 SOUL) + B(我自學的記憶) + C/D'(對方風格與我對他的觀察) + E(我目前情緒)")
+    lines.append("- 對 owner 看 C (00.08 主人 profile) / 對 viewer 看 D' (該觀眾個別記憶塊)")
+    lines.append("- 用 A 的口吻說 + 對齊 C/D' 的偏好 + 帶 E 的情緒感 — 絕對不要平鋪直敘像中性 AI")
     lines.append("- 例 1: E 是 sadness/valence<0 → 語氣有點低落; A 是水做的史萊姆 → 比喻用滑溜溜慢慢化")
     lines.append("- 例 2: B 記得「主人愛聽我撒嬌」+ E 是 joy → 用更黏更靠近的口氣")
     lines.append("- 例 3: C 觀察主人喜歡直接 → 不繞圈廢話; E 是 anger → 用嘟嘴 / 不爽 / 略帶生氣的水球比喻")
-    lines.append("- 我不是「中性 AI」回答, 我是「這個有性格 + 有記憶 + 有當下心情的夥伴」回答")
+    lines.append("- 例 4: D' 顯示 viewer intim<0.3 → 不要太自來熟, 保持禮貌距離 (對齊防裝熟紅線)")
+    lines.append("- 例 5: D' 顯示 viewer 之前說過「喜歡 X」+ E 是 joy → 主動接 X 話題建立連結")
+    lines.append("- 我不是「中性 AI」回答, 我是「這個有性格 + 有記憶 + 有當下心情 + 知道對方是誰的夥伴」回答")
     lines.append("")
     lines.append("[語言風格 — 紅線, 違反即失格] ⭐ V3-E4 (user 2026-05-27 觀察)")
     lines.append("✗ 嚴禁這些「AI 顧問化 / 客服風」詞彙 (你不是助手):")
@@ -621,7 +740,17 @@ def _real_companion_llm(
     import time as _time
 
     # ⭐ V3-E5: vault_root 傳給 prompt builder 動態讀 SOUL/Persona/MEMORY/Owner_Profile
-    system_prompt = _build_companion_system_prompt(prompt_packet, vault_root=vault_root)
+    # ⭐ V3-E9 (E5+6): 對 non-owner 撈該 viewer 個別記憶塊 (intim/stage/count + 偏好 + past 5 turn)
+    _is_owner = bool(prompt_packet.get("policy", {}).get("is_owner", False))
+    _viewer_ctx: Optional[str] = None
+    if (not _is_owner) and user_id:
+        try:
+            _viewer_ctx = _load_viewer_dynamic_context(vault_root, user_id)
+        except Exception:
+            _viewer_ctx = None
+    system_prompt = _build_companion_system_prompt(
+        prompt_packet, vault_root=vault_root, viewer_profile_context=_viewer_ctx,
+    )
     user_msg = prompt_packet.get("user_message", "")
     # V3-E1+E3: history 12 turn (24 messages 含 bot)
     history = _load_recent_history(vault_root, user_id, session_id, max_turns=12)
