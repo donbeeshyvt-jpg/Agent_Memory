@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from datetime import datetime, timezone
@@ -86,6 +87,98 @@ _KEY_RE = re.compile(r"[^a-zA-Z0-9._/-]+")
 _ID_RE = re.compile(r"[^a-zA-Z0-9._-]+")
 
 
+# V3 C1: brain_type 分流 — companion vault skeleton (對齊 V3_夥伴大腦_新規劃 §5)
+_COMPANION_SKELETON_DIRS = (
+    "00_System_Core",
+    "00_System_Core/personalities",
+    "10_Working_Memory",
+    "10_Working_Memory/11_Session_Logs",
+    "10_Working_Memory/12_Active_Tasks",
+    "20_Audience_Graph",
+    "20_Audience_Graph/21_VIP_Viewers",
+    "20_Audience_Graph/22_Casual_Viewers",
+    "20_Audience_Graph/23_Inside_Jokes",
+    "20_Audience_Graph/24_Banned",
+    "30_Emotional_State",
+    "30_Emotional_State/31_Core_Affect_Logs",
+    "30_Emotional_State/32_Appraisal_Events",
+    "30_Emotional_State/33_Trait_Evolution",
+    "30_Emotional_State/34_Mood_Diary",
+    "40_Knowledge_Base",
+    "40_Knowledge_Base/41_Lore_Worldview",
+    "40_Knowledge_Base/42_Game_Strategies",
+    "40_Knowledge_Base/43_Common_Topics",
+    "40_Knowledge_Base/44_External_Ingest",
+    "50_Skills_Tools",
+    "50_Skills_Tools/51_Hermes_Learned",
+    "50_Skills_Tools/52_OpenClaw_MCP",
+    "50_Skills_Tools/53_Tool_Audit_Log",
+    "60_Preference_Memory",
+    "60_Preference_Memory/61_Owner_Preferences",
+    "60_Preference_Memory/62_Viewer_Preferences",
+    "70_Persona_Versions",
+    "70_Persona_Versions/71_Active",
+    "70_Persona_Versions/72_History",
+    "70_Persona_Versions/73_Candidates",
+    "80_Audit_Trace",
+    "80_Audit_Trace/81_Decision_Traces",
+    "80_Audit_Trace/82_Memory_Audit",
+    "80_Audit_Trace/83_Injection_Detected",
+    "90_Daily_Journal",
+    "99_Templates",
+    "99_Archive",
+    "99_Archive/auto_archived",
+    ".ai",
+    ".obsidian",
+)
+
+
+def read_brain_type(vault_root: Path) -> str:
+    """V3 C1: 讀取 vault 的 brain_type. 既有管家 vault default = 'steward'.
+
+    對齊 V3 §3.3 D1-V3 拍板「永久綁定」.
+    對齊 R26 HANDOFF §3.2 A1.2 具體實作.
+    """
+    vault_root = Path(vault_root).expanduser().resolve()
+    bt_path = vault_root / ".ai" / "brain_type.json"
+    if not bt_path.exists():
+        return "steward"
+    try:
+        data = json.loads(bt_path.read_text(encoding="utf-8"))
+        bt = data.get("brain_type", "steward")
+        if bt not in ("steward", "companion"):
+            return "steward"
+        return bt
+    except (json.JSONDecodeError, OSError):
+        return "steward"
+
+
+def write_brain_type(vault_root: Path, brain_type: str) -> None:
+    """V3 C1: 寫入 brain_type. 永久綁定 — 已存在不同值會 raise.
+
+    對齊 V3 §3.3 D1-V3 + D-V3-1: 一個 vault 一旦選定 brain_type 永久綁定.
+    要切換 = 開另一個 vault.
+    """
+    if brain_type not in ("steward", "companion"):
+        raise ValueError(f"brain_type 必須是 'steward' 或 'companion' (給 {brain_type!r})")
+    vault_root = Path(vault_root).expanduser().resolve()
+    bt_path = vault_root / ".ai" / "brain_type.json"
+    if bt_path.exists():
+        existing = json.loads(bt_path.read_text(encoding="utf-8"))
+        if existing.get("brain_type") != brain_type:
+            raise ValueError(
+                f"brain_type 不能切換 (現有 {existing.get('brain_type')!r}, 要切 = 開另一個 vault)"
+            )
+        return  # 已存在且一致 → no-op
+    bt_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "brain_type": brain_type,
+        "schema_version": 10 if brain_type == "companion" else 3,
+        "created_at": _now().astimezone(timezone.utc).isoformat(),
+    }
+    atomic_write(bt_path, json.dumps(payload, ensure_ascii=False, indent=2))
+
+
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -139,12 +232,52 @@ class ObsidianVaultAdapter(VaultAdapter):
         return self._root
 
     def ensure_skeleton(self) -> None:
-        for rel in _SKELETON_DIRS:
+        # V3 C1: brain_type 分流 — companion 走 _COMPANION_SKELETON_DIRS, steward 走 _SKELETON_DIRS
+        brain_type = read_brain_type(self._root)
+        dirs = _COMPANION_SKELETON_DIRS if brain_type == "companion" else _SKELETON_DIRS
+        for rel in dirs:
             (self._root / rel).mkdir(parents=True, exist_ok=True)
 
         self._bootstrap_defaults()
 
     def _bootstrap_defaults(self) -> None:
+        # V3 C1: brain_type 分流 dispatcher
+        brain_type = read_brain_type(self._root)
+        if brain_type == "companion":
+            self._bootstrap_companion_defaults()
+            return
+        # 既有管家 baseline (V3 之前的全部邏輯, 不動)
+        self._bootstrap_steward_defaults()
+
+    def _bootstrap_companion_defaults(self) -> None:
+        """V3 C1 stub: companion baseline files. 完整內容在 V3-C3/C3b/C3c 補.
+
+        現階段 (V3-C1) 只建最小 baseline:
+        - .ai/brain_type.json 確保存在 (caller 若沒先 write_brain_type 也容錯)
+        - .ai/ingestion_ledger.json (沿用管家格式)
+        """
+        ai_dir = self._root / ".ai"
+        ai_dir.mkdir(parents=True, exist_ok=True)
+
+        # 確保 brain_type.json 存在 (容錯: caller 若沒 write_brain_type, 這裡補)
+        bt_path = ai_dir / "brain_type.json"
+        if not bt_path.exists():
+            write_brain_type(self._root, "companion")
+
+        ledger = ai_dir / "ingestion_ledger.json"
+        if not ledger.exists():
+            atomic_write(
+                ledger,
+                '{\n  "schema_version": 1,\n  "jobs": []\n}\n',
+            )
+
+        # V3-C3/C3b/C3c 將補:
+        # - 00_System_Core/00.01_Persona.md ~ 00.08_Owner_Profile.md
+        # - 00_System_Core/personalities/ 三模式模板
+        # - 99_Templates/ 5 個 TPL_*.md
+        # - companion.db 25 表 + owner_state schema
+
+    def _bootstrap_steward_defaults(self) -> None:
         ai_dir = self._root / ".ai"
 
         ledger = ai_dir / "ingestion_ledger.json"
