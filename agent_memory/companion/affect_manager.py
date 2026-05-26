@@ -53,11 +53,12 @@ def predict_vad_from_appraisal(appraisal: AppraisalResult) -> AffectState:
     - 低 certainty + 低 control → uncertainty ↑
     """
     # Valence (-1~1): 正負情感 (含情緒 keyword bias)
+    # norm_fit baseline 1.0 = 守規範 default, 不加正 valence; 違規 (norm_fit<1) 才扣
     valence = _clamp(
-        appraisal.goal_congruence * 0.35
+        appraisal.goal_congruence * 0.3
         + appraisal.relationship_impact * 0.25
-        + (appraisal.norm_fit - 0.5) * 0.3  # norm_fit < 0.5 → valence 負
-        + appraisal.emotion_valence_offset * 0.5,  # 情緒 keyword 主導
+        + (appraisal.norm_fit - 1.0) * 0.35  # 違規 → valence 負, default norm_fit=1 不加分
+        + appraisal.emotion_valence_offset * 0.85,  # 情緒 keyword 主導
         -1.0, 1.0,
     )
 
