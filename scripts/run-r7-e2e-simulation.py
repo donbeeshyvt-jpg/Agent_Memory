@@ -3507,6 +3507,113 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"emoji={c138_emoji_preserved} invisible={c138_invisible_handled}",
     )
 
+    # ─── Step 38 (R25 audit batch): E3 daily_flush 多 turn + E4 promotion_events 質量 + A3 prompt budget cap ───
+    # 對齊使用者「核心完整」最後 audit batch — HANDOFF §5.8 剩餘候選清空, 收斂進 V3 入口.
+    report.section("Step 38 (R25): E3 daily_flush 多 turn append / E4 promotion_events 質量 / A3 prompt budget cap audit")
+
+    # 38.1 — C139 E3 daily_flush 多 turn append: 3 turn 連續寫入 → 讀回確認 3 個 digest entry, no duplicate
+    _td_c139 = tempfile.mkdtemp(prefix="r25_e3_")
+    c139_three_digests = False
+    c139_distinct_content = False
+    c139_chronological = False
+    try:
+        _v_c139 = Path(_td_c139) / "vault"
+        _v_c139.mkdir(parents=True)
+        from agent_memory.vault.obsidian import ObsidianVaultAdapter as _OVA139
+        from agent_memory.chat_session import append_daily_chat_digest as _adcd_c139
+        _a139 = _OVA139(_v_c139); _a139.ensure_skeleton()
+        # 3 turn 連續寫入
+        for i in range(1, 4):
+            _adcd_c139(
+                _a139,
+                persona_id="advisor",
+                session_id="r25-e3-multi",
+                user_message=f"R25 turn {i} user msg with CJK 藍莓 {i}",
+                assistant_message=f"R25 turn {i} assistant reply confirming 藍莓 {i}",
+            )
+        # 讀回 daily 檔
+        from datetime import datetime as _dt_c139
+        date_str = _dt_c139.now().strftime("%Y-%m-%d")
+        daily_path = _v_c139 / "11_AI_Mirror" / "ingestion_logs" / "daily_flush" / f"{date_str}.md"
+        if daily_path.exists():
+            content = daily_path.read_text(encoding="utf-8")
+            # 應該有 3 個 chat_digest 區塊
+            digest_count = content.count("### chat_digest")
+            c139_three_digests = digest_count == 3
+            # 3 個 turn 的 CJK 都該保留 (不漏)
+            c139_distinct_content = all(f"藍莓 {i}" in content for i in (1, 2, 3))
+            # chronological: turn 1 在 turn 2 之前 (append 順序)
+            i1 = content.find("turn 1")
+            i2 = content.find("turn 2")
+            i3 = content.find("turn 3")
+            c139_chronological = i1 != -1 and i2 != -1 and i3 != -1 and i1 < i2 < i3
+    finally:
+        shutil.rmtree(_td_c139, ignore_errors=True)
+
+    report.step(
+        "C139 E3 daily_flush 多 turn append (3 turn 連續寫入不漏不重複 + chronological 順序)",
+        c139_three_digests and c139_distinct_content and c139_chronological,
+        f"three_digests={c139_three_digests} distinct={c139_distinct_content} chronological={c139_chronological}",
+    )
+
+    # 38.2 — C140 E4 promotion_events 真實寫入 + 內容質量
+    from agent_memory.memory_promotion import _append_promotion_event as _ape_c140, PROMOTION_EVENTS_RELATIVE_PATH as _PER_c140
+    _td_c140 = tempfile.mkdtemp(prefix="r25_e4_")
+    c140_first_write_ok = False
+    c140_append_grows = False
+    c140_has_header = False
+    c140_event_content_preserved = False
+    try:
+        _v_c140 = Path(_td_c140) / "vault"
+        _v_c140.mkdir(parents=True)
+        events_path = _v_c140 / _PER_c140
+        # 第一次寫: file 不存在 → 應建 header + body
+        block1 = "## 2026-05-26 14:00 promotion\n- entity: r25_test_concept\n- action: promote_to_long\n- reason: stable mention >= 3\n"
+        _ape_c140(_v_c140, block=block1)
+        c140_first_write_ok = events_path.exists() and events_path.stat().st_size > 0
+        if c140_first_write_ok:
+            text1 = events_path.read_text(encoding="utf-8")
+            c140_has_header = "# promotion_events" in text1
+            c140_event_content_preserved = "r25_test_concept" in text1 and "promote_to_long" in text1
+            size1 = events_path.stat().st_size
+            # 第二次 append: file 已存在 → grow
+            block2 = "## 2026-05-26 14:05 demote\n- entity: r25_stale_concept\n- action: demote_to_archive\n- reason: 180d no edit\n"
+            _ape_c140(_v_c140, block=block2)
+            size2 = events_path.stat().st_size
+            c140_append_grows = size2 > size1
+            text2 = events_path.read_text(encoding="utf-8")
+            c140_event_content_preserved = c140_event_content_preserved and "r25_stale_concept" in text2
+    finally:
+        shutil.rmtree(_td_c140, ignore_errors=True)
+
+    report.step(
+        "C140 E4 promotion_events 台帳真實寫入 + 內容質量 (header / append grow / event 內容保留)",
+        c140_first_write_ok and c140_has_header and c140_append_grows and c140_event_content_preserved,
+        f"first_write={c140_first_write_ok} header={c140_has_header} grows={c140_append_grows} preserved={c140_event_content_preserved}",
+    )
+
+    # 38.3 — C141 A3 prompt budget cap (R12 C45 固定值真實生效)
+    from agent_memory.chat_runtime import _tail_excerpt as _te_c141, _two_sided_excerpt as _tse_c141
+    # _tail_excerpt: 4000 char → cap 至 3000
+    long_text_4000 = "A" * 4000
+    tail_result = _te_c141(long_text_4000, max_chars=3000)
+    c141_tail_capped = len(tail_result) == 3000
+    c141_tail_no_op = len(_te_c141("short", max_chars=3000)) == len("short")
+
+    # _two_sided_excerpt: 5000 char → cap 至 3000, 含頭尾 + 中間分隔
+    long_text_5000 = "B" * 2500 + "M" * 1000 + "E" * 1500  # 5000 total
+    two_sided = _tse_c141(long_text_5000, max_chars=3000)
+    c141_two_sided_capped = len(two_sided) <= 3000
+    # 應保頭尾 (前 2500 char 應該有, 後 1500 char 應該有部分)
+    c141_two_sided_has_head_tail = two_sided.startswith("B") and two_sided.endswith("E")
+
+    report.step(
+        "C141 A3 prompt budget cap (R12 C45 _tail_excerpt + _two_sided_excerpt 真實 truncation)",
+        c141_tail_capped and c141_tail_no_op and c141_two_sided_capped and c141_two_sided_has_head_tail,
+        f"tail_capped={c141_tail_capped} tail_no_op={c141_tail_no_op} "
+        f"two_sided_capped={c141_two_sided_capped} head_tail={c141_two_sided_has_head_tail}",
+    )
+
     return report.summary()
 
 
