@@ -226,10 +226,15 @@ def _build_companion_system_prompt(prompt_packet: dict) -> str:
         lines.append("[最近相關記憶]")
         lines.append(memory_ctx[:600])
     lines.append("")
+    lines.append("[歷史對話 → 焦點 framing] ⭐ V3-E3")
+    lines.append("- 上面 messages 是過去 12 turn 對話 (user+你的 reply) 給你建立 context")
+    lines.append("- ⭐ 焦點是 user 最新這一句 — 以最新訊息為主回應, 自然延續上面話題")
+    lines.append("- 不要把歷史每句都當新問題重答, 不要重複問已問過的")
+    lines.append("- 如果最新訊息很短 (「繼續」「嗯」「然後呢」), 對齊上文延續, 不要當新話題")
+    lines.append("")
     lines.append("[回應要求]")
     lines.append("- 短但完整: 1-3 句, 必須是完整句子, 不要句子片段")
     lines.append("- 自然像會成長的孩子說話, 不要像 AI 助手機械回應")
-    lines.append("- ⭐ 對齊上面的歷史對話 — 連續延續話題, 不要每次都重新問")
     lines.append("- 對齊上述語氣 ({})".format(tone))
     lines.append("- 不要在 response 加 (tone=...) 或任何程式符號")
     lines.append("- 不要說「我聽到了」這種空洞回應 — 要實質回應或自然轉話題")
@@ -259,7 +264,7 @@ def _strip_think_tags(text: str) -> str:
 
 
 def _load_recent_history(
-    vault_root: Path, user_id: str, session_id: str, *, max_turns: int = 8,
+    vault_root: Path, user_id: str, session_id: str, *, max_turns: int = 12,
 ) -> list[dict]:
     """V3-E1 Bug 12: 撈該 user_id 近 N turn raw_events (user + bot 兩種 actor)
     建成 messages list 形式給 LLM 連續對話用. injection_risk=high 的訊息跳過.
@@ -326,8 +331,8 @@ def _real_companion_llm(
 
     system_prompt = _build_companion_system_prompt(prompt_packet)
     user_msg = prompt_packet.get("user_message", "")
-    # V3-E1 Bug 12: 加 conversation history (近 8 turn 含 bot)
-    history = _load_recent_history(vault_root, user_id, session_id, max_turns=8)
+    # V3-E1 Bug 12 + V3-E3 強化: 加 conversation history (近 12 turn 含 bot, 對齊 user 提的 10-20 句)
+    history = _load_recent_history(vault_root, user_id, session_id, max_turns=12)
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(history)
     # 當前 user message (history 裡可能還沒寫進 db, 直接 append)
@@ -662,25 +667,48 @@ def run_companion_chat_turn(
         ).fetchone()["c"]
     fd = should_flush(cnt, request.channel_type)
     if fd.should_flush:
-        # V3-E1 Bug 6+7: 接 LLM 整理 (傳 user_id/session_id 讓 flush 內部 query db)
-        flush_self_memory(
-            vault_root,
-            recent_turn_summaries=[f"recent: {request.message[:80]}"],
-            channel_type=request.channel_type,
-            injection_risk=injection_risk,
-            identity_relevance=appraisal.identity_relevance,
-            user_id=request.user_id,
-            session_id=request.session_id,
-        )
-        if request.is_owner:
-            flush_owner_profile(
-                vault_root,
-                recent_owner_observations=[f"owner said: {request.message[:80]}"],
-                channel_type=request.channel_type,
-                injection_risk=injection_risk,
-                user_id=request.user_id,
-                session_id=request.session_id,
-            )
+        # V3-E3 (2026-05-26): Self-Modification flush 改 async background thread.
+        # 對齊 user 回報「bridge call failed: timed out」根本原因 —
+        # Step 18 LLM 整理 (Bug 6+7) sync 跑會阻塞主回應, 主對話 + 2 flush
+        # serial 加起來最多 ~150s 接近 relay timeout. async 後主流程立刻
+        # 走到 Step 22 回 response, flush 在 background 整理 MEMORY/Profile.
+        import threading
+        _msg_snippet = request.message[:80]
+        _chan = request.channel_type
+        _risk = injection_risk
+        _id_rel = appraisal.identity_relevance
+        _uid = request.user_id
+        _sid = request.session_id
+        _is_owner = request.is_owner
+
+        def _bg_flush():
+            try:
+                flush_self_memory(
+                    vault_root,
+                    recent_turn_summaries=[f"recent: {_msg_snippet}"],
+                    channel_type=_chan,
+                    injection_risk=_risk,
+                    identity_relevance=_id_rel,
+                    user_id=_uid,
+                    session_id=_sid,
+                )
+                if _is_owner:
+                    flush_owner_profile(
+                        vault_root,
+                        recent_owner_observations=[f"owner said: {_msg_snippet}"],
+                        channel_type=_chan,
+                        injection_risk=_risk,
+                        user_id=_uid,
+                        session_id=_sid,
+                    )
+            except Exception as exc:
+                try:
+                    import sys as _sys
+                    print(f"[V3-E3 bg flush FAIL] {type(exc).__name__}: {str(exc)[:200]}", file=_sys.stderr)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_bg_flush, daemon=True, name="v3-self-mod-flush").start()
     resp.pipeline_steps_done.append(18)
 
     # ─── Step 19: Trace Logger ───
