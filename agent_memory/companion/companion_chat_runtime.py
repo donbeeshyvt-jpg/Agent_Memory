@@ -591,7 +591,10 @@ def _build_companion_system_prompt(
     if memory_ctx.strip():
         lines.append("")
         lines.append("[F. 最近相關記憶 (Memory Router 4-layer)]")
-        lines.append(memory_ctx[:600])
+        # ⭐ V3-G1 (user 2026-05-27 audit Plan D): [:600]→[:2400] 對齊 V3 §13 Memory Router 設計 3000 char budget
+        # 之前截 600 = 截掉 80% (L1+L2+L3+L4 算出 3000 char 但 prompt 只用 600)
+        # 改 2400 留 600 char buffer 給其他 sections, LLM 看到完整 4-layer memory
+        lines.append(memory_ctx[:2400])
     lines.append("")
     lines.append("[G. 歷史對話 → 焦點 framing]")
     lines.append("- 上面 messages 是過去 12 turn 對話 (user+你的 reply) 給你建立 context")
