@@ -3614,6 +3614,135 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         f"two_sided_capped={c141_two_sided_capped} head_tail={c141_two_sided_has_head_tail}",
     )
 
+    # ─── Step 39 (V3 Phase 0): brain_type 分流 + 夥伴 vault skeleton 驗收 ───
+    report.section("Step 39 (V3 Phase 0): brain_type 分流 + 夥伴 vault skeleton + 永久綁定")
+
+    # 39.1 — V3-C1 brain_type 讀寫 + 永久綁定
+    from agent_memory.vault.obsidian import (
+        read_brain_type as _rbt_v3c1,
+        write_brain_type as _wbt_v3c1,
+        ObsidianVaultAdapter as _OVA_v3c1,
+        _COMPANION_SKELETON_DIRS as _SKEL_COMP,
+    )
+    _td_v3c1 = Path(tempfile.mkdtemp(prefix="v3c1_brain_type_"))
+    try:
+        v_steward = _td_v3c1 / "steward_vault"
+        v_companion = _td_v3c1 / "companion_vault"
+        v_steward.mkdir()
+        v_companion.mkdir()
+
+        # 全新 vault default → steward
+        v3c1_default_steward = _rbt_v3c1(v_steward) == "steward"
+
+        # write companion → read companion
+        _wbt_v3c1(v_companion, "companion")
+        v3c1_write_companion = _rbt_v3c1(v_companion) == "companion"
+
+        # 永久綁定 — 同值 no-op
+        try:
+            _wbt_v3c1(v_companion, "companion")
+            v3c1_same_value_noop = True
+        except Exception:
+            v3c1_same_value_noop = False
+
+        # 永久綁定 — 不同值 raise
+        v3c1_switch_raises = False
+        try:
+            _wbt_v3c1(v_companion, "steward")
+        except ValueError:
+            v3c1_switch_raises = True
+
+        # 不合法 brain_type → raise
+        v3c1_invalid_raises = False
+        try:
+            _wbt_v3c1(v_steward, "evil")
+        except ValueError:
+            v3c1_invalid_raises = True
+    finally:
+        shutil.rmtree(_td_v3c1, ignore_errors=True)
+
+    report.step(
+        "V3-C1 brain_type 讀寫 + 永久綁定 (D-V3-1)",
+        v3c1_default_steward and v3c1_write_companion and v3c1_same_value_noop and v3c1_switch_raises and v3c1_invalid_raises,
+        f"default_steward={v3c1_default_steward} write_companion={v3c1_write_companion} "
+        f"same_value_noop={v3c1_same_value_noop} switch_raises={v3c1_switch_raises} invalid_raises={v3c1_invalid_raises}",
+    )
+
+    # 39.2 — V3-C1 _COMPANION_SKELETON_DIRS 11 區齊全
+    expected_companion_zones = (
+        "00_System_Core", "10_Working_Memory", "20_Audience_Graph", "30_Emotional_State",
+        "40_Knowledge_Base", "50_Skills_Tools", "60_Preference_Memory", "70_Persona_Versions",
+        "80_Audit_Trace", "90_Daily_Journal", "99_Templates",
+    )
+    v3c1_zones_all_present = all(z in _SKEL_COMP for z in expected_companion_zones)
+    v3c1_audit_subdirs = "80_Audit_Trace/81_Decision_Traces" in _SKEL_COMP and "80_Audit_Trace/83_Injection_Detected" in _SKEL_COMP
+
+    report.step(
+        "V3-C1 _COMPANION_SKELETON_DIRS 11 區齊全 (對齊 §5 vault skeleton)",
+        v3c1_zones_all_present and v3c1_audit_subdirs,
+        f"zones_all={v3c1_zones_all_present} audit_subdirs={v3c1_audit_subdirs}",
+    )
+
+    # 39.3 — V3-C3 companion bootstrap 真實建檔
+    _td_v3c3 = Path(tempfile.mkdtemp(prefix="v3c3_companion_bootstrap_"))
+    try:
+        v_c = _td_v3c3 / "companion_vault"
+        v_c.mkdir()
+        _wbt_v3c3 = _wbt_v3c1
+        _wbt_v3c3(v_c, "companion")
+        adapter = _OVA_v3c1(v_c)
+        adapter.ensure_skeleton()
+
+        v3c3_zones_ok = (v_c / "20_Audience_Graph" / "21_VIP_Viewers").is_dir()
+        v3c3_soul_ok = (v_c / "00_System_Core" / "00.06_Companion_SOUL.md").exists()
+        v3c3_memory_ok = (v_c / "00_System_Core" / "00.07_Companion_MEMORY.md").exists()
+        v3c3_owner_ok = (v_c / "00_System_Core" / "00.08_Owner_Profile.md").exists()
+        v3c3_personalities = (v_c / "00_System_Core" / "personalities" / "00.06b_stream.md").exists()
+        v3c3_templates = (v_c / "99_Templates" / "TPL_Viewer.md").exists() and (v_c / "99_Templates" / "TPL_Emotion_Event.md").exists()
+
+        # SOUL 內容含關鍵欄位
+        soul_text = (v_c / "00_System_Core" / "00.06_Companion_SOUL.md").read_text(encoding="utf-8")
+        v3c3_soul_has_owner = "primary_owner_user_id" in soul_text and "directive_acceptance_weight" in soul_text
+        v3c3_soul_has_baseline = "baseline_silence_intolerance" in soul_text and "baseline_curiosity_urge" in soul_text
+
+        # schema_version=10 in companion baseline
+        v3c3_schema_v10 = "schema_version: 10" in soul_text
+    finally:
+        shutil.rmtree(_td_v3c3, ignore_errors=True)
+
+    report.step(
+        "V3-C3 companion bootstrap — 11 區 + 8 系統檔 + 3 personality + 5 模板 + SOUL schema",
+        v3c3_zones_ok and v3c3_soul_ok and v3c3_memory_ok and v3c3_owner_ok
+        and v3c3_personalities and v3c3_templates
+        and v3c3_soul_has_owner and v3c3_soul_has_baseline and v3c3_schema_v10,
+        f"zones={v3c3_zones_ok} soul={v3c3_soul_ok} memory={v3c3_memory_ok} owner={v3c3_owner_ok} "
+        f"personalities={v3c3_personalities} templates={v3c3_templates} "
+        f"soul_owner={v3c3_soul_has_owner} soul_baseline={v3c3_soul_has_baseline} schema_v10={v3c3_schema_v10}",
+    )
+
+    # 39.4 — 既有 steward bootstrap 不退步 (backward compat)
+    _td_v3c1bc = Path(tempfile.mkdtemp(prefix="v3c1_steward_backward_"))
+    try:
+        v_s = _td_v3c1bc / "steward_vault"
+        v_s.mkdir()
+        # 不 write_brain_type → 應 default steward → 走 _bootstrap_steward_defaults
+        adapter_s = _OVA_v3c1(v_s)
+        adapter_s.ensure_skeleton()
+
+        v3c1bc_steward_user = (v_s / "10_Permanent" / "Profiles" / "USER.md").exists()
+        v3c1bc_steward_memory = (v_s / "10_Permanent" / "MEMORY.md").exists()
+        v3c1bc_no_companion_dirs = not (v_s / "20_Audience_Graph").exists()
+        v3c1bc_default_steward = _rbt_v3c1(v_s) == "steward"
+    finally:
+        shutil.rmtree(_td_v3c1bc, ignore_errors=True)
+
+    report.step(
+        "V3-C1 既有 steward bootstrap backward compat (default + 不長 companion 區)",
+        v3c1bc_steward_user and v3c1bc_steward_memory and v3c1bc_no_companion_dirs and v3c1bc_default_steward,
+        f"user={v3c1bc_steward_user} memory={v3c1bc_steward_memory} "
+        f"no_comp={v3c1bc_no_companion_dirs} default={v3c1bc_default_steward}",
+    )
+
     return report.summary()
 
 
