@@ -650,6 +650,17 @@ def _build_companion_system_prompt(
             lines.append("- dead_chat_mode: 沒人說話, 我可以主動起話題 / 自言自語")
         elif flow_mode == "normal_mode":
             pass
+    # ⭐ V3-G4: 40_Knowledge_Base 知識庫 hits (日常 + 外部, RAG 機械檢索)
+    knowledge_hits = prompt_packet.get("knowledge_hits") or []
+    if knowledge_hits:
+        lines.append("")
+        lines.append("[F4. 知識庫 (40_Knowledge_Base 日常+外部, RAG 撈)] ⭐ V3-G4")
+        for i, h in enumerate(knowledge_hits[:3], 1):
+            src_label = "日常累積" if h.get("source") == "daily" else "外部文獻"
+            path_short = (h.get("path", "")[-40:] if h.get("path") else "")
+            summary_short = (h.get("summary", "") or "")[:120].replace("\n", " ")
+            lines.append(f"- [{i}|{src_label}] {path_short}: {summary_short}")
+        lines.append("- (如果跟使用者問題相關, 可自然引用「我學過 X」)")
     lines.append("")
     lines.append("[G. 歷史對話 → 焦點 framing]")
     lines.append("- 上面 messages 是過去 12 turn 對話 (user+你的 reply) 給你建立 context")
@@ -1086,6 +1097,17 @@ def run_companion_chat_turn(
     )
     resp.pipeline_steps_done.append(118)
 
+    # ─── Step 11.85: V3-G4 知識庫 retrieve (40_Knowledge_Base 日常+外部) ───
+    # 對齊 V3 §13 Memory Router L4 + MISSION §3.6 文獻吸收致用
+    # 純機械 hybrid_search (FTS5 + dense vector) 撈 40_Knowledge_Base 內 top-3
+    # 不 call LLM, 對齊 MISSION §5.4 「retrieve-time 不該 augmentation」
+    try:
+        from agent_memory.companion.knowledge_base import retrieve_knowledge
+        knowledge_hits = retrieve_knowledge(vault_root, request.message, top_k=3)
+    except Exception:
+        knowledge_hits = []
+    resp.pipeline_steps_done.append(1185)
+
     # ─── Step 11.9: H4 Embodied State (V3-G3, §29.4) ───
     # 模擬 energy/hunger/thirst/sleepiness/voice_strain — 直播時長隨自然消耗
     # Phase 1 stub: 用 session 內 raw_events 數估 stream_duration (60 turn ≈ 1h)
@@ -1148,6 +1170,8 @@ def run_companion_chat_turn(
         "flow_mode": current_flow_mode,
         # ⭐ V3-G3 (user 2026-05-27 audit Plan A 接 H4 embodied):
         "embodied": embodied.as_dict(),
+        # ⭐ V3-G4 (user 2026-05-27 拍板): 40_Knowledge_Base 撈進 prompt
+        "knowledge_hits": knowledge_hits,
     }
     resp.pipeline_steps_done.append(14)
 

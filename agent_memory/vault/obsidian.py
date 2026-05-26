@@ -105,10 +105,11 @@ _COMPANION_SKELETON_DIRS = (
     "30_Emotional_State/33_Trait_Evolution",
     "30_Emotional_State/34_Mood_Diary",
     "40_Knowledge_Base",
-    "40_Knowledge_Base/41_Lore_Worldview",
-    "40_Knowledge_Base/42_Game_Strategies",
-    "40_Knowledge_Base/43_Common_Topics",
-    "40_Knowledge_Base/44_External_Ingest",
+    # ⭐ V3-G4 (user 2026-05-27 拍板): 廢舊 41/42/43/44 細分, 改 [日常知識 + 外部知識] 兩大入口
+    # 對齊 user「不要分 41/42/43/44, 改成 日常(對話累積) + 外部(中之人/hermes 抓)」
+    "40_Knowledge_Base/41_Daily_Knowledge",       # 對話中累積的知識 (curator L3 寫)
+    "40_Knowledge_Base/42_External_Knowledge",    # user / hermes 投餵的文獻 (curator L4 寫)
+    "40_Knowledge_Base/42_External_Knowledge/_ingest_inbox",  # 入口 (Watcher 偵測)
     "50_Skills_Tools",
     "50_Skills_Tools/51_Hermes_Learned",
     "50_Skills_Tools/52_OpenClaw_MCP",
