@@ -59,7 +59,7 @@ from agent_memory.companion.expectation_state import (
     list_session_expectations as _list_expectations,
 )
 from agent_memory.companion.flow_mode_detector import (
-    FlowModeContext, detect_flow_mode,
+    FlowModeContext, detect_flow_mode, maybe_record_flow_mode_transition,
 )
 from agent_memory.companion.metacognition import (
     check_self_consistency, maybe_prefix_correction,
@@ -1166,6 +1166,16 @@ def run_companion_chat_turn(
         minute_msg_count=0,  # 對 burst 判定可用 chat_velocity proxy
     )
     current_flow_mode = detect_flow_mode(_flow_ctx)
+    # ⭐ V3-H3 殘-06: flow_mode transition 才寫 DB (避免每 turn 寫)
+    try:
+        maybe_record_flow_mode_transition(
+            vault_root, request.session_id, current_flow_mode,
+            chat_velocity_avg=float(request.chat_velocity),
+            concurrent_viewers_avg=int(request.concurrent_viewers),
+            transition_reason=f"turn_{request.user_id[:8]}",
+        )
+    except Exception:
+        pass
     _kg_entities = kg.payload.get("unknown_entities", []) if kg.triggered else []
     daydream_result = generate_daydream(
         idle_seconds=int(request.idle_seconds),
@@ -1386,6 +1396,27 @@ def run_companion_chat_turn(
     write_emotion_state(vault_root, request.user_id, new_emo, new_affect,
                         session_id=request.session_id, event_id=event_id)
     write_balance_state(vault_root, request.user_id, new_bal, channel_id=request.channel_id)
+
+    # ⭐ V3-H3 殘-05: H9 Attention Allocator — 算 attention_score + UPDATE 寫回 raw_events
+    # 對齊 V3 §29.9: attention_score = intimacy × emotional_salience × goal_relevance × novelty
+    try:
+        _emo_salience = (abs(new_affect.valence) + new_affect.arousal) / 2
+        _goal_rel = max(0.0, appraisal.goal_congruence)
+        _novelty = appraisal.novelty
+        _attention = max(0.0, min(1.0,
+            float(intim.intimacy_score) * _emo_salience * _goal_rel * _novelty
+        ))
+        # 對 owner intimacy=0.8 + salience 高 + goal+novelty 高 → attention 約 0.4-0.6
+        # 對 stranger intimacy=0.1 + 同條件 → attention 約 0.05
+        with open_companion_db(vault_root) as conn:
+            conn.execute(
+                "UPDATE raw_events SET attention_score=? WHERE event_id=?",
+                (_attention, event_id),
+            )
+            conn.commit()
+    except Exception:
+        pass
+
     resp.pipeline_steps_done.append(17)
 
     # ─── Step 17.5: V3-F1 viewer profile markdown (對 non-owner 寫) ───

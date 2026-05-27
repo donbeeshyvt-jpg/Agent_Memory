@@ -138,6 +138,46 @@ def record_flow_mode_transition(
     return mode_id
 
 
+def maybe_record_flow_mode_transition(
+    vault_root: Path,
+    session_id: str,
+    new_mode: str,
+    *,
+    chat_velocity_avg: float = 0.0,
+    concurrent_viewers_avg: int = 0,
+    transition_reason: str = "",
+) -> Optional[str]:
+    """V3-H3 殘-06: 只在 transition (mode 變化) 才寫 flow_mode_history.
+
+    對齊 V3 §26.2.E. 比對 session 內最近 active row 的 mode, 不同才 record.
+    避免每 turn 寫 → DB 爆炸.
+
+    Returns: 新寫的 mode_id 或 None (沒 transition).
+    """
+    if not session_id or not new_mode:
+        return None
+    try:
+        with open_companion_db(vault_root) as conn:
+            row = conn.execute(
+                "SELECT mode FROM flow_mode_history WHERE session_id=? AND ended_at IS NULL "
+                "ORDER BY started_at DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        if row and row["mode"] == new_mode:
+            return None  # 沒 transition, 不寫
+    except Exception:
+        return None
+    try:
+        return record_flow_mode_transition(
+            vault_root, session_id, new_mode,
+            chat_velocity_avg=chat_velocity_avg,
+            concurrent_viewers_avg=concurrent_viewers_avg,
+            transition_reason=transition_reason,
+        )
+    except Exception:
+        return None
+
+
 def list_flow_mode_history(vault_root: Path, session_id: str) -> list[dict]:
     """V3 §26.2.E: 列 session 內各模式切換歷史."""
     with open_companion_db(vault_root) as conn:
