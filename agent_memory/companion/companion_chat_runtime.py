@@ -714,6 +714,21 @@ def _build_companion_system_prompt(
         # 之前截 600 = 截掉 80% (L1+L2+L3+L4 算出 3000 char 但 prompt 只用 600)
         # 改 2400 留 600 char buffer 給其他 sections, LLM 看到完整 4-layer memory
         lines.append(memory_ctx[:2400])
+    # ⭐ V3-K1 (user 2026-05-27 「自我成長的小孩」核心): 六慾 — 「我現在想要的」
+    motivation_dict = prompt_packet.get("motivation") or {}
+    if motivation_dict:
+        try:
+            from agent_memory.companion.motivation_context import MotivationState, humanize_motivation
+            _mot_state = MotivationState(**motivation_dict)
+            _mot_text = humanize_motivation(_mot_state)
+            if _mot_text.strip():
+                lines.append("")
+                lines.append("[E3. 我現在想要的 (六慾 motivation)] ⭐ V3-K1 (user 自我成長的小孩理念)")
+                lines.append(_mot_text)
+                lines.append("- (我有自己想要的東西, 不只反應對方; 回應時自然帶出此驅力)")
+        except Exception:
+            pass
+
     # ⭐ V3-G3 (user 2026-05-27 audit Plan A): H4 身體感 (§29.4)
     embodied_dict = prompt_packet.get("embodied") or {}
     if embodied_dict and embodied_dict.get("stream_duration_minutes", 0) > 0:
@@ -1190,6 +1205,36 @@ def run_companion_chat_turn(
     )
     resp.pipeline_steps_done.append(117)
 
+    # ─── Step 11.75: V3-K1 Motivation Context (六慾真實接) ───
+    # 對齊 V3 §10.1 + user 2026-05-27 「自我成長的小孩」設計理念
+    # 六慾: 安全/掌控/成就/連結/好奇/表達 — 「夥伴有自己想要的東西, 不只反應」
+    try:
+        from agent_memory.companion.motivation_context import (
+            compute_motivation, write_motivation_context,
+        )
+        _active_goals_list = list_active_goals(vault_root, top_n=10)
+        _active_goals_count = len(_active_goals_list) if _active_goals_list else 0
+        motivation_state = compute_motivation(
+            injection_risk=injection_risk,
+            appraisal_control=appraisal.control,
+            appraisal_certainty=appraisal.certainty,
+            intimacy_score=intim.intimacy_score,
+            interaction_count=intim.interaction_count,
+            balance_curiosity_urge=new_bal.curiosity_urge,
+            balance_topic_drive=new_bal.topic_drive,
+            affect_arousal=new_affect.arousal,
+            affect_valence=new_affect.valence,
+            knowledge_gap_count=knowledge_gap_pending,
+            active_goals_count=_active_goals_count,
+        )
+        # 寫 motivation_contexts DB
+        write_motivation_context(vault_root, request.user_id, motivation_state,
+                                  active_goals=[g.get("description", "") for g in _active_goals_list[:3]])
+    except Exception:
+        from agent_memory.companion.motivation_context import MotivationState
+        motivation_state = MotivationState()  # baseline fallback
+    resp.pipeline_steps_done.append(1175)
+
     # ─── Step 11.8: H3 Daydream + Flow Mode Detector (V3-G2 user 2026-05-27 拍板) ───
     # 接 §29.3 白日夢 + §26.2.E 流量模式偵測 (兩個 audit 「白寫的程式」一次補)
     _flow_ctx = FlowModeContext(
@@ -1297,6 +1342,8 @@ def run_companion_chat_turn(
         "knowledge_hits": knowledge_hits,
         # ⭐ V3-H1 (殘-02): 注入攻擊 警覺提示
         "injection_hint": _load_recent_injection_hint(vault_root, request.user_id, look_back_hours=24),
+        # ⭐ V3-K1 (user 2026-05-27 「自我成長的小孩」核心): 六慾 satisfaction + humanize
+        "motivation": motivation_state.as_dict(),
     }
     resp.pipeline_steps_done.append(14)
 
