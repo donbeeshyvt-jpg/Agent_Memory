@@ -222,6 +222,14 @@ def fetch_layer3_long(vault_root: Path, *, user_id: str = "", is_owner: bool = F
             items.append(f"self_concept: {c['claim'][:120]} (conf={c['confidence']:.2f})")
     except Exception:
         pass
+    # ⭐ V3-K3 (user 2026-05-27 「自我成長小孩」): narrative 自我敘事弧
+    try:
+        from agent_memory.companion.narrative_writer import list_recent_narratives
+        narratives = list_recent_narratives(vault_root, user_id=user_id, max_count=2)
+        for n in narratives:
+            items.append(f"narrative: {n['theme']} — {n['relationship_arc'][:80]}")
+    except Exception:
+        pass
     return items
 
 

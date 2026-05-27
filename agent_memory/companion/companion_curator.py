@@ -386,6 +386,16 @@ def run_layer4_7d_deep(vault_root: Path) -> CuratorRunResult:
     if external_count > 0:
         actions.append(f"external_knowledge_ingested({external_count})")
 
+    # ⭐ V3-K3 (user 2026-05-27 「自我成長小孩」核心): narrative 自我敘事弧
+    # 對齊 V3 §24 + 「哲學資料庫」 — 夥伴整理跟 user 關係的「成長故事」
+    try:
+        from agent_memory.companion.narrative_writer import build_narrative_arc_via_llm
+        narr_count = build_narrative_arc_via_llm(vault_root)
+        if narr_count > 0:
+            actions.append(f"narratives_built({narr_count})")
+    except Exception:
+        pass
+
     return CuratorRunResult(layer="layer4_7d_deep", actions_performed=actions)
 
 
