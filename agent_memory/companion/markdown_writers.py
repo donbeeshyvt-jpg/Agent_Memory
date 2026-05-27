@@ -347,7 +347,12 @@ def write_decision_trace_md(
         "",
     ]
     for k, v in factor_scores.items():
-        lines.append(f"- {k}: {v:.4f}")
+        # V3-O.2 (2026-05-28): defensive — chat_runtime 塞 'injection_risk' 為 str 'low'/'high',
+        # 原本強制 :.4f 對 str 會 ValueError → 整 14 turn MD 都沒寫. 改 isinstance 判定.
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            lines.append(f"- {k}: {v:.4f}")
+        else:
+            lines.append(f"- {k}: {v}")
     lines.extend([
         "",
         f"## Hard Rules 觸發",

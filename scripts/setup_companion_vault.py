@@ -155,25 +155,29 @@ def setup_companion_vault(
     print(f"[step 6b] companion.db 29 SQLite 表 ensure")
 
     # V3-D6: 寫 llm_router.yaml — 預設 openrouter 為 global_default, gemini fallback
+    # V3-O.2 (user 2026-05-28 拍板): 切 default model 為 qwen/qwen3.6-35b-a3b,
+    # 對齊 user「測試環境都幫我使用 openrouter 的 qwen/qwen3.6-35b-a3b 不然又會發生 timeout」.
+    # 之前 google/gemma-2-9b-it:free 在刷頻 high-load 下 serialize lock 65s 不夠.
     companion_router = {
         "schema_version": 1,
-        "description": "V3 companion: OpenRouter 為主, Gemini fallback. Phase 1 stub 透過 env AGENT_MEMORY_COMPANION_LLM_FORCE_STUB=1 切回.",
+        "description": "V3 companion: OpenRouter qwen3.6-35b 為主, gemma + gemini fallback. Phase 1 stub 透過 env AGENT_MEMORY_COMPANION_LLM_FORCE_STUB=1 切回.",
         "resolution_order": [
             "request_override", "auxiliary_override", "persona_override",
             "global_default", "fallback_chain",
         ],
         "global_default": {
             "profile": "openrouter",
-            "model": "google/gemma-2-9b-it:free",
+            "model": "qwen/qwen3.6-35b-a3b",
         },
         "fallback_chain": [
+            {"profile": "openrouter", "model": "google/gemma-2-9b-it:free"},
             {"profile": "openrouter", "model": "meta-llama/llama-3.1-8b-instruct:free"},
             {"profile": "gemini", "model": "gemma-4-31b-it"},
         ],
         "persona_overrides": {
             "companion": {
                 "profile": "openrouter",
-                "model": "google/gemma-2-9b-it:free",
+                "model": "qwen/qwen3.6-35b-a3b",
             },
         },
         "auxiliary_default": {"profile": "", "model": ""},

@@ -1006,7 +1006,9 @@ def _adaptive_companion_llm(
         return _real_companion_llm(prompt_packet, vault_root, user_id=user_id, session_id=session_id)
     except Exception as exc:
         _log_llm_failure(vault_root, exc, prompt_packet)
-        return _stub_llm(prompt_packet)
+        # V3-O.2 (user 2026-05-28 拍板): production LLM 失敗時不再亂用 stub pool 隨機回應,
+        # 統一回友善 fallback 訊息, 不對 user leak timeout / 內部錯誤. 對齊「他不應該把 timeout 顯示出來」.
+        return "等等，我沒聽懂，你再說一次。"
 
 
 # Backward compat: 舊呼叫點仍可用 _default_llm_stub 名稱
@@ -1212,8 +1214,10 @@ def run_companion_chat_turn(
         from agent_memory.companion.motivation_context import (
             compute_motivation, write_motivation_context,
         )
-        _active_goals_list = list_active_goals(vault_root, top_n=10)
-        _active_goals_count = len(_active_goals_list) if _active_goals_list else 0
+        # V3-O.2 (2026-05-28): 修 A1 bug — list_active_goals 簽名是 (vault_root, *, target_audience),
+        # 沒有 top_n keyword. 原本傳 top_n=10 → TypeError → 被 except 吞掉 → 整 14 turn motivation_contexts 都 0.
+        _active_goals_list = (list_active_goals(vault_root) or [])[:10]
+        _active_goals_count = len(_active_goals_list)
         motivation_state = compute_motivation(
             injection_risk=injection_risk,
             appraisal_control=appraisal.control,
@@ -1228,9 +1232,19 @@ def run_companion_chat_turn(
             active_goals_count=_active_goals_count,
         )
         # 寫 motivation_contexts DB
+        # V3-O.2: active_goals ActiveGoal dataclass 用 .description attr, 不是 dict.get
+        _goal_descs = []
+        for g in _active_goals_list[:3]:
+            d = getattr(g, "description", None) or (g.get("description", "") if isinstance(g, dict) else "")
+            if d:
+                _goal_descs.append(d)
         write_motivation_context(vault_root, request.user_id, motivation_state,
-                                  active_goals=[g.get("description", "") for g in _active_goals_list[:3]])
-    except Exception:
+                                  active_goals=_goal_descs)
+    except Exception as _mot_exc:
+        # V3-O.2: 不再 silent — print 到 stderr 讓未來 audit 看得到
+        import sys as _sys, traceback as _tb
+        print(f"[V3-K1 motivation block FAIL] {type(_mot_exc).__name__}: {_mot_exc}", file=_sys.stderr)
+        _tb.print_exc(file=_sys.stderr)
         from agent_memory.companion.motivation_context import MotivationState
         motivation_state = MotivationState()  # baseline fallback
     resp.pipeline_steps_done.append(1175)
@@ -1618,6 +1632,14 @@ def run_companion_chat_turn(
     # ⭐ V3-G6 F7: Decision Trace 同步寫 markdown (audit + 人類可讀)
     try:
         from agent_memory.companion.markdown_writers import write_decision_trace_md
+        # V3-O.2 (2026-05-28): 修 A2 bug — injection_risk 在 chat 內塞 str ('low'/'high'),
+        # 原本 markdown writer 用 :.4f 強制 float → ValueError → 整 14 turn MD 都沒寫.
+        # 此處 chat 端也 coerce 成 float: 'high'=1.0 / 'medium'=0.5 / 'low'=0.0
+        _ir_raw = dec_input.injection_risk
+        if isinstance(_ir_raw, str):
+            _ir_float = {"high": 1.0, "medium": 0.5, "low": 0.0}.get(_ir_raw.lower(), 0.0)
+        else:
+            _ir_float = float(_ir_raw) if _ir_raw is not None else 0.0
         write_decision_trace_md(
             vault_root,
             trace_id=trace_id, user_id=request.user_id,
@@ -1630,14 +1652,16 @@ def run_companion_chat_turn(
                 "uncertainty": dec_input.uncertainty,
                 "norm_fit": dec_input.norm_fit,
                 "certainty": dec_input.certainty,
-                "injection_risk": dec_input.injection_risk,
+                "injection_risk": _ir_float,
             },
-            hard_rules_triggered=list(dec_result.hard_rules_triggered or []),
+            hard_rules_triggered=[dec_result.hard_rule_triggered] if dec_result.hard_rule_triggered else [],
             policy=policy.as_dict(),
             user_message=request.message, bot_reply=final_response,
         )
-    except Exception:
-        pass
+    except Exception as _dt_exc:
+        # V3-O.2: 不再 silent — print 到 stderr 讓未來 audit 看得到
+        import sys as _sys
+        print(f"[V3-G6 F7 decision_trace_md FAIL] {type(_dt_exc).__name__}: {_dt_exc}", file=_sys.stderr)
     resp.pipeline_steps_done.append(19)
 
     # ─── Step 20: 寫 proactive_triggers ───
