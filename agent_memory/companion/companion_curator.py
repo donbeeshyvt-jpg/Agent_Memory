@@ -137,7 +137,90 @@ def run_layer3_24h_medium(
     if daily_count > 0:
         actions.append(f"daily_knowledge_consolidated({daily_count})")
 
+    # ⭐ V3-G6 F5: Mood Diary + Daily Journal (對齊 V3 §21.5 + §29.5)
+    mood_diary_path, daily_journal_path = _write_daily_mood_and_journal(vault_root)
+    if mood_diary_path:
+        actions.append(f"mood_diary_written({mood_diary_path.name})")
+    if daily_journal_path:
+        actions.append(f"daily_journal_written({daily_journal_path.name})")
+
     return CuratorRunResult(layer="layer3_24h_medium", actions_performed=actions)
+
+
+def _write_daily_mood_and_journal(vault_root: Path):
+    """V3-G6 F5: 撈當天 emotion_state + raw_events 統計 → 寫 mood diary + daily journal."""
+    try:
+        from agent_memory.companion.markdown_writers import (
+            write_mood_diary_md, write_daily_journal_md,
+        )
+    except Exception:
+        return None, None
+
+    today = datetime.now(timezone.utc).date().isoformat()
+    cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+
+    try:
+        with open_companion_db(vault_root) as conn:
+            # 平均 valence + arousal (近 24h emotion_state)
+            row_avg = conn.execute(
+                "SELECT AVG(joy*1.0-sadness-anger) AS avg_v, AVG(joy+anger+fear+desire) AS avg_a, COUNT(*) AS c "
+                "FROM emotion_state WHERE timestamp > ?",
+                (cutoff_24h,),
+            ).fetchone()
+
+            # 主導情緒 top 3
+            dom_rows = conn.execute(
+                "SELECT dominant_emotion, COUNT(*) AS c FROM emotion_state "
+                "WHERE timestamp > ? GROUP BY dominant_emotion ORDER BY c DESC LIMIT 3",
+                (cutoff_24h,),
+            ).fetchall()
+
+            # 強情緒事件數
+            strong_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM episodic_memories WHERE created_at > ? AND ABS(valence) > 0.5",
+                (cutoff_24h,),
+            ).fetchone()["c"] or 0
+
+            # owner / viewer interactions
+            owner_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM raw_events r JOIN users u ON r.user_id=u.user_id "
+                "WHERE r.created_at > ? AND r.actor='user' AND u.role='owner'",
+                (cutoff_24h,),
+            ).fetchone()["c"] or 0
+
+            total_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM raw_events WHERE created_at > ? AND actor='user'",
+                (cutoff_24h,),
+            ).fetchone()["c"] or 0
+
+            # 知識新增數
+            knowledge_count = conn.execute(
+                "SELECT COUNT(*) AS c FROM episodic_memories WHERE created_at > ? AND lifecycle_state IN ('mid','long')",
+                (cutoff_24h,),
+            ).fetchone()["c"] or 0
+    except Exception:
+        return None, None
+
+    if (row_avg["c"] or 0) == 0:
+        return None, None  # 沒資料就不寫
+
+    avg_v = row_avg["avg_v"] or 0.0
+    avg_a = row_avg["avg_a"] or 0.3
+    dom_list = [r["dominant_emotion"] for r in dom_rows if r["dominant_emotion"]]
+
+    mood_path = write_mood_diary_md(
+        vault_root, date=today,
+        avg_valence=avg_v, avg_arousal=avg_a,
+        dominant_emotions=dom_list, event_count=strong_count,
+    )
+    journal_path = write_daily_journal_md(
+        vault_root, date=today,
+        total_interactions=total_count,
+        owner_interactions=owner_count,
+        viewer_interactions=max(0, total_count - owner_count),
+        knowledge_added=knowledge_count,
+    )
+    return mood_path, journal_path
 
 
 def _consolidate_daily_knowledge(vault_root: Path) -> int:

@@ -1270,6 +1270,35 @@ def run_companion_chat_turn(
                  0.7, 0.7, (abs(new_affect.valence) + new_affect.arousal) / 2, 0.7,
                  now_iso),
             )
+            # ⭐ V3-G6 F2: 強情緒事件同步寫 markdown
+            try:
+                from agent_memory.companion.markdown_writers import write_emotion_event_md
+                write_emotion_event_md(
+                    vault_root,
+                    event_id=event_id, user_id=request.user_id,
+                    valence=new_affect.valence, arousal=new_affect.arousal,
+                    dominance=new_affect.dominance,
+                    user_message=request.message, bot_reply=final_response,
+                    dominant_emotion=new_emo.dominant_emotion,
+                    salience=0.7,
+                    emotional_salience=(abs(new_affect.valence) + new_affect.arousal) / 2,
+                )
+            except Exception:
+                pass
+
+        # ⭐ V3-G6 F7: injection 攔截同步寫 markdown (audit)
+        if scanner_hits.get("detected"):
+            try:
+                from agent_memory.companion.markdown_writers import write_injection_audit_md
+                write_injection_audit_md(
+                    vault_root,
+                    detected_id=event_id, user_id=request.user_id,
+                    pattern_matched="; ".join(scanner_hits.get("reasons", []))[:200],
+                    risk_score=0.9, user_message=request.message,
+                    action_taken="scanner_flagged",
+                )
+            except Exception:
+                pass
         conn.commit()
     write_emotion_state(vault_root, request.user_id, new_emo, new_affect,
                         session_id=request.session_id, event_id=event_id)
@@ -1356,6 +1385,29 @@ def run_companion_chat_turn(
              datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
+    # ⭐ V3-G6 F7: Decision Trace 同步寫 markdown (audit + 人類可讀)
+    try:
+        from agent_memory.companion.markdown_writers import write_decision_trace_md
+        write_decision_trace_md(
+            vault_root,
+            trace_id=trace_id, user_id=request.user_id,
+            decision=dec_result.selected_action,
+            factor_scores={
+                "goal_alignment": dec_input.goal_alignment,
+                "safety_fit": dec_input.safety_fit,
+                "owner_directive_weight": dec_input.owner_directive_weight,
+                "memory_relevance": dec_input.memory_relevance,
+                "uncertainty": dec_input.uncertainty,
+                "norm_fit": dec_input.norm_fit,
+                "certainty": dec_input.certainty,
+                "injection_risk": dec_input.injection_risk,
+            },
+            hard_rules_triggered=list(dec_result.hard_rules_triggered or []),
+            policy=policy.as_dict(),
+            user_message=request.message, bot_reply=final_response,
+        )
+    except Exception:
+        pass
     resp.pipeline_steps_done.append(19)
 
     # ─── Step 20: 寫 proactive_triggers ───
