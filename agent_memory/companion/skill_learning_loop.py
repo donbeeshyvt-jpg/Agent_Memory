@@ -55,6 +55,8 @@ def register_skill(
     skill_path = skill_dir / "SKILL.md"
 
     steps_md = "\n".join(f"{i+1}. {s}" for i, s in enumerate(skill.procedure_steps))
+    # ⭐ V3-N (user 2026-05-27): emotional_origin 加 wikilink body backlink
+    origin_link = f"\n## 來源 (Origin)\n\n- [[{skill.emotional_origin}]] (對應 semantic_concept 或 episodic memory)\n" if skill.emotional_origin else ""
     content = (
         f"---\n"
         f"type: learned_skill\nschema_version: 10\n"
@@ -70,6 +72,7 @@ def register_skill(
         f"## 適用情境\n{skill.trigger_situation}\n\n"
         f"## 描述\n{skill.description}\n\n"
         f"## 步驟\n{steps_md or '(無)'}\n"
+        f"{origin_link}"
     )
     atomic_write(skill_path, content)
     return {

@@ -104,8 +104,9 @@ def write_narrative_memory(
     if events_chain:
         lines.append("## 主要事件鏈")
         lines.append("")
+        # ⭐ V3-N (user 2026-05-27): 加 [[wikilinks]] 連回 episodic MD
         for eid in events_chain[:10]:
-            lines.append(f"- {eid}")
+            lines.append(f"- [[{eid}]]")
         lines.append("")
     lines.append(f"## 情緒弧 (Emotional Arc)")
     lines.append("")

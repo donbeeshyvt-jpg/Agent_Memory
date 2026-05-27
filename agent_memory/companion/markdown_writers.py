@@ -146,8 +146,9 @@ def write_drift_candidate_md(
     if current_value is not None:
         lines.append(f"目前 value: {current_value:.4f}")
     lines.extend(["", "## Evidence (raw_events)", ""])
+    # ⭐ V3-N (user 2026-05-27): 加 [[wikilinks]] 連回 event MD
     for eid in evidence_event_ids[:10]:
-        lines.append(f"- {eid}")
+        lines.append(f"- [[{eid}]]")
     lines.extend([
         "",
         "## user 動作 (對齊 V3 §22 Drift Guard 紅線)",
