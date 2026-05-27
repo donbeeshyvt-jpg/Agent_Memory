@@ -98,7 +98,7 @@ def write_viewer_profile(
             # 撈 preference_memories (status active/proposed/verified)
             try:
                 prefs = conn.execute(
-                    "SELECT topic, claim, strength, status, updated_at FROM preference_memories "
+                    "SELECT preference_type AS topic, claim, strength, status, last_seen_at AS updated_at FROM preference_memories "
                     "WHERE user_id=? AND status NOT IN ('rejected','expired') "
                     "ORDER BY updated_at DESC LIMIT ?",
                     (user_id, MAX_PREF_OBS),

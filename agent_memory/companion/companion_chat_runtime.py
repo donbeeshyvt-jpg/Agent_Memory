@@ -330,7 +330,7 @@ def _load_viewer_dynamic_context(vault_root: Path, user_id: str) -> str:
             # 該 viewer top 3 偏好
             try:
                 prefs = conn.execute(
-                    "SELECT topic, claim FROM preference_memories "
+                    "SELECT preference_type AS topic, claim FROM preference_memories "
                     "WHERE user_id=? AND status NOT IN ('rejected','expired') "
                     "ORDER BY strength DESC LIMIT 3",
                     (user_id,),

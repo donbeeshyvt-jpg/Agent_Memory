@@ -36,8 +36,8 @@ def consolidate_preferences(
     with open_companion_db(vault_root) as conn:
         # episodic → semantic (evidence>=3 + first_seen<=7d ago)
         rows = conn.execute(
-            "SELECT preference_id, evidence_count, first_seen_at FROM preference_memories "
-            "WHERE status='episodic' AND evidence_count>=3"
+            "SELECT preference_id, user_id, preference_type AS topic, claim, evidence_count, first_seen_at, strength "
+            "FROM preference_memories WHERE status='episodic' AND evidence_count>=3"
         ).fetchall()
         for r in rows:
             new_status = "semantic" if not require_llm_confirm else "semantic_candidate"
@@ -46,6 +46,28 @@ def consolidate_preferences(
                 (new_status, r["preference_id"]),
             )
             promoted_to_semantic += 1
+            # ⭐ V3-H2 殘-03: 升 semantic 同步寫 markdown 進 60_Preference_Memory/{61_Owner,62_Viewer}/
+            try:
+                from agent_memory.companion.markdown_writers import write_preference_md
+                # 判斷 is_owner (從 owner_state 表)
+                owner_row = conn.execute(
+                    "SELECT 1 FROM owner_state WHERE owner_user_id=?",
+                    (r["user_id"],),
+                ).fetchone()
+                is_owner = bool(owner_row)
+                write_preference_md(
+                    vault_root,
+                    topic=(r["topic"] or "未命名")[:60],
+                    claim=(r["claim"] or "")[:300],
+                    user_id=r["user_id"] or "anonymous",
+                    is_owner=is_owner,
+                    strength=float(r["strength"] or 0.5),
+                    confidence=0.7,
+                    evidence_count=int(r["evidence_count"] or 0),
+                    status=new_status,
+                )
+            except Exception:
+                pass  # non-critical 失敗不阻塞升格
 
         # semantic → habit (evidence>=7 + 7d 穩定 + first_seen <= 7d 前)
         rows = conn.execute(

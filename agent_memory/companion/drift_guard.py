@@ -90,28 +90,25 @@ def audit_candidate(
             passed=False, reason=f"drift_too_extreme ({drift:.2f} > {_DRIFT_MAX} — 防社工)",
         )
 
-    # 寫 73_Candidates/
+    # V3-H2 殘-04: 改 call markdown_writers.write_drift_candidate_md (canonical 路徑)
+    # 廢除直接 atomic_write, 對齊 V3-G6 統一 schema_v10 + frontmatter superset
+    from agent_memory.companion.markdown_writers import write_drift_candidate_md
     candidate_id = str(uuid.uuid4())
-    candidate_path = vault_root / "70_Persona_Versions" / "73_Candidates" / f"{candidate_id}.md"
-    candidate_path.parent.mkdir(parents=True, exist_ok=True)
-    content = (
-        f"---\n"
-        f"type: persona_candidate\nschema_version: 10\n"
-        f"user_id: {user_id}\ntrait_name: {trait_name}\n"
-        f"evidence_count: {row['evidence_count']}\ndrift_score: {drift:.3f}\n"
-        f"proposed_value: {row['proposed_value']}\ncurrent_value: {row['current_value']}\n"
-        f"awaiting_human_confirm: true\n"
-        f"created_at: {datetime.now(timezone.utc).isoformat()}\n"
-        f"---\n"
-        f"# Persona Candidate\n\n"
-        f"Trait: **{trait_name}** for user {user_id}\n\n"
-        f"- evidence_count: {row['evidence_count']}\n"
-        f"- proposed: {row['proposed_value']:.3f}\n"
-        f"- current: {row['current_value']:.3f}\n"
-        f"- drift_score: {drift:.3f}\n\n"
-        f"⚠ 此候選必須中之人手動確認才會 active. drift_guard 不自動套用.\n"
+    candidate_path = write_drift_candidate_md(
+        vault_root,
+        trait_name=trait_name,
+        proposed_value=float(row["proposed_value"]),
+        evidence_count=int(row["evidence_count"]),
+        drift_score=float(drift),
+        current_value=float(row["current_value"]),
+        user_id=user_id,
+        candidate_id=candidate_id,
     )
-    atomic_write(candidate_path, content)
+    if candidate_path is None:
+        return DriftAuditResult(
+            user_id=user_id, trait_name=trait_name, drift_score=drift,
+            passed=False, reason="write_drift_candidate_md_failed",
+        )
 
     return DriftAuditResult(
         user_id=user_id, trait_name=trait_name, drift_score=drift, passed=True,
