@@ -3746,7 +3746,7 @@ def run_simulation(vault_root: Path, report: Report) -> int:
     # ─── Step 40 (V3 Phase 1): 22-step Companion Chat Pipeline + 25 表 + 12 機制 ───
     report.section("Step 40 (V3 Phase 1): Companion 22-step pipeline + 25 表 + Mood-Congruent Recall + 主動發言")
 
-    # 40.1 — V3-C5 companion.db 29 表 init
+    # 40.1 — V3-C5 + V3-H4 companion.db 28 表 init (V3-H4 廢 emotion_distribution)
     from agent_memory.companion.companion_db import ensure_companion_db, list_table_names
     _td_v3c5 = Path(tempfile.mkdtemp(prefix="v3c5_db_"))
     try:
@@ -3754,12 +3754,12 @@ def run_simulation(vault_root: Path, report: Report) -> int:
         v_c5.mkdir()
         ensure_companion_db(v_c5)
         tables = set(list_table_names(v_c5))
-        # 25+ 表核心驗收 (對齊 V3 §6 + §29.13)
+        # 25+ 表核心驗收 (對齊 V3 §6 + §29.13 + V3-H4 廢 emotion_distribution)
         required_tables = {
             # §6.1 基礎
             "users", "raw_events", "sessions", "trace_logs",
-            # §6.2 情緒
-            "affect_states", "appraisal_records", "emotion_state", "balance_state", "emotion_distribution",
+            # §6.2 情緒 (V3-H4: emotion_distribution 廢)
+            "affect_states", "appraisal_records", "emotion_state", "balance_state",
             # §6.3 動機偏好親密
             "motivation_contexts", "preference_memories", "intimacy_states",
             # §6.4 決策記憶
@@ -3772,14 +3772,17 @@ def run_simulation(vault_root: Path, report: Report) -> int:
             "flow_mode_history", "active_goals", "embodied_state", "verbal_tics_history", "expectation_state",
         }
         v3c5_all_tables = required_tables.issubset(tables)
-        v3c5_count_ok = len(tables) >= 29
+        # V3-H4: 29→28 表 (廢 emotion_distribution dead schema)
+        v3c5_count_ok = len(tables) >= 28
+        # 確認 emotion_distribution 真的廢
+        v3c5_no_dead = "emotion_distribution" not in tables
     finally:
         shutil.rmtree(_td_v3c5, ignore_errors=True)
 
     report.step(
-        "V3-C5 companion.db 29 表 init + 核心 25+ 表全在",
-        v3c5_all_tables and v3c5_count_ok,
-        f"all_required={v3c5_all_tables} count={len(tables)}>=29 missing={required_tables - tables}",
+        "V3-C5+H4 companion.db 28 表 init + 核心 25+ 表全在 + emotion_distribution 已廢",
+        v3c5_all_tables and v3c5_count_ok and v3c5_no_dead,
+        f"all_required={v3c5_all_tables} count={len(tables)}>=28 no_dead={v3c5_no_dead} missing={required_tables - tables}",
     )
 
     # 40.2 — V3-C6 Appraisal + V3-C7 七情天平

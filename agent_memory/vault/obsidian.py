@@ -408,17 +408,94 @@ class ObsidianVaultAdapter(VaultAdapter):
             "- 依 loyalty_tier + intimacy_score 自動寫策略提示\n"
         )
         self._write_companion_baseline_file("99_Templates/TPL_Viewer.md", tpl_viewer_body)
-        for tpl_name, tpl_purpose in [
-            ("TPL_Emotion_Event", "emotional_memory"),
-            ("TPL_Learned_Skill", "learned_skill"),
-            ("TPL_Inside_Joke", "inside_joke"),
-            ("TPL_Persona_Version", "persona_version"),
+        # V3-H4 殘-10: 剩 4 TPL 升真實 schema (對齊 markdown_writers.py 寫入)
+
+        tpl_emotion_event = (
+            "---\n"
+            "type: emotional_memory\n"
+            "schema_version: 10\n"
+            "event_id: <uuid>\n"
+            "user_id: <user_id>\n"
+            "valence: 0.0  # -1~1\n"
+            "arousal: 0.0  # 0~1\n"
+            "dominance: 0.0  # 0~1\n"
+            "dominant_emotion: joy | sadness | anger | fear | love | disgust | desire\n"
+            "salience: 0.5  # 0~1\n"
+            "emotional_salience: 0.5  # 0~1\n"
+            "lifecycle_state: short | mid | long\n"
+            "created_at: <iso8601>\n"
+            "---\n"
+            "# 強情緒事件 schema\n\n"
+            "> 對齊 V3 §11.2 + §13.1 emotion_modulated_recall + markdown_writers.write_emotion_event_md.\n"
+            "> 由 chat_runtime Step 17 對 |valence|>0.7 觸發寫入.\n\n"
+            "## 觸發訊息\n\n## 我的回應\n"
+        )
+
+        tpl_inside_joke = (
+            "---\n"
+            "type: inside_joke\n"
+            "schema_version: 10\n"
+            "joke_keyword: <keyword>\n"
+            "user_id: <user_id>\n"
+            "intimacy_threshold: 0.4  # intim ≥ 此值才用\n"
+            "use_count: 0\n"
+            "first_seen_at: <iso8601>\n"
+            "last_used_at: <iso8601>\n"
+            "lifecycle_state: active | retired\n"
+            "---\n"
+            "# Inside Joke schema\n\n"
+            "> 對齊 V3 §29.8 H8 Associative Callback + Memory Router L4.\n"
+            "> 對話中 keyword 重複 ≥ 3 次自動寫入, 之後對 playfulness>0.5 + intim ≥ threshold 注入.\n\n"
+            "## Joke 範例\n\n## 觸發 context\n"
+        )
+
+        tpl_learned_skill = (
+            "---\n"
+            "type: learned_skill\n"
+            "schema_version: 10\n"
+            "skill_name: <name>\n"
+            "skill_type: hermes_skill | tool | knowledge\n"
+            "source: hermes_learning_loop | manual\n"
+            "use_count: 0\n"
+            "success_rate: 0.0\n"
+            "last_used_at: <iso8601>\n"
+            "created_at: <iso8601>\n"
+            "lifecycle_state: candidate | active | retired\n"
+            "---\n"
+            "# Learned Skill schema\n\n"
+            "> 對齊 V3 §4 hermes Mode B + V3 §29.6 H6 + Phase 4.\n"
+            "> hermes 跑 research/web_browse 後寫此 + 50_Skills_Tools/51_Hermes_Learned/.\n\n"
+            "## Skill 描述\n\n## 使用條件\n"
+        )
+
+        tpl_persona_version = (
+            "---\n"
+            "type: persona_version_candidate\n"
+            "schema_version: 10\n"
+            "user_id: <user_id>\n"
+            "trait_name: <e.g. baseline_balance>\n"
+            "proposed_value: 0.0\n"
+            "current_value: 0.0\n"
+            "evidence_count: 0\n"
+            "drift_score: 0.0\n"
+            "awaiting_active: true\n"
+            "awaiting_human_confirm: true\n"
+            "active: false\n"
+            "created_at: <iso8601>\n"
+            "---\n"
+            "# Persona Version Candidate schema\n\n"
+            "> 對齊 V3 §22 Drift Guard + markdown_writers.write_drift_candidate_md.\n"
+            "> drift_score ≥ 0.5 + identity_relevance < 0.75 → 寫此候選, 等中之人手動 review.\n\n"
+            "## 動作\n\n1. 中之人 review evidence\n2. 同意 → 改 awaiting_active: false + active: true\n"
+        )
+
+        for tpl_name, body in [
+            ("TPL_Emotion_Event", tpl_emotion_event),
+            ("TPL_Inside_Joke", tpl_inside_joke),
+            ("TPL_Learned_Skill", tpl_learned_skill),
+            ("TPL_Persona_Version", tpl_persona_version),
         ]:
-            self._write_companion_baseline_file(
-                f"99_Templates/{tpl_name}.md",
-                f"---\ntype: {tpl_purpose}\nschema_version: 10\n---\n"
-                f"# {tpl_name}\n\n> 模板 — 對齊 V3 規劃書附錄 C. 真實 schema 留 V3-F2/F3/F8 補.\n",
-            )
+            self._write_companion_baseline_file(f"99_Templates/{tpl_name}.md", body)
 
     def _write_companion_baseline_file(self, rel_path: str, content: str) -> None:
         """V3 C3: helper — 只在 file 不存在時寫 baseline. 不覆蓋使用者已改的內容."""

@@ -88,12 +88,9 @@ _SCHEMA_STATEMENTS = [
         channel_id TEXT, trigger_event TEXT,
         PRIMARY KEY (user_id, timestamp)
     )""",
-    """CREATE TABLE IF NOT EXISTS emotion_distribution (
-        dist_id TEXT PRIMARY KEY,
-        user_id TEXT, session_id TEXT,
-        emotion_distribution_json TEXT,
-        created_at TEXT
-    )""",
+    # ⭐ V3-H4 殘-07 (user 2026-05-27 audit Plan B 拍板選 A): 廢 emotion_distribution 表
+    # V3-G3 已用 emotion_state + balance_state 完整 cover, 此表為早期 V3 設計被新表取代.
+    # 移除 CREATE TABLE, 同時加 DROP 對既有 db 清理 (見下方 _drop_legacy_tables).
     # ─── §6.3 動機 / 偏好 / 親密度 (3) ───
     """CREATE TABLE IF NOT EXISTS motivation_contexts (
         context_id TEXT PRIMARY KEY,
@@ -289,8 +286,17 @@ def get_companion_db_path(vault_root: Path) -> Path:
     return Path(vault_root).expanduser().resolve() / ".ai" / _COMPANION_DB_FILENAME
 
 
+_DROP_LEGACY_TABLES = [
+    # V3-H4 殘-07: 廢 emotion_distribution (被 emotion_state + balance_state 取代)
+    "DROP TABLE IF EXISTS emotion_distribution",
+]
+
+
 def ensure_companion_db(vault_root: Path) -> Path:
-    """V3 C5: 建 companion.db + 29 表 schema + INDEX. Idempotent — 重跑 no-op."""
+    """V3 C5+H4: 建 companion.db + 28 表 schema + INDEX. Idempotent — 重跑 no-op.
+
+    V3-H4: 29→28 表 (廢 emotion_distribution, dead schema).
+    """
     db_path = get_companion_db_path(vault_root)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
@@ -300,6 +306,9 @@ def ensure_companion_db(vault_root: Path) -> Path:
         for stmt in _SCHEMA_STATEMENTS:
             conn.execute(stmt)
         for stmt in _INDEX_STATEMENTS:
+            conn.execute(stmt)
+        # V3-H4: 對既有 db 清廢表 (對新 db 無影響, DROP IF EXISTS idempotent)
+        for stmt in _DROP_LEGACY_TABLES:
             conn.execute(stmt)
         conn.commit()
     finally:
