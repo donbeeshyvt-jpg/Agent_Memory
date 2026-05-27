@@ -101,14 +101,16 @@ def _backup_file(file_path: Path, archive_dir: Path, *, keep: int = 5) -> None:
             pass
 
 
-def _enforce_char_limit_compress(file_path: Path, limit: int) -> bool:
-    """V3 §12.4 + D-V3-50: 超過 char_limit 時壓縮舊段, 保留紅線/safety/owner_id 行.
+def _enforce_char_limit_compress(file_path: Path, limit: int, *, vault_root: Optional[Path] = None) -> bool:
+    """V3 §12.4 + D-V3-50 + V3-H7: 超過 char_limit 時壓縮舊段, 保留紅線/safety/owner_id 行.
 
-    Phase 1 MVP 策略 (Phase 3 改 LLM 壓縮):
+    策略 (V3-H7 user 2026-05-27 拍板, 升 Phase 3 LLM 壓縮):
+    - 若 LLM 可用 → 用 LLM 摘要舊段成「我曾學過 X」+ 留近期 tail
+    - 若 LLM 不可用 / stub → fallback truncate (V3-E1+E5 既有 Phase 1 策略)
+
     - 抓 frontmatter (--- ... ---)
     - 抓所有以 _PRESERVE_PREFIXES 開頭的段
-    - 保 frontmatter + preserved + 最後 limit/2 char 的內容
-    - 中間漏掉的部分加「<-- 已壓縮 N char old -->」標記
+    - 保 frontmatter + preserved + LLM 摘要 (or 標記) + 最後 limit/2 char 的內容
 
     Returns: True 若有壓縮, False 沒.
     """
@@ -136,15 +138,79 @@ def _enforce_char_limit_compress(file_path: Path, limit: int) -> bool:
     # 保 tail (限後半 limit/2)
     tail_budget = max(200, limit // 2)
     tail = body[-tail_budget:]
+    old_section = body[: -tail_budget] if len(body) > tail_budget else ""
 
-    compressed_body = (
-        ("\n".join(preserved_lines) + "\n\n" if preserved_lines else "")
-        + f"<!-- 已壓縮: 舊段約 {len(body) - len(tail) - sum(len(l) for l in preserved_lines)} char -->\n"
-        + tail
-    )
+    # ⭐ V3-H7: 若 LLM 可用 → 壓縮舊段成總結 (Phase 3); 否則 fallback truncate (Phase 1)
+    llm_summary = ""
+    if _llm_enabled_for_flush() and old_section.strip() and vault_root is not None:
+        llm_summary = _llm_compress_old_section(vault_root, old_section, file_path.name)
+
+    if llm_summary:
+        # Phase 3 LLM 壓縮路徑
+        compressed_body = (
+            ("\n".join(preserved_lines) + "\n\n" if preserved_lines else "")
+            + f"## 早期記憶總結 (LLM 提煉, V3-H7)\n\n{llm_summary}\n\n"
+            + f"<!-- V3-H7 LLM 壓縮: 原 {len(old_section)} char → 摘要 {len(llm_summary)} char -->\n"
+            + tail
+        )
+    else:
+        # Phase 1 fallback truncate
+        compressed_body = (
+            ("\n".join(preserved_lines) + "\n\n" if preserved_lines else "")
+            + f"<!-- 已壓縮: 舊段約 {len(body) - len(tail) - sum(len(l) for l in preserved_lines)} char (Phase 1 truncate, LLM 不可用) -->\n"
+            + tail
+        )
     new_text = front + compressed_body
     atomic_write(file_path, new_text)
     return True
+
+
+def _llm_compress_old_section(vault_root: Path, old_section: str, file_name: str) -> str:
+    """V3-H7 (user 2026-05-27 拍板): LLM 壓縮舊段成「我曾學過 X」總結.
+
+    對齊 V2 R9 LLM consolidation pattern.
+    失敗回 ""  → fallback truncate.
+    """
+    try:
+        from agent_memory.llm_client import LLMClient
+        from agent_memory.llm_text_helpers import call_llm_for_text
+        client = LLMClient(vault_root)
+    except Exception:
+        return ""
+
+    # 截 8000 char 餵 LLM 避免 prompt overflow
+    excerpt = old_section[:8000]
+    is_memory_md = "MEMORY" in file_name.upper()
+    is_owner_md = "OWNER" in file_name.upper()
+    if is_memory_md:
+        topic_hint = "夥伴自己過去學到的記憶 (self_reflection)"
+        format_hint = "我曾學過: ...; 我發現自己...; 過去經驗教我..."
+    elif is_owner_md:
+        topic_hint = "夥伴對主人的觀察 (主人特性 + 偏好)"
+        format_hint = "主人特性: ...; 主人偏好: ...; 互動模式..."
+    else:
+        topic_hint = "夥伴的過去記憶段"
+        format_hint = "我曾經..."
+
+    prompt = (
+        f"你是夥伴大腦的記憶壓縮 curator. "
+        f"以下是 {topic_hint} 的舊段, 已達 char_limit 需壓縮.\n"
+        f"請濃縮成 2-4 句總結 (≤200 字), 格式如「{format_hint}」.\n"
+        f"留下關鍵 insights, 拋掉細節.\n\n"
+        f"舊段原文:\n{excerpt}\n\n"
+        f"輸出 (僅 2-4 句總結, 無解釋):"
+    )
+    try:
+        result = call_llm_for_text(client, prompt, persona_id="companion", max_tokens=300)
+        summary = (result.text or "").strip()
+        # 簡單清理
+        if summary and len(summary) <= 400:
+            return summary
+        elif summary:
+            return summary[:400]
+    except Exception:
+        return ""
+    return ""
 
 
 def _llm_enabled_for_flush() -> bool:
@@ -301,8 +367,8 @@ def flush_self_memory(
         )
     _append_section(memory_path, section)
 
-    # char limit check
-    compressed = _enforce_char_limit_compress(memory_path, char_limit_mem)
+    # char limit check (V3-H7: 傳 vault_root 開啟 LLM 壓縮路徑)
+    compressed = _enforce_char_limit_compress(memory_path, char_limit_mem, vault_root=vault_root)
 
     return {
         "flushed": True, "reason": "ok",
@@ -358,7 +424,7 @@ def flush_owner_profile(
         )
     _append_section(profile_path, section)
 
-    compressed = _enforce_char_limit_compress(profile_path, char_limit_owner)
+    compressed = _enforce_char_limit_compress(profile_path, char_limit_owner, vault_root=vault_root)
 
     return {
         "flushed": True, "reason": "ok",
