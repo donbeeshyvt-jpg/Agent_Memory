@@ -502,11 +502,181 @@ class ObsidianVaultAdapter(VaultAdapter):
             "## 動作\n\n1. 中之人 review evidence\n2. 同意 → 改 awaiting_active: false + active: true\n"
         )
 
+        # ⭐ V3-M (user 2026-05-27 拍板 全域映射): 補 8 個新 TPL 對齊 16 個寫入區
+        # 對齊每個 writer 的 frontmatter schema, 「全域映射 Obsidian 雙關連模板」
+        tpl_mood_diary = (
+            "---\n"
+            "type: mood_diary\nschema_version: 10\n"
+            "date: <YYYY-MM-DD>\n"
+            "avg_valence: 0.0  # -1~1\n"
+            "avg_arousal: 0.3  # 0~1\n"
+            "dominant_emotions: []  # ['joy', 'sadness', ...]\n"
+            "event_count: 0  # 強情緒事件數\n"
+            "created_at: <iso8601>\n"
+            "---\n"
+            "# TPL_Mood_Diary — 每日心情日記 schema\n\n"
+            "> 對齊 V3 §21.5 + §29.5 + V3-G6 F5.\n"
+            "> 由 curator L3 24h medium 自動寫, markdown_writers.write_mood_diary_md.\n\n"
+            "## 今日感受 (LLM 摘要)\n\n## 平均心情 + 強情緒事件 + 主導情緒\n"
+        )
+
+        tpl_daily_journal = (
+            "---\n"
+            "type: daily_journal\nschema_version: 10\n"
+            "date: <YYYY-MM-DD>\n"
+            "total_interactions: 0\n"
+            "owner_interactions: 0\n"
+            "viewer_interactions: 0\n"
+            "knowledge_added: 0\n"
+            "created_at: <iso8601>\n"
+            "---\n"
+            "# TPL_Daily_Journal — 每日總覽 schema\n\n"
+            "> 對齊 V3 §29.5 + V3-G6 F5.\n"
+            "> 由 curator L3 24h medium 自動寫, markdown_writers.write_daily_journal_md.\n\n"
+            "## 今天的我\n\n總互動 / 跟主人 / 跟觀眾 / 學到知識\n"
+        )
+
+        tpl_self_concept = (
+            "---\n"
+            "type: self_concept\nschema_version: 10\n"
+            "memory_id: <uuid>\n"
+            "user_id: <user_id>\n"
+            "confidence: 0.6  # 0~1\n"
+            "evidence_count: 0\n"
+            "tags: [sleep_cycle, self_concept]\n"
+            "status: semantic\n"
+            "created_at: <iso8601>\n"
+            "knowledge_source: self_reflection\n"
+            "---\n"
+            "# TPL_Self_Concept — 自我提煉概念 schema\n\n"
+            "> 對齊 V3 §11.2 升格 + V3-K2 「自然記憶」.\n"
+            "> 由 curator L3 24h LLM 從 episodic 提煉, semantic_writer.write_semantic_concept.\n\n"
+            "## Claim (我發現)\n\n## Evidence (episodic memories)\n"
+        )
+
+        tpl_narrative = (
+            "---\n"
+            "type: narrative_memory\nschema_version: 10\n"
+            "narrative_id: <uuid>\n"
+            "user_id: <user_id>\n"
+            "theme: <一句話總結關係主題>\n"
+            "relationship_arc: <關係演化, e.g. 從陌生到熟識的試探>\n"
+            "events_count: 0\n"
+            "start_valence: 0.0\n"
+            "peak_valence: 0.0\n"
+            "end_valence: 0.0\n"
+            "period: <YYYY-MM-DD>\n"
+            "created_at: <iso8601>\n"
+            "knowledge_source: narrative_consolidation\n"
+            "---\n"
+            "# TPL_Narrative_Memory — 自我敘事弧 schema\n\n"
+            "> 對齊 V3 §24 + V3-K3 「哲學資料庫」.\n"
+            "> 由 curator L4 7d LLM 對活躍 user 寫, narrative_writer.write_narrative_memory.\n\n"
+            "## 關係演化\n\n## 完整敘事 (LLM 整理 ≤200 字第一人稱)\n\n## 主要事件鏈\n\n## 情緒弧 (start/peak/end valence)\n"
+        )
+
+        tpl_daily_knowledge = (
+            "---\n"
+            "type: daily_knowledge\nschema_version: 10\n"
+            "topic: <topic>\n"
+            "confidence: 0.6  # 0~1\n"
+            "source_event_count: 0\n"
+            "tags: [sleep_cycle, daily]\n"
+            "created_at: <iso8601>\n"
+            "updated_at: <iso8601>\n"
+            "lifecycle_state: mid\n"
+            "knowledge_source: daily_conversation\n"
+            "---\n"
+            "# TPL_Daily_Knowledge — 對話累積知識 schema\n\n"
+            "> 對齊 V3 §13.7 + V3-G4+G5 知識管道 + user 「自然記憶」.\n"
+            "> 由 curator L3 24h LLM 摘要強情緒 episodic, knowledge_base.write_daily_knowledge.\n\n"
+            "## 我學到的\n\n## 來源 raw_events\n"
+        )
+
+        tpl_external_knowledge = (
+            "---\n"
+            "type: external_knowledge\nschema_version: 10\n"
+            "topic: <topic>\n"
+            "confidence: 0.8  # 0~1\n"
+            "source_path: <path or (direct)>\n"
+            "tags: [external]\n"
+            "created_at: <iso8601>\n"
+            "updated_at: <iso8601>\n"
+            "lifecycle_state: long\n"
+            "knowledge_source: external_ingest\n"
+            "---\n"
+            "# TPL_External_Knowledge — 外部文獻知識 schema\n\n"
+            "> 對齊 V3 §13.7 + V3-G4+G5 + MISSION §3.6 文獻吸收致用.\n"
+            "> 由 curator L4 7d LLM 從 _ingest_inbox/ 摘要, knowledge_base.write_external_knowledge.\n"
+            "> 入口: 40_Knowledge_Base/42_External_Knowledge/_ingest_inbox/<file>.md (user 拖檔 / hermes 抓).\n\n"
+            "## 摘要\n\n## 完整內容\n"
+        )
+
+        tpl_preference = (
+            "---\n"
+            "type: preference\nschema_version: 10\n"
+            "user_id: <user_id>\n"
+            "topic: <topic>\n"
+            "strength: 0.5  # 0~1\n"
+            "confidence: 0.6  # 0~1\n"
+            "evidence_count: 0\n"
+            "status: working | episodic | semantic | habit_candidate | persona_candidate\n"
+            "is_owner: false\n"
+            "created_at: <iso8601>\n"
+            "updated_at: <iso8601>\n"
+            "---\n"
+            "# TPL_Preference — 偏好條目 schema\n\n"
+            "> 對齊 V3 §10.2 5 階段升格 + V3-G6 F6 + V3-H2.\n"
+            "> 由 preference_consolidator 升 semantic 時觸發, markdown_writers.write_preference_md.\n"
+            "> owner pref → 61_Owner_Preferences/, viewer pref → 62_Viewer_Preferences/.\n\n"
+            "## 我學到的 (claim)\n\n## 元資料 (strength + confidence + evidence_count + status)\n"
+        )
+
+        tpl_decision_trace = (
+            "---\n"
+            "type: decision_trace\nschema_version: 10\n"
+            "trace_id: <uuid>\n"
+            "user_id: <user_id>\n"
+            "decision: ALLOW_WARM | REFUSE | SAFE_REDIRECT | ALLOW_OWNER_DIRECTIVE | ...\n"
+            "created_at: <iso8601>\n"
+            "---\n"
+            "# TPL_Decision_Trace — 決策 audit schema\n\n"
+            "> 對齊 V3 §14 Decision Engine + §27.4 audit + V3-G6 F7.\n"
+            "> 由 chat_runtime Step 19 寫, markdown_writers.write_decision_trace_md.\n"
+            "> per-turn 一檔, 對齊 Grafana/Tempo audit trail.\n\n"
+            "## User message\n\n## Bot reply\n\n## 8 因子分數\n\n## Hard Rules 觸發\n\n## Policy\n"
+        )
+
+        tpl_injection_audit = (
+            "---\n"
+            "type: injection_audit\nschema_version: 10\n"
+            "detected_id: <uuid>\n"
+            "user_id: <user_id>\n"
+            "risk_score: 0.9  # 0~1\n"
+            "action_taken: scanner_flagged | refused | blocked\n"
+            "created_at: <iso8601>\n"
+            "---\n"
+            "# TPL_Injection_Audit — 注入攻擊 audit schema\n\n"
+            "> 對齊 V3 §27.2 紅線 + V3-E1 Bug 3 scanner + V3-G6 F7.\n"
+            "> 由 chat_runtime Step 17 scanner 攔到時寫, markdown_writers.write_injection_audit_md.\n\n"
+            "## Pattern Matched\n\n## User Message (原文)\n\n## Action\n"
+        )
+
         for tpl_name, body in [
             ("TPL_Emotion_Event", tpl_emotion_event),
             ("TPL_Inside_Joke", tpl_inside_joke),
             ("TPL_Learned_Skill", tpl_learned_skill),
             ("TPL_Persona_Version", tpl_persona_version),
+            # ⭐ V3-M 新加 8 TPL (全域映射所有寫入區)
+            ("TPL_Mood_Diary", tpl_mood_diary),
+            ("TPL_Daily_Journal", tpl_daily_journal),
+            ("TPL_Self_Concept", tpl_self_concept),
+            ("TPL_Narrative_Memory", tpl_narrative),
+            ("TPL_Daily_Knowledge", tpl_daily_knowledge),
+            ("TPL_External_Knowledge", tpl_external_knowledge),
+            ("TPL_Preference", tpl_preference),
+            ("TPL_Decision_Trace", tpl_decision_trace),
+            ("TPL_Injection_Audit", tpl_injection_audit),
         ]:
             self._write_companion_baseline_file(f"99_Templates/{tpl_name}.md", body)
 
