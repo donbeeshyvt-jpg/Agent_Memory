@@ -227,6 +227,30 @@ def _load_vault_system_persona(vault_root: Path) -> str:
     return "\n\n".join(parts) or "(vault 內 system_core 檔未填, 使用 baseline 預設)"
 
 
+def _load_custom_prompt_additions(vault_root: Path) -> str:
+    """讀 00.02_SystemPrompt.md 的「## 自訂指令」區塊 → 注入 system prompt [A+]."""
+    p = vault_root / "00_System_Core" / "00.02_SystemPrompt.md"
+    if not p.exists():
+        return ""
+    try:
+        text = p.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    in_section = False
+    collected: list[str] = []
+    for line in text.splitlines():
+        if line.strip().startswith("## 自訂指令"):
+            in_section = True
+            continue
+        if in_section:
+            if line.startswith("## "):
+                break
+            s = line.strip()
+            if s and not s.startswith("("):
+                collected.append(s)
+    return "\n".join(collected).strip()
+
+
 def _load_recent_memory_tail(vault_root: Path, *, max_chars: int = 600) -> tuple[str, str]:
     """V3-E5 (user 2026-05-27 Q3): 撈 00.07 / 00.08 末段給 LLM 看「我學到了 X / 主人偏好」.
 
@@ -640,6 +664,14 @@ def _build_companion_system_prompt(
     else:
         lines.append(f"[A. 性格設定] {sys_persona}")
         lines.append("")
+
+    # ⭐ 00.02 自訂指令 (中之人額外提醒, 每 turn 重讀)
+    if vault_root is not None:
+        _custom_additions = _load_custom_prompt_additions(vault_root)
+        if _custom_additions:
+            lines.append("[A+. 中之人補充指令 (00.02_SystemPrompt.md)]")
+            lines.append(_custom_additions)
+            lines.append("")
 
     # ⭐ V3-E5/E9 Section B + (C 或 D'): 自學記憶 + (對 owner 撈 owner profile / 對 viewer 撈個別觀察)
     # owner→C 走 00.08_Owner_Profile.md / non-owner→D' 走 _load_viewer_dynamic_context (V3-E9 E5+6)
@@ -1290,6 +1322,7 @@ def run_companion_chat_turn(
         norm_fit=appraisal.norm_fit,
         is_owner=request.is_owner,
         intended_tone=policy.tone,
+        vault_root=vault_root,
     )
     if gov_result.blocked:
         raw_response = gov_result.rewritten_text
@@ -1433,6 +1466,27 @@ def run_companion_chat_turn(
         pass
 
     resp.pipeline_steps_done.append(17)
+
+    # ─── Step 17.4: V3-J1 trait_evolution evidence (對齊 V3 §22 Gap 2) ───
+    # user 2026-05-27 audit Gap 2: trait_evolution writer ready 但 chat_runtime 沒接 hook
+    # 對 identity_relevance>0.5 OR |valence|>0.6 turn 提供 trait evidence
+    # 累積 ≥ 7 evidence → audit_candidate 走 markdown_writers 寫 73_Candidates/
+    try:
+        if appraisal.identity_relevance > 0.5 or abs(new_affect.valence) > 0.6:
+            from agent_memory.companion.trait_evolution import add_trait_evidence
+            from agent_memory.companion.drift_guard import audit_candidate
+            # V3 §22 baseline_balance 主追 (敢玩 vs 穩, 對齊 SOUL baseline_balance)
+            add_trait_evidence(
+                vault_root, request.user_id,
+                "baseline_balance",
+                observation_value=float(new_bal.balance_axis),
+                event_id=event_id,
+            )
+            # evidence>=7 + drift 過 → 自動寫 73_Candidates markdown (走 markdown_writers V3-H2)
+            audit_candidate(vault_root, request.user_id, "baseline_balance")
+    except Exception:
+        pass  # non-critical 失敗不阻塞 chat
+    resp.pipeline_steps_done.append(174)
 
     # ─── Step 17.5: V3-F1 viewer profile markdown (對 non-owner 寫) ───
     # user 2026-05-27 第 3 輪深度觀察 Q2+Q3 拍板 — 觀眾應該有個別記憶塊.

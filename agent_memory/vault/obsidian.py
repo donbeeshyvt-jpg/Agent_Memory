@@ -285,11 +285,24 @@ class ObsidianVaultAdapter(VaultAdapter):
         )
         self._write_companion_baseline_file(
             "00_System_Core/00.02_SystemPrompt.md",
-            "# SystemPrompt\n\n> 對 LLM 的系統指令 + 安全邊界.\n> 動態組裝, 不要手改本檔.\n",
+            "# SystemPrompt\n\n"
+            "> 對 LLM 的系統指令補充. 每 turn 動態讀入, 注入 system prompt [A+] 區塊.\n"
+            "> 在「## 自訂指令」下填寫想要每 turn 額外提醒 LLM 的內容; 留空則不注入.\n"
+            "> 適合用途: 活動期間臨時規則 / 特定話題限制 / 角色補充說明 / 節日特效行為.\n\n"
+            "## 自訂指令\n\n"
+            "(此處填寫額外指令. 每行一條. 留空或全是括號說明則不注入.)\n",
         )
         self._write_companion_baseline_file(
             "00_System_Core/00.03_Governor_Rules.md",
-            "# Governor Rules\n\n> 人格防漂移 + 情緒上限約束.\n> 對齊 V3 §20 Output Governor + Memory Write Gate.\n",
+            "# Governor Rules\n\n"
+            "> 人格防漂移 + 情緒上限約束. 對齊 V3 §20 Output Governor + Memory Write Gate.\n"
+            "> 在「## 自訂禁詞」下列出的詞/短語, 若出現在 LLM 回應中會被 Output Governor (OG0) 即時攔截,\n"
+            "> 並替換為「(這個話題我不太方便說)」.\n"
+            "> 適合用途: 競業限制詞 / 直播平台違禁詞 / 暫時禁止話題.\n\n"
+            "## 自訂禁詞\n\n"
+            "(每行一個詞或短語. 留空或全是括號說明則不啟動 OG0.)\n"
+            "(範例格式 — 刪除此行後填入:)\n"
+            "(- 某個禁止出現的詞彙)\n",
         )
         self._write_companion_baseline_file(
             "00_System_Core/00.04_Safety_Rules.md",

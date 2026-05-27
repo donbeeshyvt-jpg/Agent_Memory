@@ -187,6 +187,24 @@ function Invoke-Layer($layerName, $pythonModuleCall) {
     }
 }
 
+function Check-IngestInbox {
+    # V3-J2 (user 2026-05-27 audit Gap 1): 對齊 V3 §19 Watcher — 偵測 _ingest_inbox/ 新檔
+    # 對 inbox 非空 → 應該強制跑 L4 (不等 7d gate)
+    Push-Location $projectRoot
+    try {
+        $pyCode = "from pathlib import Path; from agent_memory.companion.knowledge_base import list_ingest_inbox; files = list_ingest_inbox(Path(r'$resolvedVault')); print(len(files))"
+        $output = & $pythonExe -X utf8 -c $pyCode 2>&1 | Out-String
+        $output = $output.Trim()
+    }
+    finally {
+        Pop-Location
+    }
+    if ($output -match '^\d+$') {
+        return [int]$output
+    }
+    return 0
+}
+
 function Run-Daemon-Once {
     $state = Read-State
     $nowIso = (Get-Date).ToUniversalTime().ToString("o")
@@ -199,6 +217,12 @@ function Run-Daemon-Once {
     Write-Host "  last L3: $($state['last_layer3_at'])" -ForegroundColor DarkGray
     Write-Host "  last L4: $($state['last_layer4_at'])" -ForegroundColor DarkGray
     Write-Host ""
+
+    # ⭐ V3-J2: 對齊 V3 §19 Watcher — 偵測 _ingest_inbox/ 新檔強制觸發 L4
+    $inboxPending = Check-IngestInbox
+    if ($inboxPending -gt 0) {
+        Write-Host "[WATCH] _ingest_inbox 待整理 $inboxPending 檔, 強制觸發 L4 (跳過 7d gate)" -ForegroundColor Yellow
+    }
 
     $runResults = @()
 
@@ -214,8 +238,12 @@ function Run-Daemon-Once {
         Write-Host "[SKIP] layer3 距上次 < 24h, 跳過" -ForegroundColor DarkGray
     }
 
-    # L4 7d gate
-    if (Should-Run-Layer $state['last_layer4_at'] 168) {
+    # L4 7d gate (或 inbox 有檔強制觸發, V3-J2)
+    $forceL4 = ($inboxPending -gt 0)
+    if ($forceL4 -or (Should-Run-Layer $state['last_layer4_at'] 168)) {
+        if ($forceL4) {
+            Write-Host "[FORCE] L4 觸發 (inbox 有 $inboxPending 檔)" -ForegroundColor Yellow
+        }
         $r = Invoke-Layer "layer4_7d_deep" "run_layer4_7d_deep"
         $runResults += $r
         if ($r.exit_code -eq 0) {
@@ -223,7 +251,7 @@ function Run-Daemon-Once {
         }
     }
     else {
-        Write-Host "[SKIP] layer4 距上次 < 7d, 跳過" -ForegroundColor DarkGray
+        Write-Host "[SKIP] layer4 距上次 < 7d 且 inbox 空, 跳過" -ForegroundColor DarkGray
     }
 
     # Persist state
