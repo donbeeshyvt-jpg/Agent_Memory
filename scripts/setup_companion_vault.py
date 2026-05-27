@@ -219,6 +219,35 @@ def setup_companion_vault(
     print(f"[step 3] owner_state 寫入: user_id={owner_user_id} "
           f"label={owner_label} directive_weight={owner_directive_weight}")
 
+    # ⭐ V3-O.1 (user 2026-05-28 拍板): companion_config.yaml.owner.discord_user_id 跟 owner_state 對齊
+    # bootstrap 已生 baseline yaml (discord_user_id=""), 此處用 --owner-user-id 填回去
+    # 對齊 V3-L owner 判定鏈: companion_config.yaml 優先, fallback DB owner_state
+    config_yaml = vault / "00_System_Core" / "companion_config.yaml"
+    if config_yaml.exists():
+        import re
+        text = config_yaml.read_text(encoding="utf-8")
+        new_text = re.sub(
+            r'(\n\s*discord_user_id:\s*)""([ \t]*#[^\n]*)?',
+            lambda m: f'{m.group(1)}"{owner_user_id}"{m.group(2) or ""}',
+            text,
+            count=1,
+        )
+        new_text = re.sub(
+            r'(\n\s*label:\s*)"中之人"',
+            f'\\g<1>"{owner_label}"',
+            new_text,
+            count=1,
+        )
+        new_text = re.sub(
+            r'(\n\s*directive_acceptance_weight:\s*)[0-9.]+',
+            f'\\g<1>{owner_directive_weight}',
+            new_text,
+            count=1,
+        )
+        if new_text != text:
+            config_yaml.write_text(new_text, encoding="utf-8")
+            print(f"[step 3b] companion_config.yaml.owner 對齊 (discord_user_id={owner_user_id})")
+
     # 建 Companion SOUL.md placeholder (使用者要去填角色設定)
     soul_full = vault / soul_path
     if not soul_full.exists():
