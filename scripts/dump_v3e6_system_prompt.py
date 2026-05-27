@@ -1,9 +1,13 @@
 # -*- coding: utf-8 -*-
-"""V3-E6/E7/E9: dump 完整 system prompt 給 user 看 (owner + viewer 兩個 scenario)
+"""V3-G 全收尾 dump: 完整 system prompt 含全部新 sections
 
 V3-E6: G+ section 綜合應用 framing
 V3-E7: section E 數字 → 主觀感受句翻譯 (_humanize_affect)
 V3-E9 (E5+6): section D' 對 non-owner 加觀眾個別記憶塊
+V3-G1: section F memory_ctx[:2400] 鬆綁 (4-layer 80% 上 prompt)
+V3-G2: section F2 (H3 白日夢) + F3 (流量模式)
+V3-G3: section E2 (H4 身體感, 對長直播)
+V3-G4: section F4 (40_Knowledge_Base 日常+外部 RAG)
 
 跑法:
   cd Z:\\Cursor練習用\\Agent_Memory\\agent-memory-core
@@ -23,8 +27,7 @@ from agent_memory.companion.companion_chat_runtime import (
 
 VAULT = Path(r"Z:/Cursor練習用/Agent_Memory/test/SecondBrains/companion_test")
 
-# 模擬一個 prompt_packet (mid-chat 第 5 turn, user 難過 + 想搞笑掩飾, intim 0.8 owner)
-# V3-E7 sample: 完整 emotion + balance 8 子軸 → 看 _humanize_affect 多軸組合效果
+# 模擬一個 owner turn (mid-chat 第 50 turn, user 難過 + 想搞笑掩飾, intim 0.8, 6 小時長直播)
 prompt_packet = {
     "affect": {"valence": -0.4, "arousal": 0.55, "dominance": 0.45, "uncertainty": 0.55},
     "emotion": {
@@ -46,8 +49,37 @@ prompt_packet = {
         "is_owner": True,
     },
     "decision": "ALLOW_OWNER_DIRECTIVE",
-    "memory_context": "[mid-term] 主人最近在做 V3 開發 / 喜歡用比喻溝通\n[episodic] 上次說過「想要更貼心的回應」",
+    "memory_context": (
+        "<memory-context>\n"
+        "# recent (短期)\n"
+        "[L1] 主人剛說: 我今天好累\n"
+        "[L1] 我回: 抱抱~\n"
+        "[L1] 主人說: 工作搞砸了\n"
+        "# episodic recall (中期, mood-congruent)\n"
+        "[recall ep-001] 上週主人也說累, 我建議散步\n"
+        "[recall ep-002] 主人喜歡比喻溝通\n"
+        "# self/owner/goals (長期)\n"
+        "[L3] 我學到: 主人偏好直接 + 不繞圈廢話\n"
+        "[L3] active_goal: 陪主人放鬆\n"
+        "# dynamic\n"
+        "[dyn knowledge_gap] 主人提過「散步路線」我沒查\n"
+        "</memory-context>"
+    ),
     "system_persona": "companion baseline",
+    # ⭐ V3-G2 H3 白日夢 + 流量模式
+    "daydream": "想到剛才主人提到的 散步, 我可以多展開 路線建議",
+    "flow_mode": "dead_chat_mode",  # 6hr 後沒人說話
+    # ⭐ V3-G3 H4 身體感 (6hr 直播)
+    "embodied": {
+        "energy": 0.5, "hunger": 0.0, "thirst": 0.48,
+        "sleepiness": 0.12, "voice_strain": 0.36,
+        "stream_duration_minutes": 360,
+    },
+    # ⭐ V3-G4 知識庫 hits
+    "knowledge_hits": [
+        {"path": "40_Knowledge_Base/41_Daily_Knowledge/工作累.md", "summary": "主人累的時候喜歡比喻陪伴 + 散步建議", "score": 0.85, "source": "daily"},
+        {"path": "40_Knowledge_Base/42_External_Knowledge/史萊姆角色設定.md", "summary": "水做的, 滑溜溜, 撒嬌", "score": 0.72, "source": "external"},
+    ],
 }
 
 print("=" * 80)
