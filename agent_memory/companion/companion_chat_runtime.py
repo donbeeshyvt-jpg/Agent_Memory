@@ -252,24 +252,68 @@ def _load_custom_prompt_additions(vault_root: Path) -> str:
 
 
 def _load_recent_memory_tail(vault_root: Path, *, max_chars: int = 600) -> tuple[str, str]:
-    """V3-E5 (user 2026-05-27 Q3): 撈 00.07 / 00.08 末段給 LLM 看「我學到了 X / 主人偏好」.
+    """V3-E5 撈 00.07 / 00.08 末段給 LLM 看「我學到了 X / 主人偏好」.
 
-    對應 user 提案「加上近期記憶」. 只撈末段避免 context 爆量.
+    V3-O.3 (user 2026-05-28 拍板): 過濾掉 YAML frontmatter + > 引言 + # 標題 + 空 placeholder
+    避免 LLM 看到 `--- type: companion_memory schema_version: 10 ---` 這類 noise.
+    fresh vault 全 placeholder 時回空字串 (caller skip 該 section).
     """
+    def _filter(text: str) -> str:
+        out: list[str] = []
+        in_frontmatter = False
+        placeholder_markers = (
+            "尚未累積", "self_reflection_loop 將自動填",
+            "(待填)", "(待中之人填)", "(例:", "(例：",
+        )
+        for raw in text.splitlines():
+            line = raw.rstrip()
+            stripped = line.strip()
+            if stripped == "---":
+                in_frontmatter = not in_frontmatter
+                continue
+            if in_frontmatter:
+                continue
+            if not stripped:
+                out.append("")
+                continue
+            if stripped.startswith(">"):
+                continue
+            if stripped.startswith("#") and stripped != "##":
+                # 跳 H1/H2/H3 標題
+                continue
+            if any(m in stripped for m in placeholder_markers):
+                continue
+            out.append(line)
+        # 折疊連續空行
+        collapsed: list[str] = []
+        last_empty = False
+        for line in out:
+            if not line.strip():
+                if last_empty:
+                    continue
+                last_empty = True
+            else:
+                last_empty = False
+            collapsed.append(line)
+        result = "\n".join(collapsed).strip()
+        return result
+
     mem_tail = ""
     prof_tail = ""
     mem_path = vault_root / "00_System_Core" / "00.07_Companion_MEMORY.md"
     prof_path = vault_root / "00_System_Core" / "00.08_Owner_Profile.md"
     try:
         if mem_path.exists():
-            text = mem_path.read_text(encoding="utf-8")
-            mem_tail = text[-max_chars:] if len(text) > max_chars else text
+            full = mem_path.read_text(encoding="utf-8")
+            filtered = _filter(full)
+            mem_tail = filtered[-max_chars:] if len(filtered) > max_chars else filtered
     except Exception:
         pass
     try:
         if prof_path.exists():
-            text = prof_path.read_text(encoding="utf-8")
-            prof_tail = text[-max_chars:] if len(text) > max_chars else text
+            full = prof_path.read_text(encoding="utf-8")
+            filtered = _filter(full)
+            prof_tail = filtered[-max_chars:] if len(filtered) > max_chars else filtered
     except Exception:
         pass
     return mem_tail, prof_tail
