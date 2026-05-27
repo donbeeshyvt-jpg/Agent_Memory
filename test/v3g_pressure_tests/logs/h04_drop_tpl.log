@@ -1,0 +1,30 @@
+[2026-05-27 16:48:23] ======================================================================
+[2026-05-27 16:48:23] V3-H4 PRESSURE TEST: 殘-07 廢 emotion_distribution + 殘-10 4 TPL schema
+[2026-05-27 16:48:23] ======================================================================
+[2026-05-27 16:48:23] 
+[Test 1] companion_db.py 不再 CREATE TABLE emotion_distribution
+[2026-05-27 16:48:23]   ✅ PASS: CREATE emotion_distribution 已移除
+[2026-05-27 16:48:23] 
+[Test 2] _DROP_LEGACY_TABLES 含 emotion_distribution DROP
+[2026-05-27 16:48:23]   ✅ PASS: DROP migration ✓
+[2026-05-27 16:48:23] 
+[Test 3] ensure_companion_db 跑完 ≥28 表 (V3-H4 廢 1 表)
+[2026-05-27 16:48:24]   total tables = 28
+[2026-05-27 16:48:24]   ✅ PASS: ≥ 28 表 (28)
+[2026-05-27 16:48:24]   ✅ PASS: emotion_distribution 已廢
+[2026-05-27 16:48:24] 
+[Test 4] 既有 db 含 emotion_distribution → ensure_companion_db DROP 之
+[2026-05-27 16:48:24]   ✅ PASS: migration 成功 DROP 既有 emotion_distribution
+[2026-05-27 16:48:24] 
+[Test 5] obsidian.py 4 TPL 含 schema_version + frontmatter 真實
+[2026-05-27 16:48:24]   ✅ TPL_Emotion_Event 真實 ✓
+[2026-05-27 16:48:24]   ✅ TPL_Inside_Joke 真實 ✓
+[2026-05-27 16:48:24]   ✅ TPL_Learned_Skill 真實 ✓
+[2026-05-27 16:48:24]   ✅ TPL_Persona_Version 真實 ✓
+[2026-05-27 16:48:24] 
+[Test 6] 5 TPL all real schema (V3-G6 + V3-H4)
+[2026-05-27 16:48:24]   ✅ PASS: TPL_Viewer (V3-G6 + V3-H4 4 TPL) 全 active
+[2026-05-27 16:48:24] 
+======================================================================
+[2026-05-27 16:48:24] ✅ V3-H4 全壓測 PASS
+[2026-05-27 16:48:24] ======================================================================

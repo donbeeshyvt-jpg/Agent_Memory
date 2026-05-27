@@ -20,6 +20,32 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+
+def _load_custom_governor_rules(vault_root: Path) -> tuple[str, ...]:
+    """讀 00.03_Governor_Rules.md 的「## 自訂禁詞」區塊 → Rule OG0 攔截清單."""
+    p = vault_root / "00_System_Core" / "00.03_Governor_Rules.md"
+    if not p.exists():
+        return ()
+    try:
+        text = p.read_text(encoding="utf-8")
+    except Exception:
+        return ()
+    in_section = False
+    phrases: list[str] = []
+    for line in text.splitlines():
+        if line.strip().startswith("## 自訂禁詞"):
+            in_section = True
+            continue
+        if in_section:
+            if line.startswith("## "):
+                break
+            s = line.strip().lstrip("- ").strip()
+            if s and not s.startswith("("):
+                phrases.append(s)
+    return tuple(phrases)
 
 
 # Consciousness claim keyword (§27.2 紅線)
@@ -52,8 +78,19 @@ def govern_output(
     norm_fit: float = 1.0,
     is_owner: bool = False,
     intended_tone: str = "calm_direct",
+    vault_root: Optional[Path] = None,
 ) -> GovernorResult:
     """V3 §20.1: Output Governor 主入口."""
+    # Rule 0: 自訂禁詞 (00.03_Governor_Rules.md ## 自訂禁詞)
+    if vault_root is not None:
+        for phrase in _load_custom_governor_rules(vault_root):
+            if phrase in response_text:
+                return GovernorResult(
+                    blocked=True,
+                    rewritten_text="(這個話題我不太方便說)",
+                    reason=f"custom_forbidden: {phrase[:40]}",
+                    rule_triggered="OG0",
+                )
     # Rule 1: consciousness claim
     for claim in _CONSCIOUSNESS_CLAIMS:
         if claim in response_text:

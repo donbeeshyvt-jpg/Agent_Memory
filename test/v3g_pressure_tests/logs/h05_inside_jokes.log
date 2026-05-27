@@ -1,0 +1,34 @@
+[2026-05-27 17:10:33] ======================================================================
+[2026-05-27 17:10:33] V3-H5 PRESSURE TEST: 殘-11 H8 Inside Jokes
+[2026-05-27 17:10:33] ======================================================================
+[2026-05-27 17:10:33] 
+[Test 1] inside_joke_writer helpers
+[2026-05-27 17:10:33]   ✅ PASS: 4 helpers + dir const imported
+[2026-05-27 17:10:33] 
+[Test 2] detect_inside_jokes_for_user 重複 keyword ≥ 3
+[2026-05-27 17:10:33]   jokes detected = 16
+[2026-05-27 17:10:33]   ✅ PASS: 偵測到 'randomizer' (count=5)
+[2026-05-27 17:10:33] 
+[Test 3] write_inside_joke_md 寫 20_Audience_Graph/23_Inside_Jokes/
+[2026-05-27 17:10:33]   ✅ PASS: 寫到 20_Audience_Graph\23_Inside_Jokes\randomizer_user-h5.md
+[2026-05-27 17:10:33] 
+[Test 4] list_active_inside_jokes intimacy threshold filter
+[2026-05-27 17:10:33]   jokes for intim=0.5 = ['kw_low']
+[2026-05-27 17:10:33]   ✅ PASS: intim=0.5 filter 對
+[2026-05-27 17:10:33]   ✅ PASS: intim=0.9 看到 2 個
+[2026-05-27 17:10:33] 
+[Test 5] maybe_inject_inside_joke playfulness/intim/random 條件
+[2026-05-27 17:10:33]   100 次跑, 注入 8 次 (期望 ~10)
+[2026-05-27 17:10:33]   ✅ PASS: 注入率 8% ~10% (random distribution)
+[2026-05-27 17:10:33]   ✅ PASS: playfulness<0.5 → 不注入
+[2026-05-27 17:10:33]   ✅ PASS: intim<0.4 → 不注入
+[2026-05-27 17:10:33] 
+[Test 6] curator L3 加 _detect_inside_jokes_pass
+[2026-05-27 17:10:33]   ✅ PASS: curator L3 hook
+[2026-05-27 17:10:33] 
+[Test 7] chat_runtime 加 maybe_inject_inside_joke hook
+[2026-05-27 17:10:33]   ✅ PASS: chat_runtime 接 hook
+[2026-05-27 17:10:33] 
+======================================================================
+[2026-05-27 17:10:33] ✅ V3-H5 全壓測 PASS
+[2026-05-27 17:10:33] ======================================================================

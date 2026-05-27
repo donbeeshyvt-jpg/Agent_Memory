@@ -1,0 +1,76 @@
+[2026-05-27 19:39:13] ======================================================================
+[2026-05-27 19:39:13] V3-J1 + V3-J2 PRESSURE TEST: trait_evolution hook + watcher inbox
+[2026-05-27 19:39:13] ======================================================================
+[2026-05-27 19:39:13] 
+[Test 1] chat_runtime Step 17.4 加 trait_evolution hook
+[2026-05-27 19:39:13]   ✅ PASS: Step 17.4 hook 存在
+[2026-05-27 19:39:13]   ✅ PASS: add_trait_evidence + audit_candidate 接上
+[2026-05-27 19:39:13] 
+[Test 2] 7 次 add_trait_evidence → audit_candidate 寫 73_Candidates
+[2026-05-27 19:39:13]   add_trait_evidence 跑 7 次, last result = {'action': 'candidate_proposed', 'evidence_count': 7, 'proposed_value': 0.56, 'awaiting_drift_guard': True}
+[2026-05-27 19:39:13]   audit drift=0.392, passed=False
+[2026-05-27 19:39:13]   candidate_path=
+[2026-05-27 19:39:13]   ❌ FAIL: 7 evidence + drift 應該 pass, 但 drift_too_low (0.39 < 0.5)
+[2026-05-27 19:39:13] 
+[Test 3] daemon Check-IngestInbox helper 存在
+[2026-05-27 19:39:13]   ✅ PASS: Check-IngestInbox 存在
+[2026-05-27 19:39:13]   ✅ PASS: call list_ingest_inbox
+[2026-05-27 19:39:13] 
+[Test 4] daemon 對 inbox 有檔 force L4 (skip 7d gate)
+[2026-05-27 19:39:13]   ✅ PASS: forceL4 邏輯接上
+[2026-05-27 19:39:13]   ✅ PASS: force log marker
+[2026-05-27 19:39:13] 
+======================================================================
+[2026-05-27 19:39:13] ❌ V3-J 壓測有 1 個 FAIL
+[2026-05-27 19:39:13] ======================================================================
+[2026-05-27 19:39:24] ======================================================================
+[2026-05-27 19:39:24] V3-J1 + V3-J2 PRESSURE TEST: trait_evolution hook + watcher inbox
+[2026-05-27 19:39:24] ======================================================================
+[2026-05-27 19:39:24] 
+[Test 1] chat_runtime Step 17.4 加 trait_evolution hook
+[2026-05-27 19:39:24]   ✅ PASS: Step 17.4 hook 存在
+[2026-05-27 19:39:24]   ✅ PASS: add_trait_evidence + audit_candidate 接上
+[2026-05-27 19:39:24] 
+[Test 2] 7 次 add_trait_evidence → audit_candidate 寫 73_Candidates
+[2026-05-27 19:39:24]   add_trait_evidence 跑 7 次, last result = {'action': 'candidate_proposed', 'evidence_count': 7, 'proposed_value': 0.56, 'awaiting_drift_guard': True}
+[2026-05-27 19:39:24]   audit drift=0.392, passed=False
+[2026-05-27 19:39:24]   candidate_path=
+[2026-05-27 19:39:24]   ❌ FAIL: 7 evidence + drift 應該 pass, 但 drift_too_low (0.39 < 0.5)
+[2026-05-27 19:39:24] 
+[Test 3] daemon Check-IngestInbox helper 存在
+[2026-05-27 19:39:24]   ✅ PASS: Check-IngestInbox 存在
+[2026-05-27 19:39:24]   ✅ PASS: call list_ingest_inbox
+[2026-05-27 19:39:24] 
+[Test 4] daemon 對 inbox 有檔 force L4 (skip 7d gate)
+[2026-05-27 19:39:24]   ✅ PASS: forceL4 邏輯接上
+[2026-05-27 19:39:24]   ✅ PASS: force log marker
+[2026-05-27 19:39:24] 
+======================================================================
+[2026-05-27 19:39:24] ❌ V3-J 壓測有 1 個 FAIL
+[2026-05-27 19:39:24] ======================================================================
+[2026-05-27 19:39:42] ======================================================================
+[2026-05-27 19:39:42] V3-J1 + V3-J2 PRESSURE TEST: trait_evolution hook + watcher inbox
+[2026-05-27 19:39:42] ======================================================================
+[2026-05-27 19:39:42] 
+[Test 1] chat_runtime Step 17.4 加 trait_evolution hook
+[2026-05-27 19:39:42]   ✅ PASS: Step 17.4 hook 存在
+[2026-05-27 19:39:42]   ✅ PASS: add_trait_evidence + audit_candidate 接上
+[2026-05-27 19:39:42] 
+[Test 2] 7 次 add_trait_evidence → audit_candidate 寫 73_Candidates
+[2026-05-27 19:39:42]   add_trait_evidence 跑 7 次, last result = {'action': 'candidate_proposed', 'evidence_count': 7, 'proposed_value': 0.9099999999999999, 'awaiting_drift_guard': True}
+[2026-05-27 19:39:42]   audit drift=0.637, passed=True
+[2026-05-27 19:39:42]   candidate_path=70_Persona_Versions\73_Candidates\baseline_balance_7ef0c8a9-303e-415b-b638-c2d35219e930.md
+[2026-05-27 19:39:42]   ✅ PASS: 寫了 1 個 candidate.md
+[2026-05-27 19:39:42]   ✅ PASS: schema superset (V3-H2) 對齊
+[2026-05-27 19:39:42] 
+[Test 3] daemon Check-IngestInbox helper 存在
+[2026-05-27 19:39:42]   ✅ PASS: Check-IngestInbox 存在
+[2026-05-27 19:39:42]   ✅ PASS: call list_ingest_inbox
+[2026-05-27 19:39:42] 
+[Test 4] daemon 對 inbox 有檔 force L4 (skip 7d gate)
+[2026-05-27 19:39:42]   ✅ PASS: forceL4 邏輯接上
+[2026-05-27 19:39:42]   ✅ PASS: force log marker
+[2026-05-27 19:39:42] 
+======================================================================
+[2026-05-27 19:39:42] ✅ V3-J1 + V3-J2 全壓測 PASS
+[2026-05-27 19:39:42] ======================================================================

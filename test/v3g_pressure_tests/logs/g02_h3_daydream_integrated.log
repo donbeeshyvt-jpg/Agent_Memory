@@ -1,0 +1,35 @@
+[2026-05-27 06:13:37] ======================================================================
+[2026-05-27 06:13:37] V3-G2 PRESSURE TEST: H3 Daydream + flow_mode_detector integration
+[2026-05-27 06:13:37] ======================================================================
+[2026-05-27 06:13:37] 
+[Test 1] chat_runtime 真的 import daydream + flow_mode_detector
+[2026-05-27 06:13:37]   ✅ PASS: daydream_engine imported
+[2026-05-27 06:13:37]   ✅ PASS: flow_mode_detector imported
+[2026-05-27 06:13:37]   ✅ PASS: Step 11.8 generate_daydream call 存在
+[2026-05-27 06:13:37] 
+[Test 2] idle_seconds=60 → daydream_text 非空
+[2026-05-27 06:13:37]   daydream_text = '想到剛才 viewer 提到的 randomizer mod, 我可以多展開 我還沒查清楚...'
+[2026-05-27 06:13:37]   ✅ PASS: daydream_text 有內容 (45 char)
+[2026-05-27 06:13:37] 
+[Test 3] _build_companion_system_prompt 認得 daydream + flow_mode
+[2026-05-27 06:13:37]   ✅ PASS: section F2 出現
+[2026-05-27 06:13:37]   ✅ PASS: daydream_text 進 prompt
+[2026-05-27 06:13:37]   ✅ PASS: section F3 流量模式出現
+[2026-05-27 06:13:37]   ✅ PASS: flow_mode dead_chat_mode 進 prompt
+[2026-05-27 06:13:37] 
+[Test 4] dead_chat_mode → daydream.externally_visible=True
+[2026-05-27 06:13:37]   ✅ PASS: dead_chat 外顯
+[2026-05-27 06:13:37] 
+[Test 5] maybe_emit_daydream dead_chat 加前綴
+[2026-05-27 06:13:37]   ✅ PASS: 加前綴 — (自言自語: 想到剛才 viewer 提到的 等下要說什麼, 我可以多展開 預想一下)
+Hello ...
+[2026-05-27 06:13:37] 
+[Test 6] idle_seconds=10 → daydream_text 為空
+[2026-05-27 06:13:37]   ✅ PASS: idle=10 不觸發 daydream
+[2026-05-27 06:13:37] 
+[Test 7] normal_mode → section F3 不應出現 (避免 LLM 雜訊)
+[2026-05-27 06:13:37]   ✅ PASS: normal_mode 不出 F3
+[2026-05-27 06:13:37] 
+======================================================================
+[2026-05-27 06:13:37] ✅ V3-G2 全壓測 PASS (10/10)
+[2026-05-27 06:13:37] ======================================================================

@@ -1,0 +1,29 @@
+[2026-05-27 19:25:46] ======================================================================
+[2026-05-27 19:25:46] V3-I1 PRESSURE TEST: companion-curator-daemon.ps1 smoke
+[2026-05-27 19:25:46] ======================================================================
+[2026-05-27 19:25:46] 
+[Test 1] daemon script 檔案存在
+[2026-05-27 19:25:46]   ✅ PASS: companion-curator-daemon.ps1 存在
+[2026-05-27 19:25:46] 
+[Test 2] daemon script 含關鍵 helper functions
+[2026-05-27 19:25:46]   ✅ Read-State ✓
+[2026-05-27 19:25:46]   ✅ Write-State ✓
+[2026-05-27 19:25:46]   ✅ Should-Run-Layer ✓
+[2026-05-27 19:25:46]   ✅ Invoke-Layer ✓
+[2026-05-27 19:25:46]   ✅ Run-Daemon-Once ✓
+[2026-05-27 19:25:46] 
+[Test 3] daemon 對 test vault 跑通 (use existing state)
+[2026-05-27 19:25:46]   ✅ PASS: state JSON valid + 含 last_layer3_at + last_layer4_at
+[2026-05-27 19:25:46]     last_layer3_at = 2026-05-27T11:24:50.71713
+[2026-05-27 19:25:46]     last_layer4_at = 2026-05-27T11:24:50.97656
+[2026-05-27 19:25:46] 
+[Test 4] daemon_runs.jsonl 寫對 (每筆 valid JSON)
+[2026-05-27 19:25:46]   total log lines = 1, valid = 0
+[2026-05-27 19:25:46]   ⚠️ partial: 沒 valid JSON lines (daemon 還沒跑過)
+[2026-05-27 19:25:46] 
+[Test 5] daemon 含 -ShowSchedule flag
+[2026-05-27 19:25:46]   ✅ PASS: -ShowSchedule 印 schtasks 命令
+[2026-05-27 19:25:46] 
+======================================================================
+[2026-05-27 19:25:46] ✅ V3-I1 daemon smoke 全 PASS
+[2026-05-27 19:25:46] ======================================================================

@@ -1,0 +1,33 @@
+[2026-05-27 07:06:52] ======================================================================
+[2026-05-27 07:06:52] V3-G6 PRESSURE TEST: 5 區 markdown writers (F2/F3/F5/F6/F7)
+[2026-05-27 07:06:52] ======================================================================
+[2026-05-27 07:06:52] 
+[Test 1] markdown_writers helpers
+[2026-05-27 07:06:52]   ✅ PASS: 7 writers + 2 dir consts imported
+[2026-05-27 07:06:52] 
+[Test 2] F2 write_emotion_event_md
+[2026-05-27 07:06:52]   ✅ PASS: F2 寫 30_Emotional_State\32_Appraisal_Events\evt-test-1.md
+[2026-05-27 07:06:52] 
+[Test 3] F3 write_drift_candidate_md
+[2026-05-27 07:06:52]   ✅ PASS: F3 寫 70_Persona_Versions\73_Candidates\baseline_balance_2026-05-26T23-06-52.md
+[2026-05-27 07:06:52] 
+[Test 4] F5 mood_diary + daily_journal
+[2026-05-27 07:06:52]   ✅ PASS: F5 mood + journal 寫 2026-05-27.md + 2026-05-27.md
+[2026-05-27 07:06:52] 
+[Test 5] F6 preference owner / viewer 分流
+[2026-05-27 07:06:52]   ✅ PASS: F6 owner+viewer 分流對
+[2026-05-27 07:06:52] 
+[Test 6] F7 decision_trace + injection_audit
+[2026-05-27 07:06:52]   ✅ PASS: F7 trace + injection audit 寫
+[2026-05-27 07:06:52] 
+[Test 7] chat_runtime Step 17 + Step 19 接 markdown_writers
+[2026-05-27 07:06:52]   ✅ PASS: Step 17 F2 hook
+[2026-05-27 07:06:52]   ✅ PASS: Step 17 F7 injection hook
+[2026-05-27 07:06:52]   ✅ PASS: Step 19 F7 trace hook
+[2026-05-27 07:06:52] 
+[Test 8] curator L3 加 F5 mood + journal hook
+[2026-05-27 07:06:52]   ✅ PASS: curator L3 F5 hook 存在
+[2026-05-27 07:06:52] 
+======================================================================
+[2026-05-27 07:06:52] ✅ V3-G6 全壓測 PASS
+[2026-05-27 07:06:52] ======================================================================

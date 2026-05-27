@@ -298,10 +298,22 @@ def _map_companion_channel_type(transport: str, payload: dict[str, Any]) -> str:
     return "public_text_channel"
 
 
-def _check_is_owner(vault_root: Path, user_id: str) -> bool:
-    """V3-D-DC1: 對比 companion.db owner_state.owner_user_id."""
+def _check_is_owner(vault_root: Path, user_id: str, transport: str = "") -> bool:
+    """owner 判定: companion_config.yaml (優先) → DB owner_state (fallback).
+
+    yaml 可直接編輯生效; DB 是 setup_companion_vault.py 寫入的 legacy 備援.
+    """
     if not user_id:
         return False
+    # 1. companion_config.yaml — 各平台 owner user_id
+    try:
+        from agent_memory.companion.companion_config import get_owner_user_id_for_transport
+        yaml_owner_id = get_owner_user_id_for_transport(vault_root, transport)
+        if yaml_owner_id and yaml_owner_id == user_id:
+            return True
+    except Exception:
+        pass
+    # 2. DB owner_state fallback (setup_companion_vault.py 寫入的)
     try:
         from agent_memory.companion.companion_db import open_companion_db
         with open_companion_db(vault_root) as conn:
@@ -330,6 +342,48 @@ def _append_companion_session_log(vault_root: Path, user_id: str, message: str, 
         f.write(line)
 
 
+def _handle_hermes_ingest(vault_root: Path, turn: "InboundTurn") -> dict[str, Any]:
+    """hermes 送來的資料 → 直接寫 40_Knowledge_Base/_ingest_inbox, 跳過 22-step.
+
+    不計入親密度/情緒. curator L4 7d 會自動 LLM 摘要此 inbox.
+    """
+    from datetime import datetime, timezone
+    from agent_memory.companion.knowledge_base import INGEST_INBOX_DIR
+    from agent_memory.security.atomic import atomic_write
+
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    filename = f"hermes_{ts}_{(turn.user_id or 'unknown')[:12]}"
+    inbox_dir = vault_root / INGEST_INBOX_DIR
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    path = inbox_dir / f"{filename}.md"
+    content = (
+        "---\n"
+        "source: hermes\n"
+        f"user_id: {turn.user_id}\n"
+        f"transport: {turn.transport}\n"
+        f"received_at: {datetime.now(timezone.utc).isoformat()}\n"
+        "---\n\n"
+        f"{turn.message}\n"
+    )
+    ack = "(文獻已收到，排入知識整理佇列)"
+    try:
+        atomic_write(path, content)
+    except Exception as exc:
+        ack = f"(收取失敗: {type(exc).__name__})"
+
+    return {
+        "transport": turn.transport,
+        "channel_id": turn.channel_id,
+        "user_id": turn.user_id,
+        "response": ack,
+        "brain_type": "companion",
+        "persona": "companion",
+        "is_hermes": True,
+        "routed_to": str(path),
+        "degraded": False,
+    }
+
+
 def _run_companion_transport_event(
     *, vault_root: Path, transport: str, payload: dict[str, Any],
     explicit_persona: str | None = None,
@@ -349,7 +403,15 @@ def _run_companion_transport_event(
     turn = parse_inbound_turn(transport, payload, profiles)
     injection_scan = scan_incoming_user_text(turn.message)
 
-    is_owner = _check_is_owner(vault_root, turn.user_id)
+    # hermes 送來 → 直接進 40_Knowledge_Base, 不走聊天管道
+    try:
+        from agent_memory.companion.companion_config import is_hermes_sender
+        if is_hermes_sender(vault_root, turn.user_id):
+            return _handle_hermes_ingest(vault_root, turn)
+    except Exception:
+        pass
+
+    is_owner = _check_is_owner(vault_root, turn.user_id, transport=turn.transport)
     channel_type = _map_companion_channel_type(turn.transport, payload)
 
     req = ChatRequest(

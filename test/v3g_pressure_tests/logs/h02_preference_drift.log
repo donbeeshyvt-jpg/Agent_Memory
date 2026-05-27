@@ -1,0 +1,28 @@
+[2026-05-27 15:41:40] ======================================================================
+[2026-05-27 15:41:40] V3-H2 PRESSURE TEST: 殘-03 preference + 殘-04 drift_guard 路徑
+[2026-05-27 15:41:40] ======================================================================
+[2026-05-27 15:41:40] 
+[Test 1] drift_guard.py 不再直接 atomic_write 73_Candidates/
+[2026-05-27 15:41:40]   ✅ PASS: 廢除直接 atomic_write
+[2026-05-27 15:41:40] 
+[Test 2] drift_guard 走 markdown_writers canonical
+[2026-05-27 15:41:40]   ✅ PASS: import write_drift_candidate_md
+[2026-05-27 15:41:40]   ✅ PASS: call write_drift_candidate_md
+[2026-05-27 15:41:40] 
+[Test 3] write_drift_candidate_md schema superset (user_id + current_value + awaiting_human_confirm)
+[2026-05-27 15:41:40]   ✅ user_id field
+[2026-05-27 15:41:40]   ✅ current_value field
+[2026-05-27 15:41:40]   ✅ awaiting_human_confirm (backward compat)
+[2026-05-27 15:41:40]   ✅ awaiting_active (V3-G6 新)
+[2026-05-27 15:41:40] 
+[Test 4] preference_consolidator 升 semantic 呼叫 write_preference_md
+[2026-05-27 15:41:40]   ✅ PASS: preference_consolidator import
+[2026-05-27 15:41:40]   ✅ PASS: preference_consolidator call writer
+[2026-05-27 15:41:40] 
+[Test 5] write_preference_md owner→61 / viewer→62 (regression)
+[2026-05-27 15:41:40]   ✅ PASS: owner→61_Owner_Preferences
+[2026-05-27 15:41:40]   ✅ PASS: viewer→62_Viewer_Preferences
+[2026-05-27 15:41:40] 
+======================================================================
+[2026-05-27 15:41:40] ✅ V3-H2 全壓測 PASS
+[2026-05-27 15:41:40] ======================================================================

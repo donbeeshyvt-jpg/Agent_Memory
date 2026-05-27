@@ -1,0 +1,29 @@
+[2026-05-27 06:41:08] ======================================================================
+[2026-05-27 06:41:08] V3-G5 PRESSURE TEST: curator L3+L4 LLM 摘要 + V3-F4 知識管道
+[2026-05-27 06:41:08] ======================================================================
+[2026-05-27 06:41:08] 
+[Test 1] companion_curator new helpers imported
+[2026-05-27 06:41:08]   ✅ PASS: 4 helpers + CuratorRunResult
+[2026-05-27 06:41:08] 
+[Test 2] run_layer3_24h_medium 對空 db 不爆 + 新 step 接上
+[2026-05-27 06:41:08]   layer3 result.layer = layer3_24h_medium
+[2026-05-27 06:41:08]   actions = []
+[2026-05-27 06:41:08]   ✅ PASS: layer3 跑通
+[2026-05-27 06:41:08] 
+[Test 3] run_layer4_7d_deep 對空 inbox 不爆
+[2026-05-27 06:41:08]   layer4 result.layer = layer4_7d_deep
+[2026-05-27 06:41:08]   actions = ['long_term_archive(0)']
+[2026-05-27 06:41:08]   ✅ PASS: layer4 跑通
+[2026-05-27 06:41:08] 
+[Test 4] _consolidate_daily_knowledge 空 db → return 0
+[2026-05-27 06:41:08]   ✅ PASS: 空 db return 0
+[2026-05-27 06:41:08] 
+[Test 5] _ingest_external_knowledge 空 inbox → return 0
+[2026-05-27 06:41:08]   ✅ PASS: 空 inbox return 0
+[2026-05-27 06:41:08] 
+[Test 6] chat_runtime + curator + knowledge_base 三方 import
+[2026-05-27 06:41:08]   ✅ PASS: 三方 imports 沒衝突
+[2026-05-27 06:41:08] 
+======================================================================
+[2026-05-27 06:41:08] ✅ V3-G5 全壓測 PASS
+[2026-05-27 06:41:08] ======================================================================

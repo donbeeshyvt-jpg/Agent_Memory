@@ -1,0 +1,24 @@
+[2026-05-27 17:54:29] ======================================================================
+[2026-05-27 17:54:29] V3-H7 PRESSURE TEST: 殘-12 self_modification LLM 壓縮
+[2026-05-27 17:54:29] ======================================================================
+[2026-05-27 17:54:29] 
+[Test 1] _llm_compress_old_section + _enforce_char_limit_compress imported
+[2026-05-27 17:54:29]   ✅ PASS: imported
+[2026-05-27 17:54:29] 
+[Test 2] _enforce_char_limit_compress sig 接 vault_root kwarg
+[2026-05-27 17:54:29]   ✅ PASS: vault_root kwarg 存在
+[2026-05-27 17:54:29] 
+[Test 3] force_stub env → fallback truncate (不爆)
+[2026-05-27 17:54:29]   compressed = True
+[2026-05-27 17:54:29]   ✅ PASS: force_stub → fallback truncate marker 出現
+[2026-05-27 17:54:29] 
+[Test 4] 未達 limit → return False 不壓縮
+[2026-05-27 17:54:29]   ✅ PASS: 未達 limit return False
+[2026-05-27 17:54:29] 
+[Test 5] self_modification_loop caller 傳 vault_root (370+ / 427+)
+[2026-05-27 17:54:29]   ✅ PASS: MEMORY caller 傳 vault_root
+[2026-05-27 17:54:29]   ✅ PASS: OWNER_PROFILE caller 傳 vault_root
+[2026-05-27 17:54:29] 
+======================================================================
+[2026-05-27 17:54:29] ✅ V3-H7 全壓測 PASS
+[2026-05-27 17:54:29] ======================================================================

@@ -1,0 +1,126 @@
+[2026-05-27 06:21:14] ======================================================================
+[2026-05-27 06:21:14] V3-G3 PRESSURE TEST: H4 + H10 + H11 + H12 integration
+[2026-05-27 06:21:14] ======================================================================
+[2026-05-27 06:21:14] 
+[Test 1] chat_runtime 真的 import 4 個 H 機制 module
+[2026-05-27 06:21:14]   ✅ PASS: H4 EmbodiedState imported
+[2026-05-27 06:21:14]   ✅ PASS: H11 emotion_contagion imported
+[2026-05-27 06:21:14]   ✅ PASS: H12 expectation_state imported
+[2026-05-27 06:21:14]   ✅ PASS: H10 metacognition imported
+[2026-05-27 06:21:14]   ✅ PASS: H3 daydream (regression V3-G2) imported
+[2026-05-27 06:21:14] 
+[Test 2] H4 embodied 60min 直播 → section E2 出現
+[2026-05-27 06:21:14]   embodied after 60min: energy=0.75, thirst=0.08, voice_strain=0.06
+[2026-05-27 06:21:14]   ✅ PASS: energy 0.75 < 0.8
+[2026-05-27 06:21:14]   ❌ FAIL: section E2 沒出現
+[2026-05-27 06:21:14] 
+[Test 3] H11 apply_contagion: owner factor=0.4 / stranger=0
+[2026-05-27 06:21:14]   owner=0.4, VIP=0.2, stranger=0.0
+[2026-05-27 06:21:14]   ✅ PASS: contagion factor 正確
+[2026-05-27 06:21:14]   owner contagion: own(0,0.3) + viewer(0.8,0.7) → val=0.32 aro=0.46
+[2026-05-27 06:21:14]   ✅ PASS: contagion 混合公式對
+[2026-05-27 06:21:14] 
+[Test 4] H12 expectation set_baseline + update_actual delta 邏輯
+[2026-05-27 06:21:14]   set_baseline OK eid=3dfbb1e7...
+[2026-05-27 06:21:14]   update_actual viewers=15 (expected 10) → delta=0.5
+[2026-05-27 06:21:14]   ✅ PASS: delta = 0.5 對
+[2026-05-27 06:21:14]   ✅ PASS: list_session_expectations 回對
+[2026-05-27 06:21:14] 
+[Test 5] H10 metacognition — check_self_consistency 不誤觸發
+[2026-05-27 06:21:14]   ✅ PASS: no prior agent turns → no detection
+[2026-05-27 06:21:14] 
+[Test 6] V3-G1/G2 既有 section 不受影響
+[2026-05-27 06:21:14]   ✅ V3-G1 section F '[F. 最近相關記憶...' 存在
+[2026-05-27 06:21:14]   ✅ V3-G2 section F2 '[F2. 我 idle 時想到的...' 存在
+[2026-05-27 06:21:14]   ✅ V3-G2 section F3 '[F3. 流量模式...' 存在
+[2026-05-27 06:21:14]   ✅ V3-E7 '[E. 我現在的感受...' 存在
+[2026-05-27 06:21:14]   ✅ V3-E6/E9 '[G+. ⭐⭐⭐ 綜合應用...' 存在
+[2026-05-27 06:21:14]   ✅ V3-E5 '[H. Output 限制...' 存在
+[2026-05-27 06:21:14] 
+======================================================================
+[2026-05-27 06:21:14] ❌ V3-G3 壓測有 1 個 FAIL
+[2026-05-27 06:21:14] ======================================================================
+[2026-05-27 06:21:45] ======================================================================
+[2026-05-27 06:21:45] V3-G3 PRESSURE TEST: H4 + H10 + H11 + H12 integration
+[2026-05-27 06:21:45] ======================================================================
+[2026-05-27 06:21:45] 
+[Test 1] chat_runtime 真的 import 4 個 H 機制 module
+[2026-05-27 06:21:45]   ✅ PASS: H4 EmbodiedState imported
+[2026-05-27 06:21:45]   ✅ PASS: H11 emotion_contagion imported
+[2026-05-27 06:21:45]   ✅ PASS: H12 expectation_state imported
+[2026-05-27 06:21:45]   ✅ PASS: H10 metacognition imported
+[2026-05-27 06:21:45]   ✅ PASS: H3 daydream (regression V3-G2) imported
+[2026-05-27 06:21:45] 
+[Test 2] H4 embodied 360min (6hr 直播) → section E2 出現 (對齊 V3 §29.4 6hr 設計)
+[2026-05-27 06:21:45]   embodied after 360min: energy=0.50, thirst=0.48, voice_strain=0.36, sleepiness=0.24
+[2026-05-27 06:21:45]   ✅ PASS: thirst 0.48 ≥ 0.3 (觸發 section E2)
+[2026-05-27 06:21:45]   ✅ PASS: section E2 出現
+[2026-05-27 06:21:45] 
+[Test 3] H11 apply_contagion: owner factor=0.4 / stranger=0
+[2026-05-27 06:21:45]   owner=0.4, VIP=0.2, stranger=0.0
+[2026-05-27 06:21:45]   ✅ PASS: contagion factor 正確
+[2026-05-27 06:21:45]   owner contagion: own(0,0.3) + viewer(0.8,0.7) → val=0.32 aro=0.46
+[2026-05-27 06:21:45]   ✅ PASS: contagion 混合公式對
+[2026-05-27 06:21:45] 
+[Test 4] H12 expectation set_baseline + update_actual delta 邏輯
+[2026-05-27 06:21:45]   set_baseline OK eid=9b7c3182...
+[2026-05-27 06:21:45]   update_actual viewers=15 (expected 10) → delta=0.5
+[2026-05-27 06:21:45]   ✅ PASS: delta = 0.5 對
+[2026-05-27 06:21:45]   ✅ PASS: list_session_expectations 回對
+[2026-05-27 06:21:45] 
+[Test 5] H10 metacognition — check_self_consistency 不誤觸發
+[2026-05-27 06:21:45]   ✅ PASS: no prior agent turns → no detection
+[2026-05-27 06:21:45] 
+[Test 6] V3-G1/G2 既有 section 不受影響
+[2026-05-27 06:21:45]   ✅ V3-G1 section F '[F. 最近相關記憶...' 存在
+[2026-05-27 06:21:45]   ✅ V3-G2 section F2 '[F2. 我 idle 時想到的...' 存在
+[2026-05-27 06:21:45]   ✅ V3-G2 section F3 '[F3. 流量模式...' 存在
+[2026-05-27 06:21:45]   ✅ V3-E7 '[E. 我現在的感受...' 存在
+[2026-05-27 06:21:45]   ✅ V3-E6/E9 '[G+. ⭐⭐⭐ 綜合應用...' 存在
+[2026-05-27 06:21:45]   ✅ V3-E5 '[H. Output 限制...' 存在
+[2026-05-27 06:21:45] 
+======================================================================
+[2026-05-27 06:21:45] ✅ V3-G3 全壓測 PASS (16/16)
+[2026-05-27 06:21:45] ======================================================================
+[2026-05-27 06:22:40] ======================================================================
+[2026-05-27 06:22:40] V3-G3 PRESSURE TEST: H4 + H10 + H11 + H12 integration
+[2026-05-27 06:22:40] ======================================================================
+[2026-05-27 06:22:40] 
+[Test 1] chat_runtime 真的 import 4 個 H 機制 module
+[2026-05-27 06:22:40]   ✅ PASS: H4 EmbodiedState imported
+[2026-05-27 06:22:40]   ✅ PASS: H11 emotion_contagion imported
+[2026-05-27 06:22:40]   ✅ PASS: H12 expectation_state imported
+[2026-05-27 06:22:40]   ✅ PASS: H10 metacognition imported
+[2026-05-27 06:22:40]   ✅ PASS: H3 daydream (regression V3-G2) imported
+[2026-05-27 06:22:40] 
+[Test 2] H4 embodied 360min (6hr 直播) → section E2 出現 (對齊 V3 §29.4 6hr 設計)
+[2026-05-27 06:22:40]   embodied after 360min: energy=0.50, thirst=0.48, voice_strain=0.36, sleepiness=0.24
+[2026-05-27 06:22:40]   ✅ PASS: thirst 0.48 ≥ 0.3 (觸發 section E2)
+[2026-05-27 06:22:40]   ✅ PASS: section E2 出現
+[2026-05-27 06:22:40] 
+[Test 3] H11 apply_contagion: owner factor=0.4 / stranger=0
+[2026-05-27 06:22:40]   owner=0.4, VIP=0.2, stranger=0.0
+[2026-05-27 06:22:40]   ✅ PASS: contagion factor 正確
+[2026-05-27 06:22:40]   owner contagion: own(0,0.3) + viewer(0.8,0.7) → val=0.32 aro=0.46
+[2026-05-27 06:22:40]   ✅ PASS: contagion 混合公式對
+[2026-05-27 06:22:40] 
+[Test 4] H12 expectation set_baseline + update_actual delta 邏輯
+[2026-05-27 06:22:40]   set_baseline OK eid=0d4bc57e...
+[2026-05-27 06:22:40]   update_actual viewers=15 (expected 10) → delta=0.5
+[2026-05-27 06:22:40]   ✅ PASS: delta = 0.5 對
+[2026-05-27 06:22:40]   ✅ PASS: list_session_expectations 回對
+[2026-05-27 06:22:40] 
+[Test 5] H10 metacognition — check_self_consistency 不誤觸發
+[2026-05-27 06:22:40]   ✅ PASS: no prior agent turns → no detection
+[2026-05-27 06:22:40] 
+[Test 6] V3-G1/G2 既有 section 不受影響
+[2026-05-27 06:22:40]   ✅ V3-G1 section F '[F. 最近相關記憶...' 存在
+[2026-05-27 06:22:40]   ✅ V3-G2 section F2 '[F2. 我 idle 時想到的...' 存在
+[2026-05-27 06:22:40]   ✅ V3-G2 section F3 '[F3. 流量模式...' 存在
+[2026-05-27 06:22:40]   ✅ V3-E7 '[E. 我現在的感受...' 存在
+[2026-05-27 06:22:40]   ✅ V3-E6/E9 '[G+. ⭐⭐⭐ 綜合應用...' 存在
+[2026-05-27 06:22:40]   ✅ V3-E5 '[H. Output 限制...' 存在
+[2026-05-27 06:22:40] 
+======================================================================
+[2026-05-27 06:22:40] ✅ V3-G3 全壓測 PASS (16/16)
+[2026-05-27 06:22:40] ======================================================================

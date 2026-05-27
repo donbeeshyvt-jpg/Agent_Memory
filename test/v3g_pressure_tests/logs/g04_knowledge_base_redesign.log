@@ -1,0 +1,52 @@
+[2026-05-27 06:29:26] ======================================================================
+[2026-05-27 06:29:26] V3-G4 PRESSURE TEST: 40_Knowledge_Base 重設計 (日常+外部 兩入口)
+[2026-05-27 06:29:26] ======================================================================
+[2026-05-27 06:29:26] 
+[Test 1] knowledge_base.py 4 個 helpers
+[2026-05-27 06:29:26]   ✅ PASS: 4 helpers + 3 dir consts imported
+[2026-05-27 06:29:26]   DAILY_DIR = 40_Knowledge_Base/41_Daily_Knowledge
+[2026-05-27 06:29:26]   EXTERNAL_DIR = 40_Knowledge_Base/42_External_Knowledge
+[2026-05-27 06:29:26]   INGEST_INBOX_DIR = 40_Knowledge_Base/42_External_Knowledge/_ingest_inbox
+[2026-05-27 06:29:26] 
+[Test 2] write_daily_knowledge 寫 41_Daily/
+[2026-05-27 06:29:26]   寫入: 40_Knowledge_Base\41_Daily_Knowledge\randomizer_mod_解釋.md
+[2026-05-27 06:29:26]   size: 461 char
+[2026-05-27 06:29:26]   ✅ frontmatter type
+[2026-05-27 06:29:26]   ✅ knowledge_source
+[2026-05-27 06:29:26]   ✅ lifecycle_state mid
+[2026-05-27 06:29:26]   ✅ claim 內容
+[2026-05-27 06:29:26]   ✅ source_event_ids
+[2026-05-27 06:29:26] 
+[Test 3] write_external_knowledge 寫 42_External/
+[2026-05-27 06:29:26]   寫入: 40_Knowledge_Base\42_External_Knowledge\VTuber_設定__史萊姆_角色背景.md
+[2026-05-27 06:29:26]   ✅ PASS: external_knowledge frontmatter + 摘要對
+[2026-05-27 06:29:26] 
+[Test 4] list_ingest_inbox 偵測 _ingest_inbox/
+[2026-05-27 06:29:26]   inbox 內 3 檔: ['game_strategy.md', 'research_001.md', 'notes.txt']
+[2026-05-27 06:29:26]   ✅ PASS: 偵測 3 檔
+[2026-05-27 06:29:26] 
+[Test 5] retrieve_knowledge fallback substring search
+[2026-05-27 06:29:27]   query='randomizer' → hits=1
+[2026-05-27 06:29:27]   ✅ PASS: hit 0 = \41_Daily_Knowledge\randomizer_mod_解釋.md (daily)
+[2026-05-27 06:29:27] 
+[Test 6] chat_runtime 加 Step 11.85 retrieve hook
+[2026-05-27 06:29:27]   ✅ PASS: Step 11.85 存在
+[2026-05-27 06:29:27]   ✅ PASS: retrieve_knowledge call 存在
+[2026-05-27 06:29:27]   ✅ PASS: prompt_packet knowledge_hits 存在
+[2026-05-27 06:29:27] 
+[Test 7] _build_companion_system_prompt section F4
+[2026-05-27 06:29:27]   ✅ PASS: section F4 出現
+[2026-05-27 06:29:27]   ✅ PASS: source label 對
+[2026-05-27 06:29:27]   ✅ PASS: source label '外部文獻' 對
+[2026-05-27 06:29:27] 
+[Test 8] obsidian.py vault skeleton 對齊新結構
+[2026-05-27 06:29:27]   ✅ PASS: 41_Daily_Knowledge ✓
+[2026-05-27 06:29:27]   ✅ PASS: 42_External_Knowledge ✓
+[2026-05-27 06:29:27]   ✅ PASS: _ingest_inbox ✓
+[2026-05-27 06:29:27] 
+[Test 9] folder_labels.py 對齊新結構
+[2026-05-27 06:29:27]   ✅ PASS: folder_labels 對齊
+[2026-05-27 06:29:27] 
+======================================================================
+[2026-05-27 06:29:27] ✅ V3-G4 全壓測 PASS (~20 個 check)
+[2026-05-27 06:29:27] ======================================================================
