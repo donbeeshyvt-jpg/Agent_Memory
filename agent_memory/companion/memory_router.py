@@ -214,6 +214,14 @@ def fetch_layer3_long(vault_root: Path, *, user_id: str = "", is_owner: bool = F
     goals = list_active_goals(vault_root, target_audience=user_id)
     for g in goals[:3]:  # top 3
         items.append(f"goal: {g.description} (imp={g.importance})")
+    # ⭐ V3-K2 (user 2026-05-27 「自我成長小孩」): semantic 自我提煉概念
+    try:
+        from agent_memory.companion.semantic_writer import list_recent_semantic_concepts
+        concepts = list_recent_semantic_concepts(vault_root, user_id=user_id, max_count=3)
+        for c in concepts:
+            items.append(f"self_concept: {c['claim'][:120]} (conf={c['confidence']:.2f})")
+    except Exception:
+        pass
     return items
 
 

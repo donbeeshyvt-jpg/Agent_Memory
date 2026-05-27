@@ -149,6 +149,16 @@ def run_layer3_24h_medium(
     if inside_joke_count > 0:
         actions.append(f"inside_jokes_detected({inside_joke_count})")
 
+    # ⭐ V3-K2 (user 2026-05-27 「自我成長小孩」核心): semantic 自我提煉
+    # 對齊 V3 §11.2 升格 + 「自然記憶 = 從事件提煉概念」
+    try:
+        from agent_memory.companion.semantic_writer import consolidate_semantic_concepts_via_llm
+        sem_count = consolidate_semantic_concepts_via_llm(vault_root)
+        if sem_count > 0:
+            actions.append(f"semantic_concepts_consolidated({sem_count})")
+    except Exception:
+        pass
+
     return CuratorRunResult(layer="layer3_24h_medium", actions_performed=actions)
 
 
