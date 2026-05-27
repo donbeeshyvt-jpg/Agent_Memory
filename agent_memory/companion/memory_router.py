@@ -230,6 +230,14 @@ def fetch_layer3_long(vault_root: Path, *, user_id: str = "", is_owner: bool = F
             items.append(f"narrative: {n['theme']} — {n['relationship_arc'][:80]}")
     except Exception:
         pass
+    # ⭐ V3-K4 (user 2026-05-27 「升格技能」): learned skills
+    try:
+        from agent_memory.companion.skill_learning_loop import list_recent_skills_summary
+        skills = list_recent_skills_summary(vault_root, max_count=3)
+        for s in skills:
+            items.append(f"skill: {s['skill_name']} (trigger: {s['trigger_situation'][:50]})")
+    except Exception:
+        pass
     return items
 
 

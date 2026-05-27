@@ -89,3 +89,138 @@ def list_learned_skills(vault_root: Path) -> list[str]:
         if skill_dir.is_dir() and (skill_dir / "SKILL.md").exists():
             out.append(skill_dir.name)
     return out
+
+
+def list_recent_skills_summary(vault_root: Path, max_count: int = 3) -> list[dict]:
+    """V3-K4 (user 2026-05-27 「升格技能」): 撈最近 skill 給 Memory Router L3 用.
+
+    Returns: [{skill_name, trigger_situation, ...}, ...]
+    """
+    skills_root = vault_root / "50_Skills_Tools" / "51_Hermes_Learned"
+    if not skills_root.exists():
+        return []
+    skills = []
+    for skill_dir in skills_root.iterdir():
+        if not (skill_dir.is_dir() and (skill_dir / "SKILL.md").exists()):
+            continue
+        try:
+            content = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        except Exception:
+            continue
+        # 簡單 parse skill_name + trigger_situation
+        import re as _re
+        name_match = _re.search(r"skill_name:\s*(.+)", content)
+        trigger_match = _re.search(r"## 適用情境\s*\n(.+?)\n\n", content, _re.DOTALL)
+        skills.append({
+            "skill_name": name_match.group(1).strip() if name_match else skill_dir.name,
+            "trigger_situation": trigger_match.group(1).strip()[:80] if trigger_match else "",
+            "path": str((skill_dir / "SKILL.md").relative_to(vault_root)),
+        })
+    return skills[:max_count]
+
+
+def consolidate_skills_via_llm(vault_root: Path) -> int:
+    """V3-K4 (user 2026-05-27 「升格技能」): curator L4 7d 從 semantic_memories 升格 skill.
+
+    對齊 V3 §21.3 + user「自然記憶升格技能」設計理念.
+
+    路徑: semantic_memories (我發現 X 有效) → LLM 提煉 → skill (適用情境/描述/步驟)
+    寫 50_Skills_Tools/51_Hermes_Learned/<skill_id>/SKILL.md
+
+    Returns: 新升 skill 數.
+    """
+    try:
+        from agent_memory.llm_client import LLMClient
+        from agent_memory.llm_text_helpers import call_llm_for_text
+        from agent_memory.companion.companion_db import open_companion_db
+    except Exception:
+        return 0
+
+    from datetime import datetime, timezone, timedelta
+    cutoff_7d = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+    try:
+        with open_companion_db(vault_root) as conn:
+            # 撈近 7d high-conf semantic concepts
+            rows = conn.execute(
+                "SELECT memory_id, claim, confidence FROM semantic_memories "
+                "WHERE created_at > ? AND confidence >= 0.6 AND status='semantic' "
+                "ORDER BY confidence DESC, evidence_count DESC LIMIT 5",
+                (cutoff_7d,),
+            ).fetchall()
+    except Exception:
+        return 0
+
+    if not rows:
+        return 0
+
+    try:
+        client = LLMClient(vault_root)
+    except Exception:
+        return 0
+
+    # 已升格的 skill (避免重複)
+    existing_skills = set(list_learned_skills(vault_root))
+
+    written = 0
+    for r in rows:
+        claim = (r["claim"] or "").strip()
+        if not claim:
+            continue
+        # LLM 把 claim 升成 skill (適用情境 + 步驟)
+        prompt = (
+            "你是夥伴大腦的 skill consolidation curator.\n"
+            "我學到一個概念 (semantic memory):\n"
+            f"  「{claim}」\n\n"
+            "請把它整理成可重用的 skill (技能), 格式 4 行:\n"
+            "NAME: <skill 名稱, kebab-case 英文, ≤30 字>\n"
+            "TRIGGER: <什麼情境下用, ≤60 字>\n"
+            "DESCRIPTION: <如何運用, 中文 ≤80 字>\n"
+            "STEPS: <step1>;<step2>;<step3> (≤3 steps, 分號分隔)\n\n"
+            "輸出 (僅 4 行, 無解釋):"
+        )
+        try:
+            result = call_llm_for_text(client, prompt, persona_id="companion", max_tokens=400)
+            text = (result.text or "").strip()
+        except Exception:
+            continue
+
+        # Parse
+        skill_name = ""
+        trigger = ""
+        description = ""
+        steps_str = ""
+        for line in text.split("\n"):
+            line = line.strip()
+            if line.upper().startswith("NAME:"):
+                skill_name = line.split(":", 1)[1].strip()[:30]
+            elif line.upper().startswith("TRIGGER:"):
+                trigger = line.split(":", 1)[1].strip()[:80]
+            elif line.upper().startswith("DESCRIPTION:"):
+                description = line.split(":", 1)[1].strip()[:100]
+            elif line.upper().startswith("STEPS:"):
+                steps_str = line.split(":", 1)[1].strip()
+
+        if not skill_name or not trigger:
+            continue
+
+        # 去重: 已存在 skill 跳過
+        skill_id = _safe_skill_id(skill_name)
+        if skill_id in existing_skills:
+            continue
+
+        steps_list = [s.strip() for s in steps_str.split(";") if s.strip()][:3]
+
+        skill = SkillRegistration(
+            skill_name=skill_name,
+            description=description,
+            trigger_situation=trigger,
+            procedure_steps=steps_list,
+            emotional_origin=r["memory_id"],
+            success_rate=0.0,
+            source="semantic_consolidation",
+        )
+        result_dict = register_skill(vault_root, skill)
+        if result_dict.get("registered"):
+            written += 1
+            existing_skills.add(skill_id)
+    return written

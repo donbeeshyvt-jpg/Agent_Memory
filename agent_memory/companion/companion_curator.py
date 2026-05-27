@@ -396,6 +396,16 @@ def run_layer4_7d_deep(vault_root: Path) -> CuratorRunResult:
     except Exception:
         pass
 
+    # ⭐ V3-K4 (user 2026-05-27 「升格技能」): semantic → skill 升格
+    # 對齊 V3 §21.3 + user 「自然記憶升格技能」設計理念
+    try:
+        from agent_memory.companion.skill_learning_loop import consolidate_skills_via_llm
+        skill_count = consolidate_skills_via_llm(vault_root)
+        if skill_count > 0:
+            actions.append(f"skills_consolidated({skill_count})")
+    except Exception:
+        pass
+
     return CuratorRunResult(layer="layer4_7d_deep", actions_performed=actions)
 
 
