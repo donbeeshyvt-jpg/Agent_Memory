@@ -144,7 +144,54 @@ def run_layer3_24h_medium(
     if daily_journal_path:
         actions.append(f"daily_journal_written({daily_journal_path.name})")
 
+    # ⭐ V3-H5 殘-11: H8 Inside Jokes 偵測 + 寫 (對齊 V3 §29.8)
+    inside_joke_count = _detect_inside_jokes_pass(vault_root)
+    if inside_joke_count > 0:
+        actions.append(f"inside_jokes_detected({inside_joke_count})")
+
     return CuratorRunResult(layer="layer3_24h_medium", actions_performed=actions)
+
+
+def _detect_inside_jokes_pass(vault_root: Path) -> int:
+    """V3-H5: 對每個 active user 偵測重複 keyword + 寫 inside_joke markdown.
+
+    Returns: 新 / 更新的 inside_joke 數.
+    """
+    try:
+        from agent_memory.companion.inside_joke_writer import (
+            detect_inside_jokes_for_user, write_inside_joke_md,
+        )
+    except Exception:
+        return 0
+
+    written = 0
+    try:
+        with open_companion_db(vault_root) as conn:
+            # 取近 7d 有互動的 user
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+            users = conn.execute(
+                "SELECT DISTINCT user_id FROM raw_events WHERE created_at > ? AND user_id != 'anonymous'",
+                (cutoff,),
+            ).fetchall()
+    except Exception:
+        return 0
+
+    for u in users:
+        user_id = u["user_id"]
+        if not user_id:
+            continue
+        jokes = detect_inside_jokes_for_user(vault_root, user_id, window_days=7)
+        for j in jokes[:5]:  # 限每 user 5 個避免爆量
+            path = write_inside_joke_md(
+                vault_root,
+                keyword=j["keyword"], user_id=user_id,
+                use_count=j["count"],
+                first_seen_at=j["first_seen"],
+                last_used_at=j["last_seen"],
+            )
+            if path:
+                written += 1
+    return written
 
 
 def _write_daily_mood_and_journal(vault_root: Path):

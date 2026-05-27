@@ -1312,6 +1312,21 @@ def run_companion_chat_turn(
     _leak_roll = rng.random() < 0.15 and monologue.pre_utterance_leak != ""
     response_with_monologue = maybe_inject_into_response(raw_response, monologue, inject=_leak_roll)
     response_with_tic = maybe_inject_tic_into_response(response_with_monologue, tic_sel.tic)
+    # ⭐ V3-H5 殘-11: H8 Inside Jokes 注入 (對 playfulness>0.5 + intim ≥ 0.4 + 10% 機率)
+    try:
+        from agent_memory.companion.inside_joke_writer import (
+            list_active_inside_jokes, maybe_inject_inside_joke,
+        )
+        _jokes = list_active_inside_jokes(vault_root, request.user_id,
+                                          intimacy_score=intim.intimacy_score)
+        response_with_tic = maybe_inject_inside_joke(
+            response_with_tic, _jokes,
+            playfulness=new_bal.playfulness,
+            intimacy_score=intim.intimacy_score,
+            rng=rng,
+        )
+    except Exception:
+        pass
     # ⭐ V3-G2: H3 daydream dead_chat_mode 外顯 (D-V3-45 + §29.3)
     # daydream.externally_visible 已在 generate_daydream 內判 (flow_mode==dead_chat 才 True)
     response_with_dd = maybe_emit_daydream(response_with_tic, daydream_result)
