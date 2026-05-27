@@ -205,11 +205,7 @@ class BridgeRelayClient(discord.Client):
 
         response_text = str(result.get("response", "")).strip()
         if not response_text:
-            # V3-O.3 (user 2026-05-28 拍板): LLM timeout / fail → 空字串 → relay 直接 skip 不送 Discord
-            # 對齊「沒有改好句子」: 真實 VTuber 忙不過來就不回應, 不要洗版式 fallback 訊息
-            if processing_added:
-                await self._try_remove_reaction(message, self.processing_reaction)
-            return
+            response_text = "(empty response)"
         if len(response_text) > 1800:
             response_text = response_text[:1800] + "\n...(truncated)"
 
