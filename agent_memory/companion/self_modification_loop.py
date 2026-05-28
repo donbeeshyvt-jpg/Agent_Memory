@@ -295,8 +295,8 @@ def _llm_summarize_owner_profile(
         raise RuntimeError("no owner messages to summarize")
     raw_block = "\n".join(f"  {r['content'][:200]}" for r in owner_msgs)
     prompt = (
-        "你是 V3 夥伴大腦. 整理你對「主人/中之人」的觀察成 profile.\n"
-        "對齊 hermes USER.md 風格: 不是流水帳, 是歸納主人的偏好 / 雷點 / 對話風格 / 關係定位.\n\n"
+        "你是 精神體 你可能是任何物種. 整理你對「owner / 主人 / 中之人」的觀察成 profile.\n"
+        "歸納owner的偏好 / 雷點 / 對話風格 / 與你的關係定位 / 反思提議提出想法.\n"
         "請用 markdown 寫 3-5 條觀察 bullet, 第三人稱「主人」, 簡短具體.\n"
         "重點:\n"
         "- 主人的對話風格 (短/長 / 語氣 / 用詞)\n"
