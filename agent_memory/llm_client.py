@@ -182,7 +182,17 @@ class LLMClient:
         serialize_text = os.getenv("AGENT_MEMORY_SERIALIZE_LLM", "1").strip().lower()
         serialize = serialize_text not in {"0", "false", "no", "off"}
         acquired = True
-        lock_timeout = max(5.0, float(timeout_s) + 5.0)
+        # V3-O.6 #6 (user 2026-05-28): lock timeout 解耦, 默認 120s, 不再 = timeout_s + 5.
+        # 第 4 輪 viewer barrage 22/62 timeout 全卡 "serialize lock timeout (65.0s)" — 因
+        # companion 傳 timeout_s=60 → lock=65 太短. 大 packet (4476 tok) + qwen 慢的話 60s 處理
+        # 完仍有道理, 但前一個 turn 還沒做完就會卡死後續 turn. 拉大 lock buffer 改善 queue 行為.
+        # HTTP timeout (timeout_s) 維持 60 不變; 環境變數可覆蓋默認.
+        env_lock_raw = os.getenv("AGENT_MEMORY_LLM_LOCK_TIMEOUT_S", "").strip()
+        try:
+            base_lock_timeout = float(env_lock_raw) if env_lock_raw else 120.0
+        except ValueError:
+            base_lock_timeout = 120.0
+        lock_timeout = max(5.0, float(timeout_s) + 5.0, base_lock_timeout)
         if serialize:
             acquired = _LLM_GENERATE_LOCK.acquire(timeout=lock_timeout)
             if not acquired:
