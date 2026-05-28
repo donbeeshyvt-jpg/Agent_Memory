@@ -108,6 +108,10 @@ class ChatRequest:
     idle_seconds: float = 0.0
     chat_velocity: float = 0.5
     attachments: list = field(default_factory=list)
+    # V3-O.6 #4+#5: Discord display_name (relay 帶上來), 兩用:
+    #   #4 owner turn → auto_learn 進 .ai/owner_aliases.json
+    #   #5 viewer pool → 分流為不同 effective user_id
+    display_name: str = ""
 
 
 @dataclass(slots=True)
@@ -1384,23 +1388,44 @@ def run_companion_chat_turn(
     scanner_hits = scan_incoming_user_text(request.message)
     injection_risk = "high" if scanner_hits.get("detected") else "low"
 
-    # V3-O.3 #7 (user 2026-05-28 拍板): 偵測冒充 owner display_name
-    # 對齊 user 觀察「冬蜜 DonBee: 主播停一下 ...」這類冒充 — viewer 用 owner 名字發文
-    # 比對: companion_config.yaml.owner.label / 00.06_SOUL.relationship_label / 00.06_SOUL.primary_owner_alias
+    # V3-O.6 #4 (user 2026-05-28 拍板): 偵測冒充 owner — 改用 owner_aliases.json 多 alias + fuzzy match
+    # 原 V3-O.3 #7 只查 yaml.owner.label substring, 第 4 輪測試「冬蜜 DonBee:」這類冒充
+    # 因不匹配 "我的中之人" 全部 risk=low 漏掉. 改:
+    #   - load_owner_aliases 合併 yaml + SOUL primary_owner_alias + .ai/owner_aliases.json 自學
+    #   - detect_owner_spoof 拿掉空白標點 + casefold 後 substring match
+    # 同時 owner turn 後 auto_learn (display_name + 「我是 X」自報)
     try:
         from agent_memory.companion.companion_config import load_companion_config
+        from agent_memory.companion.owner_aliases import (
+            load_owner_aliases, detect_owner_spoof, auto_learn_from_owner_turn,
+        )
         _cfg = load_companion_config(vault_root) if vault_root else None
         _owner_uid = (_cfg.owner.discord_user_id if _cfg else "") or ""
-        _owner_label = (_cfg.owner.label if _cfg else "") or ""
-        # 對 viewer (request.user_id != owner_uid) 才檢查冒充
-        if _owner_uid and _owner_label and request.user_id != _owner_uid:
-            if _owner_label in request.message:
-                injection_risk = "high"
-                resp.scanner_hits_count = max(1, resp.scanner_hits_count + 1)
-                scanner_hits.setdefault("reasons", []).append(
-                    f"偵測冒充 owner 名稱「{_owner_label}」（author_id != owner_user_id）"
-                )
-                scanner_hits["detected"] = True
+        _is_owner_turn = bool(_owner_uid and request.user_id == _owner_uid)
+
+        if vault_root is not None:
+            # owner turn → 自學 alias (display_name + 自報名字)
+            if _is_owner_turn:
+                try:
+                    auto_learn_from_owner_turn(
+                        vault_root,
+                        display_name=request.display_name or "",
+                        message=request.message or "",
+                    )
+                except Exception:
+                    pass
+
+            # viewer turn → 用 alias set 偵測冒充
+            elif _owner_uid and request.user_id != _owner_uid:
+                aliases = load_owner_aliases(vault_root)
+                hit, matched = detect_owner_spoof(request.message or "", aliases)
+                if hit and matched:
+                    injection_risk = "high"
+                    resp.scanner_hits_count = max(1, resp.scanner_hits_count + 1)
+                    scanner_hits.setdefault("reasons", []).append(
+                        f"偵測冒充 owner alias「{matched}」（author_id != owner_user_id, fuzzy match）"
+                    )
+                    scanner_hits["detected"] = True
     except Exception:
         pass
 
