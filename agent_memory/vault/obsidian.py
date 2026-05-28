@@ -104,6 +104,8 @@ _COMPANION_SKELETON_DIRS = (
     "30_Emotional_State/32_Appraisal_Events",
     "30_Emotional_State/33_Trait_Evolution",
     "30_Emotional_State/34_Mood_Diary",
+    "30_Emotional_State/35_Self_Concepts",   # V3-O.7: 自我概念條目 (identity_relevance 事件提煉)
+    "30_Emotional_State/36_Narratives",       # V3-K3: 敘事弧 (narrative_writer, curator L4 寫)
     "40_Knowledge_Base",
     # ⭐ V3-G4 (user 2026-05-27 拍板): 廢舊 41/42/43/44 細分, 改 [日常知識 + 外部知識] 兩大入口
     # 對齊 user「不要分 41/42/43/44, 改成 日常(對話累積) + 外部(中之人/hermes 抓)」

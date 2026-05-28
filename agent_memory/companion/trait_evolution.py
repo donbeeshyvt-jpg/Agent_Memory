@@ -65,7 +65,14 @@ def add_trait_evidence(
                 (user_id, trait_name, 1, json.dumps(events), 0.0, observation_value, 0, now),
             )
             conn.commit()
-            return {"action": "created", "evidence_count": 1}
+            return {
+                "action": "created",
+                "evidence_count": 1,
+                "prev_proposed": 0.0,
+                "new_proposed": float(observation_value),
+                "delta": float(observation_value),
+                "awaiting_drift_guard": False,
+            }
 
         new_count = row["evidence_count"] + 1
         events = json.loads(row["events_json"] or "[]")
@@ -85,7 +92,10 @@ def add_trait_evidence(
         return {
             "action": "candidate_proposed" if awaiting else "evidence_added",
             "evidence_count": new_count,
-            "proposed_value": new_proposed,
+            "prev_proposed": float(prev_proposed),
+            "new_proposed": float(new_proposed),
+            "proposed_value": float(new_proposed),  # backward compat
+            "delta": float(new_proposed - prev_proposed),
             "awaiting_drift_guard": awaiting,
         }
 

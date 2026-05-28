@@ -40,6 +40,35 @@ _SELF_REPORT_PATTERNS = (
     re.compile(r"(?i)\b(?:i\s*am|i'm|my\s*name\s*is|this\s*is)\s+([A-Za-z][A-Za-z0-9_\-]{1,30})\b"),
 )
 
+# V3-O.6.1 #4b (user 2026-05-29): 問句形式排除 set —
+# 對齊第 5 輪 audit owner_aliases.json 自學「誰嗎」「誰啊」噪音
+# 「你知道我是誰嗎」抓到的「誰嗎」/ 「我是誰啊」抓到的「誰啊」/ 「我是不是 X」 都不該當 alias.
+# 也排除疑問代詞開頭的「誰」/「哪」/「什」起手後綴詞.
+_SELF_REPORT_BLACKLIST = frozenset({
+    "誰嗎", "誰啊", "誰呀", "誰啦", "誰呢", "誰阿",
+    "什麼", "什麼嗎", "甚麼", "甚麼嗎",
+    "哪位", "哪個", "哪一個", "哪邊", "哪裡",
+    "不是", "不對", "不對嗎",
+    "anyone", "someone", "nobody",
+})
+
+
+def _is_self_report_question(captured: str) -> bool:
+    """檢查抓到的字串是否為問句殘段 (不應當 alias).
+
+    e.g. 「你知道我是誰嗎」regex 抓「誰嗎」-> True (是疑問代詞 + 語助詞)
+         「我是冬蜜」抓「冬蜜」 -> False (真名)
+    """
+    if not captured:
+        return True
+    s = captured.strip()
+    if s in _SELF_REPORT_BLACKLIST:
+        return True
+    # 疑問代詞 + 語助詞 結尾 (誰嗎 / 誰啊 / 誰呢 / 誰呀 / 誰阿)
+    if s.startswith(("誰", "什", "甚", "哪")) and len(s) <= 4:
+        return True
+    return False
+
 
 @dataclass(slots=True)
 class _StoreData:
@@ -246,8 +275,12 @@ def extract_self_report_aliases(message: str) -> list[str]:
     for pat in _SELF_REPORT_PATTERNS:
         for m in pat.finditer(message):
             cand = m.group(1).strip(" .,，。'\"`")
-            if cand and len(cand) >= _MIN_ALIAS_LEN:
-                out.append(cand)
+            if not cand or len(cand) < _MIN_ALIAS_LEN:
+                continue
+            # V3-O.6.1 #4b: 問句形式排除 (「誰嗎」「誰啊」「什麼」等不是真名)
+            if _is_self_report_question(cand):
+                continue
+            out.append(cand)
     return out
 
 

@@ -65,6 +65,8 @@ _COMPANION_ZH_PURPOSE: dict[str, str] = {
     "30_Emotional_State/32_Appraisal_Events": "重大情緒事件",
     "30_Emotional_State/33_Trait_Evolution": "慢速性格變化",
     "30_Emotional_State/34_Mood_Diary": "每日心情總覽",
+    "30_Emotional_State/35_Self_Concepts": "自我概念條目 (identity_relevance 強事件提煉, V3-O.7)",
+    "30_Emotional_State/36_Narratives": "自我敘事弧 — 跟各 user 的成長故事 (curator L4 LLM 寫, V3-K3)",
     "40_Knowledge_Base": "純知識管理 — 日常 / 外部 兩大入口 (V3-G4)",
     "40_Knowledge_Base/41_Daily_Knowledge": "對話中累積的知識歸納 (curator L3 24h 寫, LLM 摘要)",
     "40_Knowledge_Base/42_External_Knowledge": "user/hermes 投餵的文獻知識 (curator L4 7d 寫, LLM 摘要)",

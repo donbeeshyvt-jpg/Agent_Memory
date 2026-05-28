@@ -1264,13 +1264,20 @@ def _real_companion_llm(
 
     # ⭐ V3-E5: vault_root 傳給 prompt builder 動態讀 SOUL/Persona/MEMORY/Owner_Profile
     # ⭐ V3-E9 (E5+6): 對 non-owner 撈該 viewer 個別記憶塊 (intim/stage/count + 偏好 + past 5 turn)
+    # ⭐ V3-O.7 Round D: 朋友卡 input 收束 — Step 13.5 已載入 viewer_dynamic_context (md-based 完整卡片)
+    #   優先用 prompt_packet["viewer_dynamic_context"] (md 內容更豐富: strategy hint + preferences + highlights)
+    #   md 還不存在 (新觀眾首次) 時 fallback 到 DB-only _load_viewer_dynamic_context
     _is_owner = bool(prompt_packet.get("policy", {}).get("is_owner", False))
     _viewer_ctx: Optional[str] = None
     if (not _is_owner) and user_id:
-        try:
-            _viewer_ctx = _load_viewer_dynamic_context(vault_root, user_id)
-        except Exception:
-            _viewer_ctx = None
+        _md_ctx = (prompt_packet.get("viewer_dynamic_context") or "").strip()
+        if _md_ctx:
+            _viewer_ctx = _md_ctx  # 朋友卡 md (richer)
+        else:
+            try:
+                _viewer_ctx = _load_viewer_dynamic_context(vault_root, user_id)
+            except Exception:
+                _viewer_ctx = None
     # V3-O.5: 先撈 history, 把 history + user_message 進 prompt_packet, 給 _build 用
     # (V3-O.5 FullContextPromptPacketBuilder spec §7.10 recent_dialogue_context + §7.11 current_user_message)
     user_msg = prompt_packet.get("user_message", "")
@@ -1433,6 +1440,21 @@ def run_companion_chat_turn(
     resp.injection_risk = injection_risk
     resp.pipeline_steps_done.append(2)
 
+    # ─── Step 2.5: ensure_user_record (V3-O.7 RC1) ───
+    # RC1 fix: users 表一直是空的 → write_viewer_profile (Step 17.5) 永遠 early-return.
+    # 在 pipeline 最早時機把 non-owner viewer 寫進 users 表.
+    # owner 不需要 (已由 owner_state 管理).
+    if not request.is_owner and vault_root is not None and request.user_id not in ("", "anonymous"):
+        try:
+            from agent_memory.companion.multi_user_router import ensure_user_record
+            ensure_user_record(
+                vault_root, request.user_id,
+                display_name=request.display_name or "",
+            )
+        except Exception:
+            pass
+    resp.pipeline_steps_done.append(25)
+
     # ─── Step 3: Perception (Phase 1 stub) ───
     resp.pipeline_steps_done.append(3)
 
@@ -1441,6 +1463,26 @@ def run_companion_chat_turn(
     appraisal, new_affect = appraise_and_update_affect(request.message, current_affect)
     resp.pipeline_steps_done.append(4)
     resp.pipeline_steps_done.append(5)
+
+    # ─── Step 5.1: Core Affect Log (V3-O.7 Phase 3) ───
+    # |valence|>0.4 時寫 31_Core_Affect_Logs，避免每 turn 都寫造成爆量
+    if vault_root is not None and abs(new_affect.valence) > 0.4:
+        try:
+            import uuid as _uuid2
+            from agent_memory.companion.markdown_writers import write_core_affect_log_md
+            write_core_affect_log_md(
+                vault_root,
+                log_id=_uuid2.uuid4().hex[:12],
+                session_id=request.session_id,
+                user_id=request.user_id,
+                valence=new_affect.valence,
+                arousal=new_affect.arousal,
+                dominance=new_affect.dominance,
+                dominant_emotion=getattr(appraisal, "dominant_emotion", "neutral") or "neutral",
+                trigger=request.message[:120],
+            )
+        except Exception:
+            pass
 
     # ─── Step 5.5: H11 Emotion Contagion (V3-G3, §29.11) ───
     # 對 owner factor=0.4 / VIP intim≥0.4 factor=0.2 / 其他 factor=0
@@ -1711,6 +1753,19 @@ def run_companion_chat_turn(
     )
     resp.pipeline_steps_done.append(13)
 
+    # ─── Step 13.5: 朋友卡 (V3-O.7 Round D input 收束) ───
+    # 對已知 non-owner 觀眾讀取 20_Audience_Graph 的 viewer profile md 注入 LLM context.
+    # owner 已由 owner_profile / SOUL 覆蓋, 不需要.
+    # RC1 修好後此處才會撈到內容; 新觀眾 / 首次對話回傳 "" (prompt 照舊跑).
+    _viewer_card_md = ""
+    if not request.is_owner and vault_root is not None:
+        try:
+            from agent_memory.companion.audience_writer import load_viewer_profile_md
+            _viewer_card_md = load_viewer_profile_md(vault_root, request.user_id)
+        except Exception:
+            pass
+    resp.pipeline_steps_done.append(135)
+
     # ─── Step 14: Prompt Packet Builder ───
     prompt_packet = {
         "system_persona": "companion baseline",
@@ -1734,6 +1789,9 @@ def run_companion_chat_turn(
         "injection_hint": _load_recent_injection_hint(vault_root, request.user_id, look_back_hours=24),
         # ⭐ V3-K1 (user 2026-05-27 「自我成長的小孩」核心): 六慾 satisfaction + humanize
         "motivation": motivation_state.as_dict(),
+        # ⭐ V3-O.7 Round D: 朋友卡 input 收束 — 已知觀眾的個人記憶卡注入 LLM context
+        # "" 表示新觀眾 / 尚無卡片, LLM 走一般 non-viewer 路徑
+        "viewer_dynamic_context": _viewer_card_md,
     }
     resp.pipeline_steps_done.append(14)
 
@@ -1840,10 +1898,12 @@ def run_companion_chat_turn(
                  0.9, "scanner_flagged", now_iso),
             )
         # 強情緒事件即時升中 (V3 §11.2 + D-V3-38)
-        # V3-O.3 #5 (user 2026-05-28 拍板): 升中閾值 |val|>0.7 → 0.5 鬆綁
-        # 對齊 user 觀察「沒強情緒 turn → episodic_memories 0 row → L2 mid 永遠空」
-        # 0.5 = 中度情緒, 更貼近日常對話節奏, 讓 L2 mid 有實質內容
-        if abs(new_affect.valence) > 0.5:
+        # V3-P1 (2026-05-28): 雙重觸發條件 — smoothed valence OR raw appraisal signal.
+        # 問題: smoothed valence 受 alpha=0.4 衰減, 從 neutral baseline 最高只到 0.4,
+        # 閾值 0.5 數學上不可達 → episodic_memories 永遠 0 row → L2 mid 永遠空.
+        # 修: smoothed >0.3 OR appraisal emotion_valence_offset abs >=0.3 (一個強情緒詞就觸發).
+        _raw_emo_signal = abs(appraisal.emotion_valence_offset)
+        if abs(new_affect.valence) > 0.3 or _raw_emo_signal >= 0.3:
             conn.execute(
                 "INSERT INTO episodic_memories (memory_id, user_id, summary, source_event_ids, valence, arousal, dominance, importance, salience, emotional_salience, confidence, resolved, lifecycle_state, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'mid', ?)",
                 (str(uuid.uuid4()), request.user_id, request.message[:120], event_id,
@@ -1911,17 +1971,34 @@ def run_companion_chat_turn(
     # user 2026-05-27 audit Gap 2: trait_evolution writer ready 但 chat_runtime 沒接 hook
     # 對 identity_relevance>0.5 OR |valence|>0.6 turn 提供 trait evidence
     # 累積 ≥ 7 evidence → audit_candidate 走 markdown_writers 寫 73_Candidates/
+    # V3-O.8 Gap-2 (user 2026-05-29): 加 write_trait_evolution_md 寫 33_Trait_Evolution
+    # (Round B writer 加了但 pipeline 沒接, verify 通過但 chat 跑 33_/ 仍空)
     try:
         if appraisal.identity_relevance > 0.5 or abs(new_affect.valence) > 0.6:
             from agent_memory.companion.trait_evolution import add_trait_evidence
             from agent_memory.companion.drift_guard import audit_candidate
+            from agent_memory.companion.markdown_writers import write_trait_evolution_md
             # V3 §22 baseline_balance 主追 (敢玩 vs 穩, 對齊 SOUL baseline_balance)
-            add_trait_evidence(
+            _trait_res = add_trait_evidence(
                 vault_root, request.user_id,
                 "baseline_balance",
                 observation_value=float(new_bal.balance_axis),
                 event_id=event_id,
             )
+            # 寫 33_Trait_Evolution/<trait>.md 軌跡 (append, 一個 trait 一個檔)
+            try:
+                write_trait_evolution_md(
+                    vault_root,
+                    trait_name="baseline_balance",
+                    old_value=float(_trait_res.get("prev_proposed", 0.0)),
+                    new_value=float(_trait_res.get("new_proposed", float(new_bal.balance_axis))),
+                    delta=float(_trait_res.get("delta", 0.0)),
+                    evidence_count=int(_trait_res.get("evidence_count", 1)),
+                    trigger="chat_step_17_4",
+                    user_id=request.user_id,
+                )
+            except Exception:
+                pass
             # evidence>=7 + drift 過 → 自動寫 73_Candidates markdown (走 markdown_writers V3-H2)
             audit_candidate(vault_root, request.user_id, "baseline_balance")
     except Exception:
@@ -1940,6 +2017,26 @@ def run_companion_chat_turn(
             pass  # non-critical, 失敗不阻塞 chat
     resp.pipeline_steps_done.append(175)
 
+    # ─── Step 17.6: 35_Self_Concepts (V3-O.7 Phase 3) ───
+    # identity_relevance > 0.7 的強事件提煉自我概念條目
+    # 對齊 V3 §22「自我成長小孩」 + 35_Self_Concepts vault 區
+    if vault_root is not None and appraisal.identity_relevance > 0.7:
+        try:
+            import uuid as _uuid3
+            from agent_memory.companion.markdown_writers import write_self_concept_md
+            write_self_concept_md(
+                vault_root,
+                concept_id=_uuid3.uuid4().hex[:12],
+                concept_text=f"訊息觸發強烈自我認同感 (relevance={appraisal.identity_relevance:.2f}):\n{request.message[:300]}",
+                identity_relevance=appraisal.identity_relevance,
+                source_event_id=event_id,
+                user_id=request.user_id,
+                session_id=request.session_id,
+            )
+        except Exception:
+            pass
+    resp.pipeline_steps_done.append(176)
+
     # ─── Step 18: Self-Modification check (channel-aware flush) ───
     # 簡單算 turn_count = raw_events in this session
     with open_companion_db(vault_root) as conn:
@@ -1947,45 +2044,91 @@ def run_companion_chat_turn(
             "SELECT COUNT(*) AS c FROM raw_events WHERE session_id=?", (request.session_id,)
         ).fetchone()["c"]
     fd = should_flush(cnt, request.channel_type)
-    if fd.should_flush:
+
+    # V3-P1 (2026-05-28): 無論 should_flush 是否觸發, 每 10 turn 都跑 Layer 0 curator.
+    # Layer 0 = in-stream micro-curator: emotion 衰減 ×0.97 + balance 衰減 + 強情緒即時升中.
+    # 設計上每 5-30 turn 跑, 但先前完全沒接入 chat pipeline → emotion 從不衰減.
+    _run_layer0 = (cnt % 10 == 0) and cnt > 0
+
+    import threading
+    _msg_snippet = request.message[:80]
+    _chan = request.channel_type
+    _risk = injection_risk
+    _id_rel = appraisal.identity_relevance
+    _uid = request.user_id
+    _sid = request.session_id
+    _is_owner = request.is_owner
+    _cnt = cnt
+
+    if fd.should_flush or _run_layer0:
         # V3-E3 (2026-05-26): Self-Modification flush 改 async background thread.
         # 對齊 user 回報「bridge call failed: timed out」根本原因 —
         # Step 18 LLM 整理 (Bug 6+7) sync 跑會阻塞主回應, 主對話 + 2 flush
         # serial 加起來最多 ~150s 接近 relay timeout. async 後主流程立刻
         # 走到 Step 22 回 response, flush 在 background 整理 MEMORY/Profile.
-        import threading
-        _msg_snippet = request.message[:80]
-        _chan = request.channel_type
-        _risk = injection_risk
-        _id_rel = appraisal.identity_relevance
-        _uid = request.user_id
-        _sid = request.session_id
-        _is_owner = request.is_owner
+        _do_flush = fd.should_flush
+        _do_layer0 = _run_layer0
 
         def _bg_flush():
-            try:
-                flush_self_memory(
-                    vault_root,
-                    recent_turn_summaries=[f"recent: {_msg_snippet}"],
-                    channel_type=_chan,
-                    injection_risk=_risk,
-                    identity_relevance=_id_rel,
-                    user_id=_uid,
-                    session_id=_sid,
-                )
-                if _is_owner:
-                    flush_owner_profile(
+            import sys as _sys
+            if _do_flush:
+                try:
+                    flush_self_memory(
                         vault_root,
-                        recent_owner_observations=[f"owner said: {_msg_snippet}"],
+                        recent_turn_summaries=[f"recent: {_msg_snippet}"],
                         channel_type=_chan,
                         injection_risk=_risk,
+                        identity_relevance=_id_rel,
                         user_id=_uid,
                         session_id=_sid,
                     )
+                    if _is_owner:
+                        flush_owner_profile(
+                            vault_root,
+                            recent_owner_observations=[f"owner said: {_msg_snippet}"],
+                            channel_type=_chan,
+                            injection_risk=_risk,
+                            user_id=_uid,
+                            session_id=_sid,
+                        )
+                except Exception as exc:
+                    try:
+                        print(f"[V3-E3 bg flush FAIL] {type(exc).__name__}: {str(exc)[:200]}", file=_sys.stderr)
+                    except Exception:
+                        pass
+
+            # V3-P1: Layer 0 in-stream micro-curator (每 10 turn)
+            if _do_layer0:
+                try:
+                    from agent_memory.companion.companion_curator import run_layer0_in_stream
+                    run_layer0_in_stream(vault_root, _sid, all_user_ids=[_uid])
+                except Exception as exc:
+                    try:
+                        print(f"[V3-P1 layer0 curator FAIL] {type(exc).__name__}: {str(exc)[:200]}", file=_sys.stderr)
+                    except Exception:
+                        pass
+
+            # V3-P1: Layer 3 lazy trigger (每 24h 一次, 用 .ai/last_layer3_run.txt 追蹤)
+            try:
+                _layer3_marker = vault_root / ".ai" / "last_layer3_run.txt"
+                _should_run_l3 = True
+                if _layer3_marker.exists():
+                    try:
+                        _last_ts = datetime.fromisoformat(_layer3_marker.read_text(encoding="utf-8").strip())
+                        _elapsed = (datetime.now(timezone.utc) - _last_ts).total_seconds()
+                        _should_run_l3 = _elapsed > 86400  # 24h
+                    except Exception:
+                        _should_run_l3 = True
+                if _should_run_l3:
+                    from agent_memory.companion.companion_curator import run_layer3_24h_medium
+                    _layer3_marker.parent.mkdir(parents=True, exist_ok=True)
+                    _layer3_marker.write_text(
+                        datetime.now(timezone.utc).isoformat(), encoding="utf-8"
+                    )
+                    run_layer3_24h_medium(vault_root, all_user_ids=[_uid])
             except Exception as exc:
                 try:
-                    import sys as _sys
-                    print(f"[V3-E3 bg flush FAIL] {type(exc).__name__}: {str(exc)[:200]}", file=_sys.stderr)
+                    print(f"[V3-P1 layer3 curator FAIL] {type(exc).__name__}: {str(exc)[:200]}", file=_sys.stderr)
                 except Exception:
                     pass
 

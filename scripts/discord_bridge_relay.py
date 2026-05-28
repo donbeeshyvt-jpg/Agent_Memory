@@ -12,6 +12,17 @@ from urllib import error as url_error
 from urllib import request as url_request
 
 import discord
+import hashlib
+
+
+# V3-O.7 RC2: CJK viewer ID 碰撞修正.
+# 原本 f"ai-viewer-{viewer_prefix}" 直接用 CJK prefix → sanitize_component 剝掉全部 CJK
+# → 所有中文名觀眾塌陷成同一個 "ai-viewer" ID.
+# 改用 ASCII slug (最多 12 字元) + SHA-1 hash suffix (6 字元) 確保唯一且可讀.
+def _make_viewer_slug(name: str) -> str:
+    ascii_part = re.sub(r"[^A-Za-z0-9._-]", "", name)[:12]
+    hash_suffix = hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]
+    return f"{ascii_part}-{hash_suffix}" if ascii_part else f"v-{hash_suffix}"
 
 
 # V3-O.6.2 #9 (user 2026-05-28): bridge timeout / HTTP error 友善訊息池.
@@ -223,7 +234,7 @@ class BridgeRelayClient(discord.Client):
             )
             if m:
                 viewer_prefix = m.group(1).strip()
-                effective_user_id = f"ai-viewer-{viewer_prefix}"
+                effective_user_id = f"ai-viewer-{_make_viewer_slug(viewer_prefix)}"
 
         payload = {
             "content": text,

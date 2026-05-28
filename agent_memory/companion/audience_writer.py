@@ -222,3 +222,28 @@ def write_viewer_profile(
         return profile_path
     except Exception:
         return None
+
+
+def load_viewer_profile_md(vault_root: Path, user_id: str) -> str:
+    """V3-O.7 Round D (朋友卡 input 收束): 讀取 viewer profile markdown 給 LLM context 用.
+
+    在 chat_runtime Step 14 prompt_packet 組裝時呼叫，把朋友卡注入 viewer_dynamic_context.
+    先查 DB 確認 loyalty_tier，再讀對應路徑的 .md.
+    回傳空字串表示尚無卡片 (新觀眾 / RC1 還沒跑過).
+    """
+    if not user_id or user_id in ("", "anonymous"):
+        return ""
+    try:
+        with open_companion_db(vault_root) as conn:
+            row = conn.execute(
+                "SELECT loyalty_tier FROM users WHERE user_id=?", (user_id,)
+            ).fetchone()
+        if not row:
+            return ""
+        tier = row["loyalty_tier"] or "casual"
+        profile_path = get_viewer_profile_path(vault_root, user_id, tier)
+        if profile_path.exists():
+            return profile_path.read_text(encoding="utf-8")
+    except Exception:
+        pass
+    return ""

@@ -82,11 +82,38 @@ class AppraisalResult:
         }
 
 
+_NEGATION_MARKERS = ("不", "沒", "没", "未", "無", "非", "別", "勿")
+
+
 def _count_keywords(text: str, keywords: tuple[str, ...]) -> int:
     """計訊息含多少 keyword (簡單 substring 比對)."""
     if not text:
         return 0
     return sum(1 for kw in keywords if kw in text)
+
+
+def _count_keywords_negation_aware(text: str, keywords: tuple[str, ...]) -> int:
+    """計 keyword 數, 跳過前 3 字內有否定詞的命中 (如「不順利」裡的「順利」).
+
+    解決問題: 否定詞 + 正向詞 (「不開心」「不順利」「沒好」) 被當正向情緒計入,
+    導致負面訊息的 emotion_valence_offset 被抵消甚至反轉.
+    """
+    if not text:
+        return 0
+    count = 0
+    for kw in keywords:
+        start = 0
+        while True:
+            pos = text.find(kw, start)
+            if pos < 0:
+                break
+            window = text[max(0, pos - 3):pos]
+            if any(neg in window for neg in _NEGATION_MARKERS):
+                start = pos + 1
+                continue
+            count += 1
+            start = pos + 1
+    return count
 
 
 def _clamp(v: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -175,8 +202,9 @@ def appraise_message(
 
     # 8. emotion keyword bias (給 affect manager 預測 VAD 用, 不算 7 維本身)
     # V3-E1 Bug 5: 公式從 normalize cap 0.6 改累積式, 多 keyword 更明顯
-    emo_pos = _count_keywords(message, _EMOTION_POSITIVE_KW)
-    emo_neg = _count_keywords(message, _EMOTION_NEGATIVE_KW)
+    # V3-P1 (2026-05-28): 改用否定詞感知計數，避免「不順利」等否定語境的正向 keyword 被誤計
+    emo_pos = _count_keywords_negation_aware(message, _EMOTION_POSITIVE_KW)
+    emo_neg = _count_keywords_negation_aware(message, _EMOTION_NEGATIVE_KW)
     # 累積式: 1 keyword 0.4, 2 keyword 0.8, 3+ keyword 1.0
     emotion_valence_offset = _clamp(
         (emo_pos - emo_neg) * 0.4,

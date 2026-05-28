@@ -159,6 +159,38 @@ def run_layer3_24h_medium(
     except Exception:
         pass
 
+    # ⭐ V3-O.7 D1/D2: 偏好升格 + 寫 60_Preference_Memory/{61_Owner,62_Viewer}/
+    # D 類修正: consolidate_preferences 函式完整存在但從未被 daemon 呼叫.
+    # Layer3 每天觸發 → episodic→semantic→habit 升格 + markdown 雙寫.
+    try:
+        from agent_memory.companion.preference_consolidator import consolidate_preferences
+        pref_stats = consolidate_preferences(vault_root)
+        pcount = (
+            pref_stats.get("promoted_to_semantic", 0)
+            + pref_stats.get("promoted_to_habit", 0)
+            + pref_stats.get("promoted_to_persona_candidate", 0)
+        )
+        if pcount > 0:
+            actions.append(f"preferences_consolidated({pcount})")
+    except Exception:
+        pass
+
+    # ⭐ V3-O.8: 82_Memory_Audit — Layer3 操作稽核記錄 (writer 已備妥，此處為呼叫方)
+    # 對齊 V3 §20.2 audit chain: 每次 Layer3 跑完寫一份稽核 md.
+    try:
+        import uuid as _uuid_ma
+        from agent_memory.companion.markdown_writers import write_memory_audit_md
+        write_memory_audit_md(
+            vault_root,
+            audit_id=_uuid_ma.uuid4().hex[:12],
+            audit_type="layer3_24h_medium",
+            summary=f"Layer3 完成 {len(actions)} 項操作",
+            details={"actions": "; ".join(actions[:10]) if actions else "none"},
+        )
+        actions.append("memory_audit_written(82_Memory_Audit)")
+    except Exception:
+        pass
+
     return CuratorRunResult(layer="layer3_24h_medium", actions_performed=actions)
 
 

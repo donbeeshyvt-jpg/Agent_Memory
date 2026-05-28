@@ -41,6 +41,7 @@ def apply_contagion(
     """V3 §29.11: viewer affect 部分映射到自己 affect."""
     factor = get_contagion_factor(is_owner=is_owner, intimacy_score=intimacy_score)
     if factor == 0.0:
+        # Stranger: zero contagion — own affect unchanged.
         return own_affect
 
     return AffectState(
