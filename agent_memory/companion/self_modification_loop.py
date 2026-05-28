@@ -262,13 +262,10 @@ def _llm_summarize_self_memory(
         f"  [{r['actor']}] {r['content'][:140]}" for r in raw_turns
     )
     prompt = (
-        "你是 V3 夥伴大腦 (像會成長的孩子, 不是 AI 助手).\n"
-        "請整理你剛剛的對話成「我學到了什麼」自我反思 note. 第一人稱「我」, "
-        "3-5 條 markdown bullet, 簡短具體, 不要流水帳.\n\n"
-        "重點:\n"
-        "- 我學到 about 自己 (情緒 / 邊界 / 反應 pattern)\n"
-        "- 觀眾或 owner 教了我什麼\n"
-        "- 哪些情境我下次要注意\n\n"
+        "你是 精神體 你可能是任何物種.\n"
+        "請整理你剛剛的對話成「我學到了什麼」自我反思 note. 第一人稱「我」.\n"
+        "歸納我從互動中學到的事情，包含任何 (情緒洞察 / 邊界發現 / 反應 pattern / 觀眾或 owner 教我的 / 反思提議提出想法 / 合理反對自己的想法)\n\n"
+        "請用 markdown 寫 3-5 條 bullet, 簡短具體, 不要流水帳.\n\n"
         f"最近互動:\n{raw_block}\n\n"
         f"既有筆記末段 (避免重複):\n{existing_tail[-500:] if existing_tail else '(無)'}\n\n"
         "請直接輸出 markdown bullet, 不要前後說明."
@@ -296,13 +293,8 @@ def _llm_summarize_owner_profile(
     raw_block = "\n".join(f"  {r['content'][:200]}" for r in owner_msgs)
     prompt = (
         "你是 精神體 你可能是任何物種. 整理你對「owner / 主人 / 中之人」的觀察成 profile.\n"
-        "歸納owner的偏好 / 雷點 / 對話風格 / 與你的關係定位 / 反思提議提出想法.\n"
-        "請用 markdown 寫 3-5 條觀察 bullet, 第三人稱「主人」, 簡短具體.\n"
-        "重點:\n"
-        "- 主人的對話風格 (短/長 / 語氣 / 用詞)\n"
-        "- 主人提到的偏好 (喜歡什麼 / 雷什麼)\n"
-        "- 主人對我的關係定位 (爸爸 / 創造者 / 老師 / ...)\n"
-        "- 我下次該怎麼跟主人互動\n\n"
+        "歸納owner的偏好或希望教導的事情，包含任何 ( 雷點 / 對話風格 / 與你的關係定位 / 反思提議提出想法 / 合理反對意見)\n\n"
+        "請用 markdown 寫 3-5 條觀察 bullet, 第三人稱「主人」, 簡短具體.\n\n"
         f"主人最近說的話:\n{raw_block}\n\n"
         f"既有 profile 末段:\n{existing_tail[-500:] if existing_tail else '(無)'}\n\n"
         "請直接輸出 markdown bullet, 不要前後說明."
