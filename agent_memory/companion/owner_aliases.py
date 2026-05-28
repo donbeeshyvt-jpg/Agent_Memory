@@ -102,12 +102,20 @@ def _save_raw(path: Path, data: _StoreData) -> None:
 
 
 def _load_soul_primary_aliases(vault_root: Path) -> list[str]:
-    """從 00.06_SOUL.md frontmatter primary_owner_alias: [...] 撈."""
-    soul_path = vault_root / "00_System_Identity" / "00.06_SOUL.md"
+    """從 00.06_Companion_SOUL.md frontmatter primary_owner_alias: [...] 撈."""
+    soul_path = vault_root / "00_System_Core" / "00.06_Companion_SOUL.md"
     if not soul_path.exists():
-        soul_path = vault_root / "00.06_SOUL.md"  # fallback
-    if not soul_path.exists():
-        return []
+        # legacy fallback paths
+        for cand in (
+            vault_root / "00_System_Core" / "00.06_SOUL.md",
+            vault_root / "00.06_Companion_SOUL.md",
+            vault_root / "00.06_SOUL.md",
+        ):
+            if cand.exists():
+                soul_path = cand
+                break
+        else:
+            return []
     try:
         text = soul_path.read_text(encoding="utf-8", errors="ignore")
     except Exception:
