@@ -59,6 +59,7 @@ class BridgeRelayClient(discord.Client):
         enable_message_content_intent: bool,
         mention_only_channels: set[int],
         allow_bot_author_ids: set[int] | None = None,
+        split_by_display_name: bool = False,
     ) -> None:
         intents = discord.Intents.default()
         intents.message_content = bool(enable_message_content_intent)
@@ -81,6 +82,11 @@ class BridgeRelayClient(discord.Client):
         # V3-D7 2026-05-26: bot author whitelist (給 AI 模擬觀眾 用)
         # 自己 (self.user.id) 一律 ignore (避免無限 loop), 白名單內其他 bot 可被處理
         self.allow_bot_author_ids = set(allow_bot_author_ids or set())
+        # V3-O.6 #5 (user 2026-05-28): AI viewer pool 用單個 bot 帳號發多 viewer prefix 訊息
+        # ("tako_yaki_8: 夜更かしして見てる" / "akari_chan: 笑い声かわいい"...).
+        # split flag 開時, 對 bot author 訊息 parse 開頭 <name>: → 用 name 當 effective user_id
+        # 對齊第 4 輪測試發現「觀眾 pool 62 turn 全部累在 author_id=15026... 學不到個人」
+        self.split_by_display_name = bool(split_by_display_name)
 
     async def _try_add_reaction(self, target: discord.Message, emoji: str) -> bool:
         try:
@@ -169,12 +175,39 @@ class BridgeRelayClient(discord.Client):
                 guild_id = str(message.guild.id)
         except Exception:
             pass
+
+        # V3-O.6 #4+#5: display_name 帶給 bridge.
+        #   #4: owner turn 自學進 .ai/owner_aliases.json (Discord 真實 display_name)
+        #   #5: AI bot viewer pool, parse 訊息開頭 <name>: → 用 name 當 effective user_id
+        real_author_id = str(message.author.id)
+        effective_user_id = real_author_id
+        real_display_name = str(getattr(message.author, "display_name", "") or "").strip()
+        viewer_prefix = ""
+        is_whitelisted_bot = bool(
+            getattr(message.author, "bot", False)
+            and message.author.id in self.allow_bot_author_ids
+        )
+        if self.split_by_display_name and is_whitelisted_bot:
+            m = re.match(
+                r"^([A-Za-z0-9_一-鿿぀-ゟ゠-ヿ\-\.]{2,32})\s*[:：]\s*(.*)",
+                text,
+                flags=re.DOTALL,
+            )
+            if m:
+                viewer_prefix = m.group(1).strip()
+                effective_user_id = f"ai-viewer-{viewer_prefix}"
+
         payload = {
             "content": text,
             "channel_id": str(message.channel.id),
             "guild_id": guild_id,
             "channel_kind": ("dm" if not guild_id else "public_text_channel"),
-            "author": {"id": str(message.author.id), "bot": bool(getattr(message.author, "bot", False))},
+            "author": {
+                "id": effective_user_id,
+                "real_id": real_author_id,
+                "display_name": viewer_prefix or real_display_name,
+                "bot": bool(getattr(message.author, "bot", False)),
+            },
             "mode": self.mode,
             "allow_llm_degraded": self.allow_llm_degraded,
         }
@@ -245,6 +278,12 @@ def _parse_args() -> argparse.Namespace:
         "--allow-bot-author", action="append", default=[],
         help="V3-D7: 允許處理該 bot id 送的訊息 (給 AI 模擬觀眾用, 可重複). 自己一律 ignore."
     )
+    parser.add_argument(
+        "--split-by-display-name", action="store_true",
+        help=("V3-O.6 #5: 對 --allow-bot-author 內 bot 訊息 parse 開頭 '<name>:' prefix → "
+              "用 name 當 effective user_id (synth 'ai-viewer-<name>'). "
+              "解 AI viewer pool 共用單一 bot 帳號 → 所有觀眾累在同 user_id, 學不到個人."),
+    )
     parser.add_argument("--read-reaction", default="\U0001F440", help="Emoji for read-ack on incoming message.")
     parser.add_argument("--processing-reaction", default="\U0001F9E0", help="Emoji while waiting bridge response.")
     parser.add_argument("--no-read-reaction", action="store_true", help="Disable read reaction.")
@@ -312,6 +351,7 @@ def main() -> int:
         enable_message_content_intent=not bool(args.disable_message_content_intent),
         mention_only_channels=mention_only_channels,
         allow_bot_author_ids=allow_bot_author_ids,
+        split_by_display_name=bool(args.split_by_display_name),
     )
     client.run(token)
     return 0

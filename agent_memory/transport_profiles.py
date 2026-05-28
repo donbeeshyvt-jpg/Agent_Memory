@@ -43,6 +43,8 @@ def _default_profiles() -> dict[str, Any]:
                 "message_candidates": ["content", "message.content", "text"],
                 "channel_candidates": ["channel_id", "message.channel_id", "thread_id"],
                 "user_candidates": ["author.id", "user.id", "member.user.id"],
+                # V3-O.6 #4+#5: relay inject author.display_name + author.real_id 給下游
+                "display_name_candidates": ["author.display_name", "user.display_name"],
             },
             "line": {
                 "enabled": True,

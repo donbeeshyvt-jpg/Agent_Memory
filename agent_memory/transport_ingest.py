@@ -46,6 +46,11 @@ class InboundTurn:
     message: str
     context: str
     session: str
+    # V3-O.6 #4+#5: Discord display_name 從 relay payload 帶上來
+    #   #4 owner turn → companion_chat_runtime 自學進 .ai/owner_aliases.json
+    #   #5 split-by-display-name 開時, user_id 已是 synth (e.g. "ai-viewer-tako_yaki_8"),
+    #      display_name 就是 prefix 本身, 給下游知道
+    display_name: str = ""
 
 
 def _get_by_path(payload: Any, path: str) -> Any:
@@ -154,6 +159,11 @@ def _extract_discord(payload: dict[str, Any], profile: dict[str, Any]) -> Inboun
         or "discord-default"
     )
     user_id = _first_text(payload, list(profile.get("user_candidates", []))) or str(payload.get("user_id", "")).strip()
+    # V3-O.6 #4+#5: display_name 從 relay 撈 (relay 已 inject author.display_name)
+    display_name = _first_text(
+        payload,
+        list(profile.get("display_name_candidates", ["author.display_name", "user.display_name"])),
+    )
     transport = "discord"
     context = str(profile.get("context_template", "{transport}:{channel_id}")).format(
         transport=transport,
@@ -172,6 +182,7 @@ def _extract_discord(payload: dict[str, Any], profile: dict[str, Any]) -> Inboun
         message=message,
         context=context.strip() or "discord:discord-default",
         session=session.strip() or "discord-discord-default",
+        display_name=display_name,
     )
 
 
@@ -424,6 +435,7 @@ def _run_companion_transport_event(
         concurrent_viewers=int(payload.get("concurrent_viewers", 0) or 0),
         idle_seconds=float(payload.get("idle_seconds", 0.0) or 0.0),
         chat_velocity=float(payload.get("chat_velocity", 0.5) or 0.5),
+        display_name=turn.display_name or "",
     )
 
     resp = run_companion_chat_turn(req, vault_root)
