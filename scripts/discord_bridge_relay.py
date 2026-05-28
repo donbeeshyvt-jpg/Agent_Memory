@@ -4,12 +4,40 @@ import argparse
 import asyncio
 import json
 import os
+import random
 import re
+import sys
 from typing import Any
 from urllib import error as url_error
 from urllib import request as url_request
 
 import discord
+
+
+# V3-O.6.2 #9 (user 2026-05-28): bridge timeout / HTTP error 友善訊息池.
+# 取代原本「bridge call failed: timed out」/「bridge HTTP error: 500」這類技術字串
+# 直接貼進聊天室 (對齊 user 觀察「不可以讓他說這句話出來」+ V3-O.2 timeout user msg
+# 風格「等等，我沒聽懂，你再說一次」一致).
+# 技術原文 (exc) 仍寫 stderr 給 ops 看 — 不是吞錯, 只是不對 chat user 暴露.
+_FRIENDLY_TIMEOUT_POOL = (
+    "等等，我這邊訊號好像卡到了，你再說一次給我聽？",
+    "啊我剛剛沒接到，能再說一遍嗎？",
+    "嗯…我這邊有點忙，等等再說一次好嗎？",
+    "稍等我一下，剛剛訊號斷了，再講一次給我聽？",
+)
+_FRIENDLY_HTTP_POOL = (
+    "等等，我這邊好像有點怪怪的，你再說一次給我聽？",
+    "嗯…剛剛沒接好，能再說一遍嗎？",
+    "稍等我一下，再說一次好嗎？",
+)
+
+
+def _friendly_timeout_reply() -> str:
+    return random.choice(_FRIENDLY_TIMEOUT_POOL)
+
+
+def _friendly_http_reply() -> str:
+    return random.choice(_FRIENDLY_HTTP_POOL)
 
 
 def _post_json(url: str, payload: dict[str, Any], timeout_s: float) -> dict[str, Any]:
@@ -224,14 +252,25 @@ class BridgeRelayClient(discord.Client):
         except url_error.HTTPError as exc:
             if processing_added:
                 await self._try_remove_reaction(message, self.processing_reaction)
-            error_reply = await message.reply(f"bridge HTTP error: {exc.code}", mention_author=False)
+            # V3-O.6.2 #9: \u6280\u8853\u7D30\u7BC0 stderr, \u5C0D chat \u7D66\u89D2\u8272\u8A9E\u6C23\u8A0A\u606F
+            print(
+                f"[ERR] bridge HTTP {exc.code} chan={message.channel.id} user={message.author.id}: {exc}",
+                file=sys.stderr, flush=True,
+            )
+            error_reply = await message.reply(_friendly_http_reply(), mention_author=False)
             if self.enable_response_reaction:
                 await self._try_add_reaction(error_reply, "\u26A0\uFE0F")
             return
         except Exception as exc:  # noqa: BLE001
             if processing_added:
                 await self._try_remove_reaction(message, self.processing_reaction)
-            error_reply = await message.reply(f"bridge call failed: {exc}", mention_author=False)
+            # V3-O.6.2 #9: \u6280\u8853\u7D30\u7BC0 stderr, \u5C0D chat \u7D66\u89D2\u8272\u8A9E\u6C23\u8A0A\u606F (\u542B timed out)
+            print(
+                f"[ERR] bridge call failed chan={message.channel.id} user={message.author.id}: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr, flush=True,
+            )
+            error_reply = await message.reply(_friendly_timeout_reply(), mention_author=False)
             if self.enable_response_reaction:
                 await self._try_add_reaction(error_reply, "\u26A0\uFE0F")
             return
@@ -273,7 +312,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow degraded responses from bridge.",
     )
-    parser.add_argument("--timeout", type=float, default=90.0, help="Bridge HTTP timeout in seconds.")
+    parser.add_argument(
+        "--timeout", type=float, default=240.0,
+        help=("Bridge HTTP timeout in seconds. V3-O.6.2: default 90→240 給 LLM lock (120s) + "
+              "並行 (env AGENT_MEMORY_LLM_PARALLEL) buffer."),
+    )
     parser.add_argument(
         "--allow-bot-author", action="append", default=[],
         help="V3-D7: 允許處理該 bot id 送的訊息 (給 AI 模擬觀眾用, 可重複). 自己一律 ignore."

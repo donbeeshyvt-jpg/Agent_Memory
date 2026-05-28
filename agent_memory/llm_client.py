@@ -45,7 +45,30 @@ class LLMGenerateResult:
 _THINK_BLOCK_RE = re.compile(r"<think>\s*.*?\s*</think>\s*", flags=re.IGNORECASE | re.DOTALL)
 _LLAMA_CACHE_LOCK = threading.Lock()
 _LLAMA_CACHE: dict[tuple[str, int, int, int, int, bool, str], Any] = {}
-_LLM_GENERATE_LOCK = threading.Lock()
+
+
+def _build_llm_concurrency_primitive() -> threading.BoundedSemaphore:
+    """V3-O.6.2 #8 (user 2026-05-28): LLM 並行原語.
+
+    第 4 輪 viewer barrage 22/62 timeout 全卡 lock — V3-O.6 #6 把 lock 拉到 120s 是
+    *延長等待* 治標, 但人多時根本是 serialize 排隊 → 同時 3-5 viewer 也只能 1 by 1.
+
+    改用 BoundedSemaphore(N), env AGENT_MEMORY_LLM_PARALLEL 覆蓋:
+      - N=1 (預設, backward compat) — 跟舊 Lock 一樣 strict serial
+      - N=2~3 — viewer barrage 場景, 2-3 LLM 平行跑
+      - N>3 — 對 OpenRouter free tier 風險 rate-limit, 留 user 自決
+
+    BoundedSemaphore.acquire(timeout=x) API 跟 Lock 一致, caller 不用改.
+    """
+    raw = os.getenv("AGENT_MEMORY_LLM_PARALLEL", "1").strip()
+    try:
+        n = max(1, int(raw))
+    except ValueError:
+        n = 1
+    return threading.BoundedSemaphore(n)
+
+
+_LLM_GENERATE_LOCK = _build_llm_concurrency_primitive()
 
 
 def _evict_llama_cache_until(max_cached_models: int) -> None:
