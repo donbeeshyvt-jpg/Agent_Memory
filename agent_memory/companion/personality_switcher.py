@@ -101,13 +101,43 @@ def switch_personality(vault_root: Path, target: str) -> dict:
 
 
 def get_current_baselines(vault_root: Path) -> dict:
-    """V3 §17.2: 給 chat_runtime / seven_emotions_balance 用."""
+    """V3 §17.2 + V3-O.10 #35: 給 chat_runtime / seven_emotions_balance 用.
+    V3-O.10 #35: 加入 dynamic_baseline_overlay 的 effective_baseline 計算.
+    """
     config = load_personality_config(vault_root)
     available = config.available or dict(_DEFAULT_AVAILABLE)
     cur = available.get(config.current, available.get("daily_mode", {}))
+
+    soul_baselines = {
+        "baseline_balance": float(cur.get("baseline_balance", 0.3)),
+        "baseline_silence_intolerance": float(cur.get("baseline_silence_intolerance", 0.5)),
+        "engagement_seeking": float(cur.get("baseline_engagement_seeking", 0.5)),
+        "curiosity_urge": float(cur.get("baseline_curiosity_urge", 0.5)),
+        "topic_drive": float(cur.get("baseline_topic_drive", 0.5)),
+    }
+
+    # V3-O.10 #35: overlay effective_baseline (SOUL + delta)
+    effective = dict(soul_baselines)
+    try:
+        import yaml as _yaml_pb
+        _ccfg_p = vault_root / "00_System_Core" / "companion_config.yaml"
+        _ov_cfg: dict = {}
+        if _ccfg_p.exists():
+            _ccfg = _yaml_pb.safe_load(_ccfg_p.read_text(encoding="utf-8")) or {}
+            _ov_cfg = (_ccfg.get("personality", {}) or {}).get("dynamic_overlay", {}) or {}
+        if _ov_cfg.get("enabled", True):
+            from agent_memory.companion.dynamic_baseline_overlay import get_overlay
+            overlay = get_overlay(vault_root, config=_ov_cfg)
+            effective = overlay.get_effective_baselines(soul_baselines)
+    except Exception:
+        pass
+
     return {
         "current": config.current,
-        "baseline_balance": cur.get("baseline_balance", 0.3),
-        "baseline_silence_intolerance": cur.get("baseline_silence_intolerance", 0.5),
+        "baseline_balance": effective.get("baseline_balance", 0.3),
+        "baseline_silence_intolerance": effective.get("baseline_silence_intolerance", 0.5),
         "soul_path": cur.get("soul_path", ""),
+        # V3-O.10 #35: 原始 SOUL 值也保留 (給 audit 用)
+        "soul_baseline_silence_intolerance": soul_baselines["baseline_silence_intolerance"],
+        "soul_baseline_balance": soul_baselines["baseline_balance"],
     }

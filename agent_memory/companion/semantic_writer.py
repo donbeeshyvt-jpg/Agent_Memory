@@ -209,7 +209,7 @@ def consolidate_semantic_concepts_via_llm(vault_root: Path) -> int:
         f"輸出 (僅 1-3 行, 無解釋):"
     )
     try:
-        result = call_llm_for_text(client, prompt, persona_id="companion", max_tokens=500)
+        result = call_llm_for_text(client, prompt, persona_id="companion", max_tokens=500, auxiliary="semantic_consolidation")
         text = (result.text or "").strip()
     except Exception:
         return 0

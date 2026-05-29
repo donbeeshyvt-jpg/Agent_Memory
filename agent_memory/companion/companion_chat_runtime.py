@@ -325,6 +325,19 @@ def _load_recent_memory_tail(vault_root: Path, *, max_chars: int = 600) -> tuple
     return mem_tail, prof_tail
 
 
+def _get_group_sentiment_safe(vault_root: Optional[Path], exclude_user_id: str = "") -> dict:
+    """V3-O.10 #39: 安全包裝 get_group_sentiment，失敗回 neutral dict."""
+    if vault_root is None:
+        return {"avg_valence": 0.0, "avg_arousal": 0.3, "viewer_count": 0,
+                "dominant_emotion": "neutral", "window_minutes": 5}
+    try:
+        from agent_memory.companion.group_sentiment import get_group_sentiment
+        return get_group_sentiment(vault_root, window_minutes=5, exclude_user_id=exclude_user_id)
+    except Exception:
+        return {"avg_valence": 0.0, "avg_arousal": 0.3, "viewer_count": 0,
+                "dominant_emotion": "neutral", "window_minutes": 5}
+
+
 def _load_recent_injection_hint(vault_root: Path, user_id: str, look_back_hours: int = 24) -> str:
     """V3-H1 (user 2026-05-27 殘-02): 撈近 24h 同 user injection 紀錄 → 警覺提示給 LLM.
 
@@ -846,14 +859,18 @@ def _render_current_user_message(user_message: str) -> str:
 </current_user_message>"""
 
 
-def _render_final_generation_instruction(decision: str) -> str:
+def _render_final_generation_instruction(decision: str, *, modifier_suppression: list | None = None) -> str:
     """V3-O.5 spec §7.12 + V3-O.6 #1 (user 2026-05-28 拍板「不硬切, 用 input 約束」):
     鎖任務 + 加 output_formatting_rules input 約束 (取代 post-process 硬切).
+    V3-O.10 #34: modifier_suppression — 反思過濾抑制清單加到指令.
     """
     extra = ""
     if decision in ("REFUSE", "SAFE_REDIRECT"):
         extra = ("\n  Current decision_mode is " + decision +
                  ". Use soul_and_persona_context character voice to deflect gracefully or redirect to safer topic, without using technical terms.")
+    if modifier_suppression:
+        suppress_str = "、".join(modifier_suppression)
+        extra += f"\n  [REFLECTION-FILTER] 根據自我反思, 本輪請抑制以下傾向: {suppress_str}. 不要主動拋問題或要求對方出題."
     return f"""<final_generation_instruction>
   Read parameter_dictionary first.
   Read current_parameter_values as control signals.
@@ -897,6 +914,7 @@ def _render_final_generation_instruction(decision: str) -> str:
 def _humanize_affect(
     affect: dict, emotion: dict, balance: dict, policy: dict,
     *, appraisal: Optional[dict] = None,
+    vault_root: Optional[Path] = None,
 ) -> str:
     """V3-E7+H1 (user 2026-05-27): VAD/七情/天平/appraisal 數字 → 主觀感受句.
 
@@ -1146,7 +1164,10 @@ def _build_companion_system_prompt(
     ))
     sections.append(_render_recent_dialogue_context(recent_history))                # 10
     sections.append(_render_current_user_message(user_message))                     # 11
-    sections.append(_render_final_generation_instruction(decision))                 # 12
+    sections.append(_render_final_generation_instruction(                           # 12
+        decision,
+        modifier_suppression=prompt_packet.get("modifier_suppression") or [],
+    ))
 
     # 中之人臨時補充 (00.02), 插在 packet_policy 後; 對齊 V3-L 設計
     if vault_root is not None:
@@ -1249,7 +1270,7 @@ def _log_llm_failure(vault_root: Path, exc: Exception, prompt_packet: dict) -> N
 
 def _real_companion_llm(
     prompt_packet: dict, vault_root: Path,
-    *, user_id: str = "", session_id: str = "",
+    *, user_id: str = "", session_id: str = "", priority: str = "viewer",
 ) -> str:
     """V3-D6 + V3-E1/E3/E5: 走 LLMClient (預設 OpenRouter) + 連續對話 history + retry + Output 限制.
 
@@ -1309,6 +1330,7 @@ def _real_companion_llm(
                 persona_id="companion",
                 temperature=0.7,
                 timeout_s=60.0,
+                priority=priority,  # V3-O.10 #5: owner 優先
             )
             raw = (result.content or "").strip()
             cleaned = _strip_think_tags(raw)
@@ -1329,7 +1351,7 @@ def _real_companion_llm(
 
 def _adaptive_companion_llm(
     prompt_packet: dict, vault_root: Path,
-    *, user_id: str = "", session_id: str = "",
+    *, user_id: str = "", session_id: str = "", priority: str = "viewer",
 ) -> str:
     """V3-D6 + V3-E1 adaptive LLM dispatcher:
     - env AGENT_MEMORY_COMPANION_LLM_FORCE_STUB=1 → 強制 stub
@@ -1346,7 +1368,7 @@ def _adaptive_companion_llm(
     if not has_any_key:
         return _stub_llm(prompt_packet)
     try:
-        return _real_companion_llm(prompt_packet, vault_root, user_id=user_id, session_id=session_id)
+        return _real_companion_llm(prompt_packet, vault_root, user_id=user_id, session_id=session_id, priority=priority)
     except Exception as exc:
         _log_llm_failure(vault_root, exc, prompt_packet)
         # V3-O.4 (user 2026-05-28 拍板): timeout 文字改回顯示, 不靜默
@@ -1379,9 +1401,20 @@ def _write_turn_timing_log(
 
     每 turn 一行 JSON: trace_id / user_id / channel / total_ms / per-step ms.
     user tail -f 即時看 / 也可 sort 排「哪 step 最花時間」.
+    V3-O.10 #24: yaml performance.enable_step_timing_log=false 可關.
     """
     if vault_root is None:
         return
+    # V3-O.10 #24: 讀 yaml 開關 (預設 true)
+    try:
+        import yaml as _yaml_tl
+        _ccfg_p = vault_root / "00_System_Core" / "companion_config.yaml"
+        if _ccfg_p.exists():
+            _ccfg = _yaml_tl.safe_load(_ccfg_p.read_text(encoding="utf-8")) or {}
+            if not _ccfg.get("performance", {}).get("enable_step_timing_log", True):
+                return
+    except Exception:
+        pass
     try:
         log_path = vault_root / ".ai" / "turn_timings.jsonl"
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1428,7 +1461,9 @@ def run_companion_chat_turn(
     if llm_fn is None:
         _uid = request.user_id
         _sid = request.session_id
-        llm_fn = lambda pkt: _adaptive_companion_llm(pkt, vault_root, user_id=_uid, session_id=_sid)
+        # V3-O.10 #5: priority 傳入 (owner=0 / vip=1 / viewer=2)
+        _prio = "owner" if request.is_owner else "viewer"
+        llm_fn = lambda pkt: _adaptive_companion_llm(pkt, vault_root, user_id=_uid, session_id=_sid, priority=_prio)
     rng = random.Random(rng_seed) if rng_seed is not None else random.Random()
     request_id = str(uuid.uuid4())
     trace_id = str(uuid.uuid4())
@@ -1444,6 +1479,22 @@ def run_companion_chat_turn(
         resp.response_text = "(空訊息, 跳過 pipeline)"
         return resp
     _mark_step_time(_step_timings, "step1_input")
+
+    # ─── Step 1.5: Viewer drop policy (V3-O.10 #6) ───
+    # 同 viewer user_id 5s 內重發丟舊 turn, 保護 owner + LLM lock
+    if not request.is_owner and request.user_id not in ("", "anonymous"):
+        try:
+            import time as _time_drop
+            from agent_memory.llm_client import _VIEWER_PENDING, _VIEWER_PENDING_LOCK, _VIEWER_DROP_COOLDOWN_S
+            _now_drop = _time_drop.monotonic()
+            with _VIEWER_PENDING_LOCK:
+                _last = _VIEWER_PENDING.get(request.user_id, 0.0)
+                if _now_drop - _last < _VIEWER_DROP_COOLDOWN_S:
+                    resp.response_text = ""  # 靜默丟棄 (Q8: DC relay 端另行處理友善提示)
+                    return resp
+                _VIEWER_PENDING[request.user_id] = _now_drop
+        except Exception:
+            pass
 
     # ─── Step 2: Injection Detector ───
     # 對齊真實模擬 bugfix 2026-05-26: scan_incoming_user_text() 回 dict, 看 'detected' bool
@@ -1510,6 +1561,12 @@ def run_companion_chat_turn(
             )
         except Exception:
             pass
+        # V3-O.10 #15: viewer 自報暱稱偵測
+        try:
+            from agent_memory.companion.viewer_nickname_evolver import maybe_update_nickname
+            maybe_update_nickname(vault_root, request.user_id, request.message)
+        except Exception:
+            pass
     resp.pipeline_steps_done.append(25)
     _mark_step_time(_step_timings, "step2_5_ensure_user")
 
@@ -1523,6 +1580,79 @@ def run_companion_chat_turn(
     resp.pipeline_steps_done.append(4)
     resp.pipeline_steps_done.append(5)
     _mark_step_time(_step_timings, "step4_5_appraisal_affect")
+
+    # ─── Step 4.1: appraisal_records DB 寫入 (V3-O.10 #11) ───
+    if vault_root is not None:
+        try:
+            import uuid as _uuid_apr
+            from datetime import datetime as _dt_apr, timezone as _tz_apr
+            from agent_memory.companion.companion_db import open_companion_db
+            _apr_id = _uuid_apr.uuid4().hex
+            _raw_event_id = getattr(request, "event_id", "") or ""
+            with open_companion_db(vault_root) as _conn_apr:
+                _conn_apr.execute(
+                    "INSERT OR IGNORE INTO appraisal_records "
+                    "(appraisal_id, user_id, event_id, novelty, goal_congruence, control, "
+                    "certainty, norm_fit, identity_relevance, relationship_impact, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        _apr_id, request.user_id, _raw_event_id,
+                        appraisal.novelty, appraisal.goal_congruence, appraisal.control,
+                        appraisal.certainty, appraisal.norm_fit,
+                        appraisal.identity_relevance, appraisal.relationship_impact,
+                        _dt_apr.now(_tz_apr.utc).isoformat(),
+                    ),
+                )
+        except Exception:
+            pass
+
+    # ─── Step 5.0: affect_states DB 寫入 (V3-O.10 #12) ───
+    if vault_root is not None:
+        try:
+            import uuid as _uuid_aff
+            from datetime import datetime as _dt_aff, timezone as _tz_aff
+            from agent_memory.companion.companion_db import open_companion_db
+            with open_companion_db(vault_root) as _conn_aff:
+                _conn_aff.execute(
+                    "INSERT OR IGNORE INTO affect_states "
+                    "(state_id, user_id, session_id, valence, arousal, dominance, uncertainty, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
+                    (
+                        _uuid_aff.uuid4().hex, request.user_id, request.session_id,
+                        new_affect.valence, new_affect.arousal,
+                        new_affect.dominance, new_affect.uncertainty,
+                        _dt_aff.now(_tz_aff.utc).isoformat(),
+                    ),
+                )
+        except Exception:
+            pass
+
+    # ─── Step 4.5: LLM emotion fallback (V3-O.10 #10, Q7: 每 turn 觸發) ───
+    # keyword valence ~0 時呼叫 openrouter_sub 輕量模型補判情緒 (解 B3 完整版)
+    # Q7 拍板: 每 turn 跑, openrouter_sub 不佔主對話 lock
+    if vault_root is not None and abs(appraisal.emotion_valence_offset) < 0.1 and len(request.message) > 5:
+        try:
+            from agent_memory.llm_text_helpers import call_llm_for_text
+            _emo_prompt = (
+                f"以下是一句繁體中文對話訊息。請判斷說話者的情緒效價：\n"
+                f"訊息: 「{request.message[:200]}」\n"
+                f"請僅輸出一個浮點數，範圍 -1.0（非常負面）到 +1.0（非常正面），0.0 表示中性。"
+            )
+            _emo_result = call_llm_for_text(
+                vault_root, _emo_prompt,
+                persona_id="companion", temperature=0.0, timeout_s=10.0,
+                auxiliary="emotion_appraisal",
+            )
+            import re as _re_emo
+            _emo_match = _re_emo.search(r"-?\d+\.?\d*", _emo_result)
+            if _emo_match:
+                _emo_val = max(-1.0, min(1.0, float(_emo_match.group())))
+                if abs(_emo_val) > 0.05:
+                    appraisal.emotion_valence_offset = _emo_val
+        except Exception:
+            pass
+    resp.pipeline_steps_done.append(45)
+    _mark_step_time(_step_timings, "step4_5_llm_emotion_fallback")
 
     # ─── Step 5.1: Core Affect Log (V3-O.7 Phase 3) ───
     # |valence|>0.4 時寫 31_Core_Affect_Logs，避免每 turn 都寫造成爆量
@@ -1818,6 +1948,39 @@ def run_companion_chat_turn(
     resp.pipeline_steps_done.append(12)
     _mark_step_time(_step_timings, "step12_decision")
 
+    # ─── Step 12.5: Reflection Modifier Filter (V3-O.10 #34) ───
+    # 依 00.07 反思偵測 anti-pattern → 若發現不應有的傾向, 加 suppression hint 進 prompt_packet
+    _modifier_suppression: list[str] = []
+    if vault_root is not None:
+        try:
+            import yaml as _yaml_rmf
+            from agent_memory.companion.reflection_modifier_filter import get_reflection_filter
+            _use_llm_rmf = False
+            _extra_rmf: list[str] = []
+            _ccfg_rmf = vault_root / "00_System_Core" / "companion_config.yaml"
+            if _ccfg_rmf.exists():
+                _ccfg_d_rmf = _yaml_rmf.safe_load(_ccfg_rmf.read_text(encoding="utf-8")) or {}
+                _rmf_cfg = _ccfg_d_rmf.get("metacognition", {}).get("reflection_modifier_filter", {})
+                if _rmf_cfg.get("enabled", True):
+                    _use_llm_rmf = bool(_rmf_cfg.get("use_llm_fallback", False))
+                    _extra_rmf = list(_rmf_cfg.get("anti_pattern_extra", []) or [])
+                    _filter = get_reflection_filter(vault_root, use_llm_fallback=_use_llm_rmf, extra_patterns=_extra_rmf)
+                    # 用目前 balance 子軸推導可能 modifiers
+                    _candidate_mods = []
+                    if new_bal.engagement_seeking > 0.6:
+                        _candidate_mods.append("想多互動")
+                    if new_bal.silence_intolerance > 0.6:
+                        _candidate_mods.append("不想冷場")
+                    if new_bal.curiosity_urge > 0.6:
+                        _candidate_mods.append("好想問問題")
+                    if _candidate_mods:
+                        _suppressed = [m for m in _candidate_mods if m not in _filter.filter_modifiers(_candidate_mods)]
+                        _modifier_suppression = _suppressed
+        except Exception:
+            pass
+    resp.pipeline_steps_done.append(125)
+    _mark_step_time(_step_timings, "step12_5_reflection_filter")
+
     # ─── Step 13: Policy Mapper ───
     policy = map_policy(
         appraisal, new_affect, new_emo, new_bal,
@@ -1869,6 +2032,10 @@ def run_companion_chat_turn(
         # ⭐ V3-O.7 Round D: 朋友卡 input 收束 — 已知觀眾的個人記憶卡注入 LLM context
         # "" 表示新觀眾 / 尚無卡片, LLM 走一般 non-viewer 路徑
         "viewer_dynamic_context": _viewer_card_md,
+        # ⭐ V3-O.10 #39: 群體 sentiment (5min 滑窗, 所有 viewer 平均氛圍)
+        "group_sentiment": _get_group_sentiment_safe(vault_root, request.user_id),
+        # ⭐ V3-O.10 #34: 反思過濾器抑制清單 (空 list = 不抑制)
+        "modifier_suppression": _modifier_suppression,
     }
     resp.pipeline_steps_done.append(14)
     _mark_step_time(_step_timings, "step14_packet_build")
@@ -2313,5 +2480,14 @@ def run_companion_chat_turn(
         total_ms=_total_ms,
         timings=_step_timings,
     )
+
+    # V3-O.10 #6: viewer turn 完成後清除 pending 標記 (讓下一則正常訊息不被誤丟)
+    if not request.is_owner and request.user_id not in ("", "anonymous"):
+        try:
+            from agent_memory.llm_client import _VIEWER_PENDING, _VIEWER_PENDING_LOCK
+            with _VIEWER_PENDING_LOCK:
+                _VIEWER_PENDING.pop(request.user_id, None)
+        except Exception:
+            pass
 
     return resp

@@ -182,7 +182,7 @@ def consolidate_skills_via_llm(vault_root: Path) -> int:
             "輸出 (僅 4 行, 無解釋):"
         )
         try:
-            result = call_llm_for_text(client, prompt, persona_id="companion", max_tokens=400)
+            result = call_llm_for_text(client, prompt, persona_id="companion", max_tokens=400, auxiliary="skill_consolidation")
             text = (result.text or "").strip()
         except Exception:
             continue

@@ -251,7 +251,7 @@ def build_narrative_arc_via_llm(vault_root: Path) -> int:
             "輸出 (僅 3 行, 無解釋):"
         )
         try:
-            result = call_llm_for_text(client, prompt, persona_id="companion", max_tokens=500)
+            result = call_llm_for_text(client, prompt, persona_id="companion", max_tokens=500, auxiliary="narrative_synthesis")
             text = (result.text or "").strip()
         except Exception:
             continue

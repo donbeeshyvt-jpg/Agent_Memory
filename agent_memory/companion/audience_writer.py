@@ -197,6 +197,29 @@ def write_viewer_profile(
         lines.append("- (還沒有對話紀錄)")
         lines.append("")
 
+    # V3-O.10 #38: 情緒貢獻軌跡段 (per-viewer emotion impact tracking)
+    try:
+        from agent_memory.companion.companion_db import open_companion_db as _odb
+        with _odb(vault_root) as _ec:
+            _emo_rows = _ec.execute(
+                "SELECT valence, arousal, dominant_emotion, timestamp FROM emotion_state "
+                "WHERE user_id=? ORDER BY timestamp DESC LIMIT 5",
+                (user_id,),
+            ).fetchall()
+        if _emo_rows:
+            lines.append("## 情緒貢獻軌跡 (近 5 turn)")
+            lines.append("")
+            for _er in _emo_rows:
+                _ts = (_er["timestamp"] or "")[:16]
+                _v = float(_er["valence"] or 0.0)
+                _a = float(_er["arousal"] or 0.0)
+                _emo = _er["dominant_emotion"] or "neutral"
+                _sign = "+" if _v >= 0 else ""
+                lines.append(f"- [{_ts}] val={_sign}{_v:.2f} aro={_a:.2f} emo={_emo}")
+            lines.append("")
+    except Exception:
+        pass
+
     lines.append("## 我下次對這個觀眾的策略 (dispatcher hint)")
     lines.append("")
     if loyalty_tier == "banned":

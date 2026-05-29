@@ -44,7 +44,7 @@ def run_layer0_in_stream(
     """V3 §21.1 第 0 層: 每 5-30 turn 跑.
 
     動作 (對應 §21.1):
-    - emotion_state 衰減 ×0.97 (high frequency)
+    - emotion_state 衰減 ×0.99 (V3-O.10 #32: 0.97→0.99, 強情緒停留更久, 解 B9)
     - balance_state 衰減 (主動 4 軸向 0.3 baseline)
     - 強情緒事件 |v|>0.7 即時升中 (大部分 chat_runtime Step 17 已做)
     - knowledge_gap priority 重排
@@ -53,7 +53,7 @@ def run_layer0_in_stream(
     for uid in (all_user_ids or []):
         emo = read_latest_emotion_state(vault_root, uid)
         if emo:
-            decayed = decay_emotions(emo, rate=0.97)
+            decayed = decay_emotions(emo, rate=0.99)
             write_emotion_state(vault_root, uid, decayed, AffectState(), session_id=session_id)
             actions.append(f"emotion_decay({uid})")
         bal = read_latest_balance_state(vault_root, uid)
@@ -363,7 +363,7 @@ def _consolidate_daily_knowledge(vault_root: Path) -> int:
             "輸出 (僅一行, 無解釋):"
         )
         try:
-            result = call_llm_for_text(client, prompt, persona_id="companion", max_tokens=120)
+            result = call_llm_for_text(client, prompt, persona_id="companion", max_tokens=120, auxiliary="umbrella_consolidation")
             text = (result.text or "").strip()
         except Exception:
             continue
@@ -491,7 +491,7 @@ def _ingest_external_knowledge(vault_root: Path) -> int:
             f"文件原文 (來源: {src_file.name}):\n{content_trim}\n"
         )
         try:
-            result = call_llm_for_text(client, prompt, persona_id="companion", max_tokens=400)
+            result = call_llm_for_text(client, prompt, persona_id="companion", max_tokens=400, auxiliary="knowledge_summary")
             text = (result.text or "").strip()
         except Exception:
             continue

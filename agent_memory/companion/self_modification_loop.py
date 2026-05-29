@@ -362,11 +362,42 @@ def flush_self_memory(
     # char limit check (V3-H7: 傳 vault_root 開啟 LLM 壓縮路徑)
     compressed = _enforce_char_limit_compress(memory_path, char_limit_mem, vault_root=vault_root)
 
+    # V3-O.10 #35 Step 18.6: overlay delta 推導 (寫完 00.07 後觸發)
+    overlay_updated: list[str] = []
+    if llm_used and section:
+        try:
+            import yaml as _yaml_ov
+            _ccfg_p = vault_root / "00_System_Core" / "companion_config.yaml"
+            _ov_cfg: dict = {}
+            _personality_cfg: dict = {}
+            if _ccfg_p.exists():
+                _ccfg = _yaml_ov.safe_load(_ccfg_p.read_text(encoding="utf-8")) or {}
+                _personality_cfg = _ccfg.get("personality", {}) or {}
+                _ov_cfg = _personality_cfg.get("dynamic_overlay", {}) or {}
+            if _ov_cfg.get("enabled", True):
+                from agent_memory.companion.dynamic_baseline_overlay import flush_overlay_from_reflection, get_overlay
+                _reflection_text = section
+                overlay_updated = flush_overlay_from_reflection(vault_root, _reflection_text, config=_ov_cfg)
+                # V3-O.10 #40: overlay 有更新時升格 SOUL.dynamic_sections
+                if overlay_updated:
+                    from agent_memory.companion.personality_switcher import get_current_baselines
+                    from agent_memory.companion.soul_dynamic_writer import promote_overlay_to_soul
+                    _eff = get_current_baselines(vault_root)
+                    _evolution_min = int(_personality_cfg.get("evolution_interval_minutes", 5))
+                    promote_overlay_to_soul(
+                        vault_root, overlay_updated,
+                        effective_baselines=_eff,
+                        evolution_interval_minutes=_evolution_min,
+                    )
+        except Exception:
+            pass
+
     return {
         "flushed": True, "reason": "ok",
         "char_limit": char_limit_mem,
         "compressed": compressed,
         "llm_used": llm_used,
+        "overlay_updated": overlay_updated,
         "memory_path": str(memory_path.relative_to(vault_root)),
     }
 
