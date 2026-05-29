@@ -34,6 +34,15 @@ _AXES = [
     "topic_drive", "baseline_balance",
 ]
 
+# V3-O.10 ISSUE-3 fix: personality_switcher 的 soul_baselines 對「沉默不耐」這軸
+# 用的 key 是 baseline_silence_intolerance, 但 overlay store / _AXES 用 silence_intolerance.
+# 不對照的話 get_effective_baselines 會查不到該軸 → silence_intolerance 的 overlay delta
+# 被默默丟掉 (其餘 4 軸 key 剛好相符故正常). 此處把 soul key 映回 overlay 軸名.
+# 注意: 不可用 strip "baseline_" 前綴的做法, 因 baseline_balance 在 _AXES 也帶前綴會錯切成 balance.
+_SOUL_KEY_TO_AXIS = {
+    "baseline_silence_intolerance": "silence_intolerance",
+}
+
 _MAX_DELTA = 0.4
 _STEP_SIZE = 0.05
 _CONFIDENCE_THRESHOLD = 0.6
@@ -187,7 +196,10 @@ class DynamicBaselineOverlay:
         baseline = self.apply_decay(self.load())
         result = {}
         for axis, soul_val in soul_baselines.items():
-            result[axis] = baseline.get_effective(soul_val, axis)
+            # V3-O.10 ISSUE-3 fix: soul key (e.g. baseline_silence_intolerance)
+            # 映回 overlay 軸名 (silence_intolerance) 再查, 否則該軸 delta 失效.
+            overlay_axis = _SOUL_KEY_TO_AXIS.get(axis, axis)
+            result[axis] = baseline.get_effective(soul_val, overlay_axis)
         return result
 
     def derive_delta_from_reflection(self, reflection_text: str) -> list[dict]:
