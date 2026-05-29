@@ -128,9 +128,19 @@ def _merge_companion_llm_config(vault_root: Path, base_config: dict[str, Any]) -
     # 1. providers merge (companion 優先覆蓋同名)
     providers = dict(merged.get("providers", {}) if isinstance(merged.get("providers"), dict) else {})
     cc_providers = llm.get("providers", {})
+    _LOCAL_KINDS = {"llama_cpp_python", "llama_cpp_local", "ollama"}
     if isinstance(cc_providers, dict):
         for name, pcfg in cc_providers.items():
             if isinstance(pcfg, dict):
+                pcfg = dict(pcfg)
+                # 本地 provider (GGUF/ollama) 自動補 2 個欄位, 避免 _generate_core 誤跳:
+                #   requires_api_key=False — 否則預設 True + 無 key → skip → 誤 fallback 線上
+                #   base_url 佔位 — _generate_core 有 "if not base_url: skip" check,
+                #     本地不需 URL 但要給佔位 (對齊 legacy llm_router llama_cpp_local 設計)
+                if str(pcfg.get("kind", "")).strip() in _LOCAL_KINDS:
+                    pcfg.setdefault("requires_api_key", False)
+                    if not str(pcfg.get("base_url", "")).strip():
+                        pcfg["base_url"] = "local://" + str(pcfg.get("kind", "local"))
                 providers[name] = pcfg
     merged["providers"] = providers
 

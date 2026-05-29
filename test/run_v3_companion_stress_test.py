@@ -988,9 +988,9 @@ def section_P_contagion_embodied_daydream(report: TestReport):
     f_casual = get_contagion_factor(intimacy_score=0.25)
     f_stranger = get_contagion_factor(intimacy_score=0.0)
     report.add("P", "P1_contagion_factors_owner_0_4",
-               f_owner == 0.4 and f_vip == 0.2 and f_casual == 0.1 and f_stranger == 0.0,
+               f_owner == 0.4 and f_vip == 0.2 and f_casual == 0.1 and f_stranger == 0.05,
                actual=f"owner={f_owner} vip={f_vip} casual={f_casual} stranger={f_stranger}",
-               expected="0.4/0.2/0.1/0.0")
+               expected="0.4/0.2/0.1/0.05")  # V3-O.10 #33: stranger 0→0.05 微弱影響
 
     # P2: Contagion math — own=0 viewer=-0.8 owner → -0.32
     own = AffectState(valence=0.0)
