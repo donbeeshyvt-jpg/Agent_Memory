@@ -151,6 +151,10 @@ def _merge_companion_llm_config(vault_root: Path, base_config: dict[str, Any]) -
         mc_model = str(main_chat.get("model", "")).strip()
         if mc_provider and mc_model:
             merged["global_default"] = {"profile": mc_provider, "model": mc_model}
+            # companion vault 統一由 companion_config.yaml.main_chat 管主對話 —
+            # 清掉 llm_router.yaml 殘留的 persona_overrides (否則 persona 層優先於 global
+            # → 主對話走舊 persona model, main_chat 設的新 model 被蓋掉).
+            merged["persona_overrides"] = {}
             fb: list[dict[str, str]] = []
             for item in main_chat.get("fallback_chain", []) or []:
                 if isinstance(item, dict):
