@@ -34,6 +34,9 @@ _EMOTION_POSITIVE_KW = (
     "開心", "高興", "棒", "好極了", "讚", "滿足", "喜悅", "興奮", "愉快", "幸福",
     # V3-E1 補
     "順", "順利", "暖", "感動", "舒服", "舒心", "幸運", "驚喜", "成就", "感謝",
+    # V3-O.10 #7 補 — 日常溫和讚美 (排除「認真」→ 語境歧義, 走 LLM fallback #10)
+    "喜歡", "溫柔", "可愛", "謝謝", "真好", "不錯", "好聽", "有趣", "好笑",
+    "完美", "厲害", "聰明", "細心", "貼心", "善良",
 )
 _EMOTION_NEGATIVE_KW = (
     "累", "難過", "痛苦", "焦慮", "失望", "難受", "憂鬱", "煩", "疲憊", "心情差", "好慘", "悲傷",
@@ -45,6 +48,8 @@ _EMOTION_NEGATIVE_KW = (
     "爛", "垃圾", "廢", "嗆", "酸", "嘲諷", "白癡", "智障", "煩人", "討厭",
     # spam 評論 (對 bot 自己有壓力感)
     "不夠穩", "不夠好", "掉線", "拖", "拖太久", "卡頓", "反應慢", "沒邏輯",
+    # V3-O.10 #8 補 — 溫和負向
+    "走開", "不理", "閉嘴", "別煩",
 )
 _EMOTION_HIGH_AROUSAL_KW = (
     "超", "暴", "瘋", "崩潰", "炸", "氣死", "嚇死", "嗨爆", "刷屏", "刺激",
@@ -205,9 +210,11 @@ def appraise_message(
     # V3-P1 (2026-05-28): 改用否定詞感知計數，避免「不順利」等否定語境的正向 keyword 被誤計
     emo_pos = _count_keywords_negation_aware(message, _EMOTION_POSITIVE_KW)
     emo_neg = _count_keywords_negation_aware(message, _EMOTION_NEGATIVE_KW)
+    # V3-O.10 #9: relationship positive KW (「我喜歡你」「謝謝你」) 同時貢獻 valence 0.5x
+    rel_pos_val = rel_pos * 0.5
     # 累積式: 1 keyword 0.4, 2 keyword 0.8, 3+ keyword 1.0
     emotion_valence_offset = _clamp(
-        (emo_pos - emo_neg) * 0.4,
+        (emo_pos - emo_neg) * 0.4 + rel_pos_val,
         -1.0, 1.0,
     )
     high_arousal_hits = _count_keywords(message, _EMOTION_HIGH_AROUSAL_KW)

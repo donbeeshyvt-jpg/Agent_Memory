@@ -176,9 +176,17 @@ def ensure_user_record(
             "SELECT user_id FROM users WHERE user_id=?", (user_id,)
         ).fetchone()
         if existing:
-            conn.execute(
-                "UPDATE users SET last_seen_at=? WHERE user_id=?", (now, user_id)
-            )
+            # V3-O.10 #13: display_name 同步 (Discord 改暱稱即時更新 DB)
+            if display_name:
+                conn.execute(
+                    "UPDATE users SET last_seen_at=?, display_name=? WHERE user_id=?",
+                    (now, display_name, user_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE users SET last_seen_at=? WHERE user_id=?",
+                    (now, user_id),
+                )
         else:
             conn.execute(
                 "INSERT INTO users (user_id, display_name, role, loyalty_tier, is_banned, first_seen_at, last_seen_at) VALUES (?, ?, ?, 'casual', 0, ?, ?)",

@@ -29,7 +29,8 @@ _SCHEMA_STATEMENTS = [
         loyalty_tier TEXT DEFAULT 'casual',  -- casual / regular / vip / banned
         is_banned INTEGER DEFAULT 0,
         first_seen_at TEXT,
-        last_seen_at TEXT
+        last_seen_at TEXT,
+        nickname_history TEXT  -- V3-O.10 #14: JSON list of {name, at} viewer 自報暱稱歷史
     )""",
     """CREATE TABLE IF NOT EXISTS raw_events (
         event_id TEXT PRIMARY KEY,
@@ -310,6 +311,11 @@ def ensure_companion_db(vault_root: Path) -> Path:
         # V3-H4: 對既有 db 清廢表 (對新 db 無影響, DROP IF EXISTS idempotent)
         for stmt in _DROP_LEGACY_TABLES:
             conn.execute(stmt)
+        # V3-O.10 #14: 既有 DB migration — 加 nickname_history 欄 (新 DB 已含)
+        try:
+            conn.execute("ALTER TABLE users ADD COLUMN nickname_history TEXT")
+        except Exception:
+            pass  # 欄已存在 → ignore
         conn.commit()
     finally:
         conn.close()

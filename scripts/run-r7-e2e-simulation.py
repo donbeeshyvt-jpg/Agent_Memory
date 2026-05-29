@@ -4211,11 +4211,13 @@ def run_simulation(vault_root: Path, report: Report) -> int:
     new_stranger = apply_contagion(own, viewer_sad, intimacy_score=0.0)
     v3c18e_owner_contagion = new_owner.valence < -0.2  # factor 0.4 影響大
     v3c18e_casual_contagion = -0.15 < new_casual.valence < -0.03  # factor 0.1 中度
-    v3c18e_stranger_no = new_stranger.valence == 0.0  # factor 0 完全沒影響
+    # V3-O.10 #33 (Q13 拍板): stranger contagion 0 → 0.05 微弱影響, 不再完全隔絕
+    # 預期: viewer_sad valence=-0.8, factor=0.05 → new_stranger.valence ≈ -0.04
+    v3c18e_stranger_weak = -0.08 < new_stranger.valence < -0.01  # factor 0.05 微弱影響
 
     report.step(
-        "V3-C18e Emotion Contagion (§29.11 H11, owner 0.4 / casual 0.1 / stranger 0)",
-        v3c18e_owner_contagion and v3c18e_casual_contagion and v3c18e_stranger_no,
+        "V3-C18e Emotion Contagion (§29.11 H11, owner 0.4 / casual 0.1 / stranger 0.05)",
+        v3c18e_owner_contagion and v3c18e_casual_contagion and v3c18e_stranger_weak,
         f"owner_v={new_owner.valence:.2f} casual_v={new_casual.valence:.2f} stranger_v={new_stranger.valence:.2f}",
     )
 

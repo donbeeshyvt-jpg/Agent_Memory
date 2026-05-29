@@ -1,12 +1,13 @@
 """V3 C18e Emotion Contagion — §29.11 H11.
 
 對齊 V3 §29.11 + D-V3-30 + D35-V3 (owner 映射係數 0.4).
+V3-O.10 #33 (Q13 user 拍板 B/C): stranger factor 0 → 0.05 (微弱傳染, 不再完全隔絕)
 
 觀眾情緒會「傳染」給夥伴, 形成共情:
 - owner: 0.4 (最高, 親密)
 - VIP viewer (intimacy ≥ 0.4): 0.2
-- casual viewer (intimacy ≥ 0.4): 0.1
-- 其他: 0.0
+- casual viewer (intimacy ≥ 0.2): 0.1
+- stranger (intimacy < 0.2): 0.05 (微弱, 新觀眾講強情緒詞也有微弱反應)
 
 自己 affect = (1 - contagion) × own_affect + contagion × viewer_affect
 """
@@ -28,7 +29,8 @@ def get_contagion_factor(*, is_owner: bool = False, intimacy_score: float = 0.0)
         return 0.2
     if intimacy_score >= 0.2:
         return 0.1
-    return 0.0
+    # V3-O.10 #33 (Q13): stranger 微弱傳染 0.05 (原 0.0)
+    return 0.05
 
 
 def apply_contagion(
