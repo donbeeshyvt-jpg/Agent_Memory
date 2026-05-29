@@ -34,8 +34,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 import random
+import time as _step_time  # V3-O.9: per-step latency profiling
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -1356,6 +1358,53 @@ def _adaptive_companion_llm(
 _default_llm_stub = _stub_llm
 
 
+def _mark_step_time(timings: dict, name: str) -> None:
+    """V3-O.9: 記某 step 的耗時 ms (跟上次 mark 比). user 反映「夥伴回答思考有點久」用."""
+    t = _step_time.perf_counter()
+    timings[name] = round((t - timings.get("_prev", t)) * 1000, 1)
+    timings["_prev"] = t
+
+
+def _write_turn_timing_log(
+    vault_root: Optional[Path],
+    *,
+    trace_id: str,
+    user_id: str,
+    channel_type: str,
+    is_owner: bool,
+    total_ms: float,
+    timings: dict,
+) -> None:
+    """V3-O.9: 寫 .ai/turn_timings.jsonl 給 user 看時間分布.
+
+    每 turn 一行 JSON: trace_id / user_id / channel / total_ms / per-step ms.
+    user tail -f 即時看 / 也可 sort 排「哪 step 最花時間」.
+    """
+    if vault_root is None:
+        return
+    try:
+        log_path = vault_root / ".ai" / "turn_timings.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        clean = {k: v for k, v in timings.items() if not k.startswith("_")}
+        # top 3 slowest (排除 0/微小)
+        sorted_steps = sorted(clean.items(), key=lambda x: x[1], reverse=True)
+        top3 = [{"step": k, "ms": v} for k, v in sorted_steps[:3]]
+        payload = {
+            "trace_id": trace_id,
+            "user_id": user_id,
+            "channel_type": channel_type,
+            "is_owner": is_owner,
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "total_ms": round(total_ms, 1),
+            "top3_slowest": top3,
+            "steps": clean,
+        }
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
 def run_companion_chat_turn(
     request: ChatRequest,
     vault_root: Path,
@@ -1372,6 +1421,8 @@ def run_companion_chat_turn(
 
     對齊 Mode A standalone — 不依賴外部, 純 vault + companion.db.
     Phase 1 MVP: llm_fn 可 mock; Phase 2 接真實 LLMClient.
+
+    V3-O.9: 每 step 耗時寫 .ai/turn_timings.jsonl 供 latency audit.
     """
     # V3-D6 + V3-E1: 沒指定 llm_fn 時, 走 adaptive (含 conversation history Bug 12).
     if llm_fn is None:
@@ -1383,11 +1434,16 @@ def run_companion_chat_turn(
     trace_id = str(uuid.uuid4())
     resp = ChatResponse(request_id=request_id, trace_id=trace_id)
 
+    # V3-O.9: turn-level timing 起點
+    _turn_t0 = _step_time.perf_counter()
+    _step_timings: dict = {"_prev": _turn_t0}
+
     # ─── Step 1: Input Gateway ───
     resp.pipeline_steps_done.append(1)
     if not request.message.strip():
         resp.response_text = "(空訊息, 跳過 pipeline)"
         return resp
+    _mark_step_time(_step_timings, "step1_input")
 
     # ─── Step 2: Injection Detector ───
     # 對齊真實模擬 bugfix 2026-05-26: scan_incoming_user_text() 回 dict, 看 'detected' bool
@@ -1439,6 +1495,7 @@ def run_companion_chat_turn(
     resp.scanner_hits_count = len(scanner_hits.get("reasons", []))
     resp.injection_risk = injection_risk
     resp.pipeline_steps_done.append(2)
+    _mark_step_time(_step_timings, "step2_injection")
 
     # ─── Step 2.5: ensure_user_record (V3-O.7 RC1) ───
     # RC1 fix: users 表一直是空的 → write_viewer_profile (Step 17.5) 永遠 early-return.
@@ -1454,15 +1511,18 @@ def run_companion_chat_turn(
         except Exception:
             pass
     resp.pipeline_steps_done.append(25)
+    _mark_step_time(_step_timings, "step2_5_ensure_user")
 
     # ─── Step 3: Perception (Phase 1 stub) ───
     resp.pipeline_steps_done.append(3)
+    _mark_step_time(_step_timings, "step3_perception")
 
     # ─── Step 4+5: Appraisal + Affect (指數平滑) ───
     current_affect = AffectState()  # baseline (Phase 2 從 db 讀近 1h 平均)
     appraisal, new_affect = appraise_and_update_affect(request.message, current_affect)
     resp.pipeline_steps_done.append(4)
     resp.pipeline_steps_done.append(5)
+    _mark_step_time(_step_timings, "step4_5_appraisal_affect")
 
     # ─── Step 5.1: Core Affect Log (V3-O.7 Phase 3) ───
     # |valence|>0.4 時寫 31_Core_Affect_Logs，避免每 turn 都寫造成爆量
@@ -1497,6 +1557,7 @@ def run_companion_chat_turn(
         intimacy_score=_intim_for_contagion,
     )
     resp.pipeline_steps_done.append(55)
+    _mark_step_time(_step_timings, "step5_5_contagion")
 
     # ─── Step 5.6: H12 Expectation State (V3-G3, §29.12) ───
     # 撈 session 內既有 expectation_state, 看 delta → affect 微調
@@ -1525,6 +1586,7 @@ def run_companion_chat_turn(
                 uncertainty=min(1.0, new_affect.uncertainty + 0.05),
             )
     resp.pipeline_steps_done.append(56)
+    _mark_step_time(_step_timings, "step5_6_expectation")
 
     # ─── Step 6+7: seven_emotions_balance update ───
     prev_emo = read_latest_emotion_state(vault_root, request.user_id) or EmotionState()
@@ -1547,9 +1609,11 @@ def run_companion_chat_turn(
     )
     resp.pipeline_steps_done.append(6)
     resp.pipeline_steps_done.append(7)
+    _mark_step_time(_step_timings, "step6_7_seven_emotions")
 
     # ─── Step 8: Motivation (Phase 1 stub) ───
     resp.pipeline_steps_done.append(8)
+    _mark_step_time(_step_timings, "step8_motivation")
 
     # ─── Step 9: Preference candidate ───
     # Phase 1: 簡單偵測 "我喜歡 X" / "我討厭 X" pattern
@@ -1558,6 +1622,7 @@ def run_companion_chat_turn(
     elif "討厭" in request.message:
         add_or_reinforce(vault_root, request.user_id, "preference_negative", request.message[:50])
     resp.pipeline_steps_done.append(9)
+    _mark_step_time(_step_timings, "step9_preference")
 
     # ─── Step 10: Intimacy update ───
     intim = read_intimacy(vault_root, request.user_id) or IntimacyState(user_id=request.user_id)
@@ -1567,6 +1632,7 @@ def run_companion_chat_turn(
     )
     write_intimacy(vault_root, intim)
     resp.pipeline_steps_done.append(10)
+    _mark_step_time(_step_timings, "step10_intimacy")
 
     # ─── Step 11: Memory Router ───
     mem_ctx = build_memory_context(
@@ -1582,6 +1648,7 @@ def run_companion_chat_turn(
         mode="reactive",
     )
     resp.pipeline_steps_done.append(11)
+    _mark_step_time(_step_timings, "step11_memory_router")
 
     # ─── Step 11.5: Owner Identity Check ───
     owner_directive_weight = 0.0
@@ -1593,6 +1660,7 @@ def run_companion_chat_turn(
             ).fetchone()
         owner_directive_weight = row["directive_acceptance_weight"] if row else 0.85
     resp.pipeline_steps_done.append(115)
+    _mark_step_time(_step_timings, "step11_5_owner_check")
 
     # ─── Step 11.6: Semantic Triggers (4 Detector) ───
     kg = detect_knowledge_gap(request.message, certainty=appraisal.certainty)
@@ -1600,6 +1668,7 @@ def run_companion_chat_turn(
     nov = detect_novelty(request.message)
     inc = detect_incongruence(request.message, valence=new_affect.valence)
     resp.pipeline_steps_done.append(116)
+    _mark_step_time(_step_timings, "step11_6_semantic")
 
     # ─── Step 11.7: Proactive Speech check ───
     knowledge_gap_pending = 0
@@ -1624,6 +1693,7 @@ def run_companion_chat_turn(
         owner_present_user_id=request.user_id if request.is_owner else "",
     )
     resp.pipeline_steps_done.append(117)
+    _mark_step_time(_step_timings, "step11_7_proactive")
 
     # ─── Step 11.75: V3-K1 Motivation Context (六慾真實接) ───
     # 對齊 V3 §10.1 + user 2026-05-27 「自我成長的小孩」設計理念
@@ -1666,6 +1736,7 @@ def run_companion_chat_turn(
         from agent_memory.companion.motivation_context import MotivationState
         motivation_state = MotivationState()  # baseline fallback
     resp.pipeline_steps_done.append(1175)
+    _mark_step_time(_step_timings, "step11_75_motivation_ctx")
 
     # ─── Step 11.8: H3 Daydream + Flow Mode Detector (V3-G2 user 2026-05-27 拍板) ───
     # 接 §29.3 白日夢 + §26.2.E 流量模式偵測 (兩個 audit 「白寫的程式」一次補)
@@ -1694,6 +1765,7 @@ def run_companion_chat_turn(
         rng=rng,
     )
     resp.pipeline_steps_done.append(118)
+    _mark_step_time(_step_timings, "step11_8_daydream_flow")
 
     # ─── Step 11.85: V3-G4 知識庫 retrieve (40_Knowledge_Base 日常+外部) ───
     # 對齊 V3 §13 Memory Router L4 + MISSION §3.6 文獻吸收致用
@@ -1705,6 +1777,7 @@ def run_companion_chat_turn(
     except Exception:
         knowledge_hits = []
     resp.pipeline_steps_done.append(1185)
+    _mark_step_time(_step_timings, "step11_85_knowledge_retrieve")
 
     # ─── Step 11.9: H4 Embodied State (V3-G3, §29.4) ───
     # 模擬 energy/hunger/thirst/sleepiness/voice_strain — 直播時長隨自然消耗
@@ -1721,6 +1794,7 @@ def run_companion_chat_turn(
     except Exception:
         embodied = EmbodiedState()
     resp.pipeline_steps_done.append(119)
+    _mark_step_time(_step_timings, "step11_9_embodied")
 
     # ─── Step 12: Decision Engine ───
     dec_input = DecisionInput(
@@ -1742,6 +1816,7 @@ def run_companion_chat_turn(
     )
     dec_result = decide(dec_input)
     resp.pipeline_steps_done.append(12)
+    _mark_step_time(_step_timings, "step12_decision")
 
     # ─── Step 13: Policy Mapper ───
     policy = map_policy(
@@ -1752,6 +1827,7 @@ def run_companion_chat_turn(
         action=dec_result.selected_action,
     )
     resp.pipeline_steps_done.append(13)
+    _mark_step_time(_step_timings, "step13_policy")
 
     # ─── Step 13.5: 朋友卡 (V3-O.7 Round D input 收束) ───
     # 對已知 non-owner 觀眾讀取 20_Audience_Graph 的 viewer profile md 注入 LLM context.
@@ -1765,6 +1841,7 @@ def run_companion_chat_turn(
         except Exception:
             pass
     resp.pipeline_steps_done.append(135)
+    _mark_step_time(_step_timings, "step13_5_friend_card_load")
 
     # ─── Step 14: Prompt Packet Builder ───
     prompt_packet = {
@@ -1794,6 +1871,7 @@ def run_companion_chat_turn(
         "viewer_dynamic_context": _viewer_card_md,
     }
     resp.pipeline_steps_done.append(14)
+    _mark_step_time(_step_timings, "step14_packet_build")
 
     # ─── Step 14.5: Inner Monologue (§29 H1) ───
     monologue = generate_inner_monologue(
@@ -1803,10 +1881,12 @@ def run_companion_chat_turn(
         rng=rng,
     )
     resp.pipeline_steps_done.append(145)
+    _mark_step_time(_step_timings, "step14_5_inner_monologue")
 
     # ─── Step 15: LLM Client (stub) ───
     raw_response = llm_fn(prompt_packet)
     resp.pipeline_steps_done.append(15)
+    _mark_step_time(_step_timings, "step15_llm_call")
 
     # ─── Step 16: Output Governor (走完整 §20.1 — 對齊真實模擬 bugfix 2026-05-26) ───
     # Phase 1 stub LLM 會 echo user_msg, 完整 OG 才能擋住 substring leak / role break / safety bypass
@@ -1824,6 +1904,7 @@ def run_companion_chat_turn(
         resp.og_blocked = True
         resp.og_rule_triggered = gov_result.rule_triggered
     resp.pipeline_steps_done.append(16)
+    _mark_step_time(_step_timings, "step16_output_governor")
 
     # ─── Step 16.6: Verbal Tics Engine ───
     recent_tics = get_recent_tics_in_cooldown(vault_root, request.session_id, last_n_turns=5)
@@ -1871,6 +1952,7 @@ def run_companion_chat_turn(
     except Exception:
         final_response = response_with_dd
     resp.pipeline_steps_done.append(166)
+    _mark_step_time(_step_timings, "step16_6_tics")
 
     # ─── Step 17: Memory Write Gate (raw_event user+bot + episodic + injection_detected) ───
     event_id = str(uuid.uuid4())
@@ -1966,6 +2048,7 @@ def run_companion_chat_turn(
         pass
 
     resp.pipeline_steps_done.append(17)
+    _mark_step_time(_step_timings, "step17_memory_write_db")
 
     # ─── Step 17.4: V3-J1 trait_evolution evidence (對齊 V3 §22 Gap 2) ───
     # user 2026-05-27 audit Gap 2: trait_evolution writer ready 但 chat_runtime 沒接 hook
@@ -2004,6 +2087,7 @@ def run_companion_chat_turn(
     except Exception:
         pass  # non-critical 失敗不阻塞 chat
     resp.pipeline_steps_done.append(174)
+    _mark_step_time(_step_timings, "step17_4_trait_evolution")
 
     # ─── Step 17.5: V3-F1 viewer profile markdown (對 non-owner 寫) ───
     # user 2026-05-27 第 3 輪深度觀察 Q2+Q3 拍板 — 觀眾應該有個別記憶塊.
@@ -2016,6 +2100,7 @@ def run_companion_chat_turn(
         except Exception:
             pass  # non-critical, 失敗不阻塞 chat
     resp.pipeline_steps_done.append(175)
+    _mark_step_time(_step_timings, "step17_5_audience_writer")
 
     # ─── Step 17.6: 35_Self_Concepts (V3-O.7 Phase 3) ───
     # identity_relevance > 0.7 的強事件提煉自我概念條目
@@ -2036,6 +2121,7 @@ def run_companion_chat_turn(
         except Exception:
             pass
     resp.pipeline_steps_done.append(176)
+    _mark_step_time(_step_timings, "step17_6_self_concept")
 
     # ─── Step 18: Self-Modification check (channel-aware flush) ───
     # 簡單算 turn_count = raw_events in this session
@@ -2134,6 +2220,7 @@ def run_companion_chat_turn(
 
         threading.Thread(target=_bg_flush, daemon=True, name="v3-self-mod-flush").start()
     resp.pipeline_steps_done.append(18)
+    _mark_step_time(_step_timings, "step18_self_mod_check")
 
     # ─── Step 19: Trace Logger ───
     with open_companion_db(vault_root) as conn:
@@ -2185,6 +2272,7 @@ def run_companion_chat_turn(
         import sys as _sys
         print(f"[V3-G6 F7 decision_trace_md FAIL] {type(_dt_exc).__name__}: {_dt_exc}", file=_sys.stderr)
     resp.pipeline_steps_done.append(19)
+    _mark_step_time(_step_timings, "step19_trace_logger")
 
     # ─── Step 20: 寫 proactive_triggers ───
     if proactive_decision.should_speak:
@@ -2194,9 +2282,11 @@ def run_companion_chat_turn(
             channel_type=request.channel_type, target_user_id=request.user_id,
         )
     resp.pipeline_steps_done.append(20)
+    _mark_step_time(_step_timings, "step20_proactive_triggers")
 
     # ─── Step 21: knowledge_gap_state (已在 Step 11.7) ───
     resp.pipeline_steps_done.append(21)
+    _mark_step_time(_step_timings, "step21_knowledge_gap")
 
     # ─── Step 22: 回 response payload ───
     resp.response_raw_pre_inject = raw_response
@@ -2210,5 +2300,18 @@ def run_companion_chat_turn(
     resp.tts_hint = {"emotion": new_emo.dominant_emotion, "intensity": abs(new_affect.valence)}
     resp.tool_suggestions = []  # Phase 2 接 hermes 才有
     resp.pipeline_steps_done.append(22)
+
+    # V3-O.9: 寫 turn timing log
+    _mark_step_time(_step_timings, "step22_response_payload")
+    _total_ms = round((_step_time.perf_counter() - _turn_t0) * 1000, 1)
+    _write_turn_timing_log(
+        vault_root,
+        trace_id=trace_id,
+        user_id=request.user_id,
+        channel_type=request.channel_type,
+        is_owner=request.is_owner,
+        total_ms=_total_ms,
+        timings=_step_timings,
+    )
 
     return resp

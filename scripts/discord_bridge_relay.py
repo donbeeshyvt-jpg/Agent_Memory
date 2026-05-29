@@ -7,6 +7,7 @@ import os
 import random
 import re
 import sys
+import time as _relay_time  # V3-O.9 #2: end-to-end timing
 from typing import Any
 from urllib import error as url_error
 from urllib import request as url_request
@@ -154,6 +155,8 @@ class BridgeRelayClient(discord.Client):
             print("[WARN] message_content intent disabled; guild text content may be unavailable.")
 
     async def on_message(self, message: discord.Message) -> None:
+        # V3-O.9 #2: end-to-end timing 起點 (從 Discord 收到 message 算)
+        _t_recv = _relay_time.perf_counter()
         # V3-D7 2026-05-26: bot author handling
         # 1. 自己 (self.user) 一律 ignore (避免無限 loop)
         # 2. 其他 bot: 白名單內過, 不在白名單 ignore
@@ -257,9 +260,11 @@ class BridgeRelayClient(discord.Client):
         url = f"{self.bridge_url}/webhook/discord"
 
         loop = asyncio.get_running_loop()
+        _t_pre_post = _relay_time.perf_counter()
         try:
             async with message.channel.typing():
                 result = await loop.run_in_executor(None, _post_json, url, payload, self.timeout_s)
+            _t_post_done = _relay_time.perf_counter()
         except url_error.HTTPError as exc:
             if processing_added:
                 await self._try_remove_reaction(message, self.processing_reaction)
@@ -303,6 +308,24 @@ class BridgeRelayClient(discord.Client):
         if self.enable_response_reaction:
             reaction = _pick_response_reaction(response_text, degraded=degraded)
             await self._try_add_reaction(reply_message, reaction)
+
+        # V3-O.9 #2: end-to-end timing log (stderr, 對 user「思考有點久」audit 用)
+        # recv→pre_post: relay 端前置 (attachment download + payload build + split)
+        # pre_post→post_done: bridge HTTP roundtrip (含 22-step pipeline 全部 ms)
+        # post_done→reply_done: Discord reply 發送
+        _t_reply_done = _relay_time.perf_counter()
+        try:
+            print(
+                f"[TIMING] chan={message.channel.id} user={message.author.id} "
+                f"recv_pre={int((_t_pre_post - _t_recv) * 1000)}ms "
+                f"bridge_roundtrip={int((_t_post_done - _t_pre_post) * 1000)}ms "
+                f"reply_send={int((_t_reply_done - _t_post_done) * 1000)}ms "
+                f"total={int((_t_reply_done - _t_recv) * 1000)}ms "
+                f"resp_len={len(response_text)}",
+                file=sys.stderr, flush=True,
+            )
+        except Exception:
+            pass
 
 
 def _parse_args() -> argparse.Namespace:
