@@ -96,14 +96,100 @@ def ensure_llm_router_file(vault_root: Path, *, overwrite: bool = False) -> Path
     return target
 
 
+def _merge_companion_llm_config(vault_root: Path, base_config: dict[str, Any]) -> dict[str, Any]:
+    """V3-O.10 #3+#18: 把 companion_config.yaml.llm merge 進 router config.
+
+    讓既有 resolve_llm_route 無痛讀到 companion 的 main_chat / sub_tasks / providers,
+    不必改 _generate_core. companion vault 統一入口 (companion_config.yaml.llm 優先).
+
+    轉換對映:
+      llm.main_chat        → global_default + fallback_chain
+      llm.sub_tasks.<task> → auxiliary_overrides.<task> (provider→profile, model 從 sub_task
+                             或 provider.model_path / provider.model 推)
+      llm.providers.*      → providers.* (merge, companion 優先)
+
+    非 companion vault (無 companion_config.yaml) 或無 llm 段 → 原樣返回 (不破 steward).
+    """
+    ccfg_path = vault_root / "00_System_Core" / "companion_config.yaml"
+    if not ccfg_path.exists():
+        return base_config
+    try:
+        ccfg = yaml.safe_load(ccfg_path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return base_config
+    if not isinstance(ccfg, dict):
+        return base_config
+    llm = ccfg.get("llm", {})
+    if not isinstance(llm, dict) or not llm:
+        return base_config
+
+    merged = dict(base_config)
+
+    # 1. providers merge (companion 優先覆蓋同名)
+    providers = dict(merged.get("providers", {}) if isinstance(merged.get("providers"), dict) else {})
+    cc_providers = llm.get("providers", {})
+    if isinstance(cc_providers, dict):
+        for name, pcfg in cc_providers.items():
+            if isinstance(pcfg, dict):
+                providers[name] = pcfg
+    merged["providers"] = providers
+
+    # 2. main_chat → global_default + fallback_chain
+    main_chat = llm.get("main_chat", {})
+    if isinstance(main_chat, dict):
+        mc_provider = str(main_chat.get("provider", "")).strip()
+        mc_model = str(main_chat.get("model", "")).strip()
+        if mc_provider and mc_model:
+            merged["global_default"] = {"profile": mc_provider, "model": mc_model}
+            fb: list[dict[str, str]] = []
+            for item in main_chat.get("fallback_chain", []) or []:
+                if isinstance(item, dict):
+                    fp = str(item.get("provider", "")).strip()
+                    fm = str(item.get("model", "")).strip()
+                    if fp and fm:
+                        fb.append({"profile": fp, "model": fm})
+            if fb:
+                merged["fallback_chain"] = fb
+
+    # 3. sub_tasks → auxiliary_overrides (provider→profile, 推 model)
+    aux = dict(merged.get("auxiliary_overrides", {}) if isinstance(merged.get("auxiliary_overrides"), dict) else {})
+    sub_tasks = llm.get("sub_tasks", {})
+    if isinstance(sub_tasks, dict):
+        for task, tcfg in sub_tasks.items():
+            if not isinstance(tcfg, dict):
+                continue
+            prov = str(tcfg.get("provider", "")).strip()
+            if not prov:
+                continue
+            prov_cfg = providers.get(prov, {}) if isinstance(providers.get(prov), dict) else {}
+            # model 來源優先序: sub_task.model > provider.model_path (本地 GGUF) > provider.model
+            model_ref = (
+                str(tcfg.get("model", "")).strip()
+                or str(prov_cfg.get("model_path", "")).strip()
+                or str(prov_cfg.get("model", "")).strip()
+            )
+            if prov and model_ref:
+                aux[task] = {"profile": prov, "model": model_ref}
+    if aux:
+        merged["auxiliary_overrides"] = aux
+
+    return merged
+
+
 def load_llm_router_config(vault_root: Path) -> dict[str, Any]:
-    """Load routing config and auto-bootstrap defaults when missing."""
+    """Load routing config and auto-bootstrap defaults when missing.
+
+    V3-O.10 #3+#18: companion vault 會 merge companion_config.yaml.llm
+    (main_chat/sub_tasks/providers) 進來, 讓子任務本地 gemma 分流生效.
+    """
 
     path = ensure_llm_router_file(vault_root)
     raw = path.read_text(encoding="utf-8")
     payload = yaml.safe_load(raw) or {}
     if not isinstance(payload, dict):
         raise ValueError("llm_router.yaml 格式錯誤：必須是 YAML object")
+    # V3-O.10: companion vault 把 companion_config.yaml.llm 疊上來
+    payload = _merge_companion_llm_config(Path(vault_root).expanduser().resolve(), payload)
     return payload
 
 

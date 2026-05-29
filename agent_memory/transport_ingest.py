@@ -438,7 +438,49 @@ def _run_companion_transport_event(
         display_name=turn.display_name or "",
     )
 
-    resp = run_companion_chat_turn(req, vault_root)
+    # V3-O.10 ISSUE-3: 傳 effective baseline (含 dynamic_baseline_overlay 演化) 進 pipeline.
+    # 不傳的話 run_companion_chat_turn 用 default 0.3/0.5, runtime modifier 算
+    # (silence>0.6→"不想冷場") 用死值, overlay 演化對 modifier 無效.
+    _bl: dict = {}
+    try:
+        from agent_memory.companion.personality_switcher import get_current_baselines
+        _bl = get_current_baselines(vault_root) or {}
+    except Exception:
+        _bl = {}
+
+    resp = run_companion_chat_turn(
+        req, vault_root,
+        persona_baseline_balance=float(_bl.get("baseline_balance", 0.3)),
+        persona_baseline_silence=float(_bl.get("baseline_silence_intolerance", 0.5)),
+        persona_baseline_curiosity=float(_bl.get("curiosity_urge", 0.5)),
+        persona_baseline_topic=float(_bl.get("topic_drive", 0.5)),
+        persona_baseline_engagement=float(_bl.get("engagement_seeking", 0.5)),
+    )
+
+    # V3-O.10 #41 (BUG-2 wire): 直播場景吸收彙整統一發言.
+    # 對 public_stream channel + non-owner viewer: 訊息進 aggregator, 達門檻 → 統一發言取代逐則回.
+    # DM / public_text_channel 不啟用 (照常逐則回). 測試環境 public_text_channel 不受影響.
+    if channel_type == "public_stream" and not is_owner:
+        try:
+            import yaml as _yaml_sa
+            _ccfg_sa = vault_root / "00_System_Core" / "companion_config.yaml"
+            _agg_window = 8.0
+            _stream_enabled = True
+            if _ccfg_sa.exists():
+                _cc = _yaml_sa.safe_load(_ccfg_sa.read_text(encoding="utf-8")) or {}
+                _sm = (((_cc.get("channels", {}) or {}).get("discord", {}) or {}).get("stream_mode", {}) or {})
+                _stream_enabled = bool(_sm.get("enabled", True))
+                _agg_window = float(_sm.get("aggregate_window_s", 8.0))
+            if _stream_enabled:
+                from agent_memory.companion.stream_aggregator import get_stream_aggregator
+                _agg = get_stream_aggregator(vault_root, aggregate_window_s=_agg_window)
+                _agg.add_message(req.user_id, turn.display_name or "", req.message)
+                if _agg.should_flush():
+                    _unified = _agg.flush_and_generate()
+                    if _unified:
+                        resp.response_text = _unified  # 統一發言取代逐則回
+        except Exception:
+            pass  # non-critical, 失敗回逐則回
 
     # 寫 markdown session log (companion 10_Working_Memory/11_Session_Logs/)
     try:

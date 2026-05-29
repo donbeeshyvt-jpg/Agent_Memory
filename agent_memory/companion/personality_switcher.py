@@ -136,6 +136,10 @@ def get_current_baselines(vault_root: Path) -> dict:
         "current": config.current,
         "baseline_balance": effective.get("baseline_balance", 0.3),
         "baseline_silence_intolerance": effective.get("baseline_silence_intolerance", 0.5),
+        # V3-O.10 ISSUE-3: 補 3 軸 effective (overlay 演化全 5 軸, runtime modifier 要全傳)
+        "engagement_seeking": effective.get("engagement_seeking", 0.5),
+        "curiosity_urge": effective.get("curiosity_urge", 0.5),
+        "topic_drive": effective.get("topic_drive", 0.5),
         "soul_path": cur.get("soul_path", ""),
         # V3-O.10 #35: 原始 SOUL 值也保留 (給 audit 用)
         "soul_baseline_silence_intolerance": soul_baselines["baseline_silence_intolerance"],
