@@ -42,6 +42,13 @@ _FRIENDLY_HTTP_POOL = (
     "嗯…剛剛沒接好，能再說一遍嗎？",
     "稍等我一下，再說一次好嗎？",
 )
+# V3-O.10 #5 Q8: viewer drop 友善訊息 (DC 通道, 5s cooldown 觸發)
+_FRIENDLY_DROP_POOL = (
+    "等等，大家說太快了，慢一點給我聽？",
+    "哈哈稍等我一下，剛剛沒跟上！",
+    "嗯…太多訊息了，再說一次好嗎？",
+    "稍等，讓我緩一下，再說一遍？",
+)
 
 
 def _friendly_timeout_reply() -> str:
@@ -100,12 +107,15 @@ class BridgeRelayClient(discord.Client):
         mention_only_channels: set[int],
         allow_bot_author_ids: set[int] | None = None,
         split_by_display_name: bool = False,
+        vault_root: "Path | None" = None,
     ) -> None:
+        from pathlib import Path as _Path
         intents = discord.Intents.default()
         intents.message_content = bool(enable_message_content_intent)
         intents.messages = True
         intents.guilds = True
         super().__init__(intents=intents)
+        self.vault_root = _Path(vault_root).expanduser().resolve() if vault_root else None
         self.bridge_url = bridge_url.rstrip("/")
         self.allowed_channels = allowed_channels
         self.persona = persona.strip().lower()
@@ -127,6 +137,107 @@ class BridgeRelayClient(discord.Client):
         # split flag 開時, 對 bot author 訊息 parse 開頭 <name>: → 用 name 當 effective user_id
         # 對齊第 4 輪測試發現「觀眾 pool 62 turn 全部累在 author_id=15026... 學不到個人」
         self.split_by_display_name = bool(split_by_display_name)
+
+    async def _post_streaming(self, loop, url: str, payload: dict, source_message) -> dict:
+        """V3-O.10 #26: SSE streaming — 收 token，定期用 message.edit() 更新 Discord."""
+        import json as _json_s
+        from urllib import request as _url_req_s, error as _url_err_s
+        import asyncio as _asyncio_s
+
+        token_buf: list[str] = []
+        result_holder: list[dict] = [{}]
+        EDIT_INTERVAL_S = 0.8  # Discord rate limit: 每 0.8s edit 一次
+        last_edit_time = [0.0]
+        reply_msg = [None]
+
+        def _stream_reader():
+            body = _json_s.dumps(payload).encode("utf-8")
+            req = _url_req_s.Request(url=url, data=body, method="POST")
+            req.add_header("Content-Type", "application/json")
+            req.add_header("Accept", "text/event-stream")
+            try:
+                with _url_req_s.urlopen(req, timeout=self.timeout_s + 15.0) as resp:
+                    for line in resp:
+                        if isinstance(line, bytes):
+                            line = line.decode("utf-8", errors="replace")
+                        line = line.strip()
+                        if not line or line == "data: [DONE]":
+                            continue
+                        if line.startswith("data: "):
+                            try:
+                                data = _json_s.loads(line[6:])
+                                if "token" in data:
+                                    token_buf.append(data["token"])
+                                if data.get("done"):
+                                    result_holder[0] = data
+                                    break
+                                if "error" in data:
+                                    result_holder[0] = {"response": "", "error": data["error"]}
+                                    break
+                            except Exception:
+                                pass
+            except Exception as e:
+                result_holder[0] = {"response": "", "error": str(e)}
+
+        # 背景跑 SSE reader
+        reader_future = loop.run_in_executor(None, _stream_reader)
+
+        # 等第一個 token 或 done
+        reply_sent = False
+        last_content = ""
+        timeout_at = _relay_time.perf_counter() + self.timeout_s + 20.0
+
+        while not reader_future.done() or token_buf:
+            await _asyncio_s.sleep(0.2)
+            now = _relay_time.perf_counter()
+            if now > timeout_at:
+                break
+
+            current_text = "".join(token_buf)
+            if not current_text:
+                continue
+
+            # 發或更新 Discord 訊息
+            if not reply_sent:
+                try:
+                    reply_msg[0] = await source_message.reply(current_text + " ▌", mention_author=False)
+                    reply_sent = True
+                    last_edit_time[0] = now
+                    last_content = current_text
+                except Exception:
+                    pass
+            elif (now - last_edit_time[0]) >= EDIT_INTERVAL_S and current_text != last_content:
+                try:
+                    display = current_text + (" ▌" if not result_holder[0].get("done") else "")
+                    if len(display) > 1800:
+                        display = display[:1800] + "..."
+                    await reply_msg[0].edit(content=display)
+                    last_edit_time[0] = now
+                    last_content = current_text
+                except Exception:
+                    pass
+
+        # 等 reader 確實結束
+        try:
+            await asyncio.wait_for(reader_future, timeout=5.0)
+        except Exception:
+            pass
+
+        # 最終更新 (移除 ▌)
+        final_text = "".join(token_buf)
+        if reply_msg[0] and final_text and final_text != last_content:
+            try:
+                if len(final_text) > 1800:
+                    final_text = final_text[:1800] + "..."
+                await reply_msg[0].edit(content=final_text)
+            except Exception:
+                pass
+
+        # 回傳與非 streaming 相同格式
+        r = result_holder[0]
+        if not r.get("response") and final_text:
+            r["response"] = final_text
+        return r
 
     async def _try_add_reaction(self, target: discord.Message, emoji: str) -> bool:
         try:
@@ -257,13 +368,30 @@ class BridgeRelayClient(discord.Client):
             payload["persona"] = self.persona
         if attachments_payload:
             payload["attachments"] = attachments_payload
-        url = f"{self.bridge_url}/webhook/discord"
+        # V3-O.10 #26: streaming mode — 讀 vault yaml 決定是否啟用
+        _streaming_enabled = False
+        if self.vault_root:
+            try:
+                import yaml as _yaml_s
+                _ccfg_s = self.vault_root / "00_System_Core" / "companion_config.yaml"
+                if _ccfg_s.exists():
+                    _ccfg_d_s = _yaml_s.safe_load(_ccfg_s.read_text(encoding="utf-8")) or {}
+                    _streaming_enabled = bool(_ccfg_d_s.get("performance", {}).get("streaming_enabled", False))
+            except Exception:
+                pass
+
+        url_base = f"{self.bridge_url}/webhook/discord"
+        url = url_base + ("/stream" if _streaming_enabled else "")
 
         loop = asyncio.get_running_loop()
         _t_pre_post = _relay_time.perf_counter()
         try:
-            async with message.channel.typing():
-                result = await loop.run_in_executor(None, _post_json, url, payload, self.timeout_s)
+            if _streaming_enabled:
+                # Streaming: 發出請求，SSE 逐 token 更新 Discord 訊息
+                result = await self._post_streaming(loop, url, payload, message)
+            else:
+                async with message.channel.typing():
+                    result = await loop.run_in_executor(None, _post_json, url, payload, self.timeout_s)
             _t_post_done = _relay_time.perf_counter()
         except url_error.HTTPError as exc:
             if processing_added:
@@ -280,12 +408,30 @@ class BridgeRelayClient(discord.Client):
         except Exception as exc:  # noqa: BLE001
             if processing_added:
                 await self._try_remove_reaction(message, self.processing_reaction)
-            # V3-O.6.2 #9: \u6280\u8853\u7D30\u7BC0 stderr, \u5C0D chat \u7D66\u89D2\u8272\u8A9E\u6C23\u8A0A\u606F (\u542B timed out)
+            err_type = type(exc).__name__
             print(
                 f"[ERR] bridge call failed chan={message.channel.id} user={message.author.id}: "
-                f"{type(exc).__name__}: {exc}",
+                f"{err_type}: {exc}",
                 file=sys.stderr, flush=True,
             )
+            # V3-O.10 #23: \u5BEB .ai/failed_turns.jsonl
+            if self.vault_root:
+                try:
+                    import json as _json_ft
+                    from datetime import datetime as _dt_ft, timezone as _tz_ft
+                    _ft_path = self.vault_root / ".ai" / "failed_turns.jsonl"
+                    _ft_path.parent.mkdir(parents=True, exist_ok=True)
+                    _record = {
+                        "ts": _dt_ft.now(_tz_ft.utc).isoformat(),
+                        "user_id": str(message.author.id),
+                        "chan_id": str(message.channel.id),
+                        "error_type": err_type,
+                        "error_msg": str(exc)[:200],
+                    }
+                    with open(_ft_path, "a", encoding="utf-8") as _ft_f:
+                        _ft_f.write(_json_ft.dumps(_record, ensure_ascii=False) + "\n")
+                except Exception:
+                    pass
             error_reply = await message.reply(_friendly_timeout_reply(), mention_author=False)
             if self.enable_response_reaction:
                 await self._try_add_reaction(error_reply, "\u26A0\uFE0F")
@@ -293,7 +439,16 @@ class BridgeRelayClient(discord.Client):
 
         response_text = str(result.get("response", "")).strip()
         if not response_text:
-            response_text = "(empty response)"
+            # V3-O.10 #5 Q8: viewer drop (5s cooldown) → DC 通道送友善訊息
+            # owner 不會被 drop (Step 1.5 只對 non-owner 觸發), 所以空 response 一定是 viewer
+            if processing_added:
+                await self._try_remove_reaction(message, self.processing_reaction)
+            try:
+                drop_msg = random.choice(_FRIENDLY_DROP_POOL)
+                await message.reply(drop_msg, mention_author=False)
+            except Exception:
+                pass
+            return
         if len(response_text) > 1800:
             response_text = response_text[:1800] + "\n...(truncated)"
 
@@ -361,6 +516,7 @@ def _parse_args() -> argparse.Namespace:
               "用 name 當 effective user_id (synth 'ai-viewer-<name>'). "
               "解 AI viewer pool 共用單一 bot 帳號 → 所有觀眾累在同 user_id, 學不到個人."),
     )
+    parser.add_argument("--vault", default="", help="Vault root path (用於寫 .ai/failed_turns.jsonl, V3-O.10 #23)")
     parser.add_argument("--read-reaction", default="\U0001F440", help="Emoji for read-ack on incoming message.")
     parser.add_argument("--processing-reaction", default="\U0001F9E0", help="Emoji while waiting bridge response.")
     parser.add_argument("--no-read-reaction", action="store_true", help="Disable read reaction.")
@@ -429,6 +585,7 @@ def main() -> int:
         mention_only_channels=mention_only_channels,
         allow_bot_author_ids=allow_bot_author_ids,
         split_by_display_name=bool(args.split_by_display_name),
+        vault_root=args.vault or None,
     )
     client.run(token)
     return 0

@@ -70,6 +70,89 @@ def _build_llm_concurrency_primitive() -> threading.BoundedSemaphore:
 
 _LLM_GENERATE_LOCK = _build_llm_concurrency_primitive()
 
+# V3-O.10 #3 (Q1 fix): per-provider lock pool — 主對話 vs 子任務分離鎖
+# 子任務 (auxiliary != None) 用 _LLM_SUB_TASK_LOCK, 不再跟主對話搶 _LLM_GENERATE_LOCK.
+# 解 B2: self_modification / umbrella_consolidation 等不再阻塞 owner 主對話.
+_LLM_SUB_TASK_LOCK = threading.BoundedSemaphore(2)  # 子任務最多 2 個並行
+
+# V3-O.10 #5: Priority Queue — owner > VIP > viewer 排隊優先
+# 實作: PriorityQueue + worker thread pool，owner priority=0, VIP=1, viewer=2
+import queue as _queue
+import concurrent.futures as _cf
+import concurrent.futures  # noqa: F811 — needed for type annotation
+
+_PRIORITY_LEVELS = {"owner": 0, "vip": 1, "viewer": 2}
+_LLM_PRIORITY_QUEUE: _queue.PriorityQueue = _queue.PriorityQueue()
+_LLM_PRIORITY_WORKER_COUNT = 2  # 同時最多 2 個 LLM 並行
+_LLM_PRIORITY_INITIALIZED = False
+_LLM_PRIORITY_INIT_LOCK = threading.Lock()
+_LLM_REQUEST_COUNTER = 0  # tie-break: 同優先級按到達順序
+_LLM_COUNTER_LOCK = threading.Lock()
+
+
+class _LLMPriorityRequest:
+    """Priority queue 中的一個 LLM 請求."""
+    __slots__ = ("priority", "seq", "fn", "future")
+
+    def __init__(self, priority: int, seq: int, fn):
+        self.priority = priority
+        self.seq = seq
+        self.fn = fn
+        self.future: _cf.Future = _cf.Future()
+
+    def __lt__(self, other: "_LLMPriorityRequest") -> bool:
+        if self.priority != other.priority:
+            return self.priority < other.priority
+        return self.seq < other.seq  # 同優先級: 先到先得
+
+
+def _priority_worker() -> None:
+    """Priority queue worker — 從 queue 取請求並執行."""
+    while True:
+        try:
+            req: _LLMPriorityRequest = _LLM_PRIORITY_QUEUE.get(block=True, timeout=1.0)
+        except _queue.Empty:
+            continue
+        try:
+            result = req.fn()
+            req.future.set_result(result)
+        except Exception as exc:
+            req.future.set_exception(exc)
+        finally:
+            _LLM_PRIORITY_QUEUE.task_done()
+
+
+def _ensure_priority_workers() -> None:
+    """懶初始化 priority worker threads."""
+    global _LLM_PRIORITY_INITIALIZED
+    if _LLM_PRIORITY_INITIALIZED:
+        return
+    with _LLM_PRIORITY_INIT_LOCK:
+        if _LLM_PRIORITY_INITIALIZED:
+            return
+        for _ in range(_LLM_PRIORITY_WORKER_COUNT):
+            t = threading.Thread(target=_priority_worker, daemon=True)
+            t.start()
+        _LLM_PRIORITY_INITIALIZED = True
+
+
+def _submit_priority_request(priority: int, fn) -> concurrent.futures.Future:
+    """提交 LLM 請求到 priority queue，回傳 Future."""
+    global _LLM_REQUEST_COUNTER
+    _ensure_priority_workers()
+    with _LLM_COUNTER_LOCK:
+        seq = _LLM_REQUEST_COUNTER
+        _LLM_REQUEST_COUNTER += 1
+    req = _LLMPriorityRequest(priority, seq, fn)
+    _LLM_PRIORITY_QUEUE.put(req)
+    return req.future
+
+
+# V3-O.10 #6: viewer drop policy — 同 user_id 5s 內重發丟舊
+_VIEWER_PENDING: dict[str, float] = {}
+_VIEWER_PENDING_LOCK = threading.Lock()
+_VIEWER_DROP_COOLDOWN_S = 5.0
+
 
 def _evict_llama_cache_until(max_cached_models: int) -> None:
     limit = max(1, int(max_cached_models))
@@ -193,6 +276,7 @@ class LLMClient:
         temperature: float = 0.2,
         timeout_s: float = 90.0,
         auxiliary: str | None = None,
+        priority: str = "viewer",  # V3-O.10 #5: "owner" | "vip" | "viewer"
     ) -> LLMGenerateResult:
         """Generate one assistant response from routed provider chain.
 
@@ -205,112 +289,181 @@ class LLMClient:
         serialize_text = os.getenv("AGENT_MEMORY_SERIALIZE_LLM", "1").strip().lower()
         serialize = serialize_text not in {"0", "false", "no", "off"}
         acquired = True
-        # V3-O.6 #6 (user 2026-05-28): lock timeout 解耦, 默認 120s, 不再 = timeout_s + 5.
-        # 第 4 輪 viewer barrage 22/62 timeout 全卡 "serialize lock timeout (65.0s)" — 因
-        # companion 傳 timeout_s=60 → lock=65 太短. 大 packet (4476 tok) + qwen 慢的話 60s 處理
-        # 完仍有道理, 但前一個 turn 還沒做完就會卡死後續 turn. 拉大 lock buffer 改善 queue 行為.
-        # HTTP timeout (timeout_s) 維持 60 不變; 環境變數可覆蓋默認.
+        # V3-O.10 #21: lock_timeout 從 companion_config.yaml llm.concurrency 讀 (env 仍可 override)
         env_lock_raw = os.getenv("AGENT_MEMORY_LLM_LOCK_TIMEOUT_S", "").strip()
         try:
             base_lock_timeout = float(env_lock_raw) if env_lock_raw else 120.0
         except ValueError:
             base_lock_timeout = 120.0
+        # 嘗試從 yaml 讀 concurrency.lock_timeout_s (env 優先)
+        if not env_lock_raw:
+            try:
+                import yaml as _yaml
+                _ccfg_path = self.vault_root / "00_System_Core" / "companion_config.yaml"
+                if _ccfg_path.exists():
+                    _ccfg = _yaml.safe_load(_ccfg_path.read_text(encoding="utf-8")) or {}
+                    _yaml_lock = float(_ccfg.get("llm", {}).get("concurrency", {}).get("lock_timeout_s", 120.0))
+                    base_lock_timeout = _yaml_lock
+            except Exception:
+                pass
         lock_timeout = max(5.0, float(timeout_s) + 5.0, base_lock_timeout)
-        if serialize:
-            acquired = _LLM_GENERATE_LOCK.acquire(timeout=lock_timeout)
-            if not acquired:
-                raise LLMClientError(f"LLM serialize lock timeout ({lock_timeout:.1f}s)")
-        try:
-            clean_messages = _message_list(messages)
-            if not clean_messages:
-                raise LLMClientError("messages 不可為空")
 
-            cfg = load_llm_router_config(self.vault_root)
-            resolved = resolve_llm_route(
-                cfg,
+        # V3-O.10 #5: 主對話走 priority queue (owner > VIP > viewer)
+        # 子任務走獨立 lock pool (解 B2)
+        if serialize and not auxiliary:
+            # 主對話: 提交到 priority queue，等待 worker 執行
+            prio_level = _PRIORITY_LEVELS.get(priority, _PRIORITY_LEVELS["viewer"])
+            _inner_self = self
+            _inner_msgs = list(messages)
+            _inner_kwargs = dict(
                 persona_id=persona_id,
                 override_profile=override_profile,
                 override_model=override_model,
-                auxiliary=auxiliary,  # R21.x C117: 子任務 LLM 分工 propagate
+                temperature=temperature,
+                timeout_s=timeout_s,
+                auxiliary=auxiliary,
+                priority=priority,
             )
-            providers = cfg.get("providers", {})
-            if not isinstance(providers, dict):
-                providers = {}
 
-            failures: list[LLMAttemptFailure] = []
-            for candidate in resolved["chain"]:
-                profile = str(candidate.get("profile", "")).strip()
-                model = str(candidate.get("model", "")).strip()
-                provider_cfg = providers.get(profile, {})
-                if not isinstance(provider_cfg, dict):
-                    provider_cfg = {}
-                kind = str(provider_cfg.get("kind", "openai_compatible")).strip()
-                base_url = str(provider_cfg.get("base_url", "")).strip()
-                requires_key = bool(provider_cfg.get("requires_api_key", True))
-                key_env = str(provider_cfg.get("api_key_env", "")).strip()
-                api_key = os.getenv(key_env, "").strip() if key_env else ""
-                if requires_key and not api_key:
-                    failures.append(LLMAttemptFailure(profile=profile, model=model, reason=f"missing {key_env}"))
-                    continue
-                if not base_url:
-                    failures.append(LLMAttemptFailure(profile=profile, model=model, reason="missing base_url"))
-                    continue
-
-                # R15 C65 (Codex 第 16 焦點 T3.2/T12.3 Gemini 500):
-                # 對同一 provider 試一次 retry, 只在 transient 5xx (HTTP 5..) 或
-                # "Internal error" 字串時. 一般 4xx / network / json 錯誤直接 fallback
-                # 走 chain 下一個 provider, 不再 retry 同一個.
-                content: str | None = None
-                last_exc_msg: str = ""
-                for attempt_idx in range(2):
-                    try:
-                        content = self._dispatch_generate(
-                            kind=kind,
-                            base_url=base_url,
-                            model=model,
-                            api_key=api_key,
-                            provider_cfg=provider_cfg,
-                            messages=clean_messages,
-                            temperature=temperature,
-                            timeout_s=timeout_s,
-                        )
-                        break
-                    except Exception as exc:  # noqa: BLE001
-                        msg = str(exc)
-                        last_exc_msg = msg
-                        # 5xx (HTTP 5\d\d) 或 Gemini "Internal error" — transient, retry 同 provider 一次
-                        is_transient = bool(
-                            re.search(r"HTTP\s+5\d\d", msg)
-                            or "Internal error" in msg
-                            or "internal_error" in msg
-                        )
-                        if is_transient and attempt_idx == 0:
-                            time.sleep(1.0)
-                            continue
-                        break
-
-                if content is None:
-                    failures.append(LLMAttemptFailure(profile=profile, model=model, reason=last_exc_msg or "unknown error"))
-                    continue
-
-                if not content.strip():
-                    failures.append(LLMAttemptFailure(profile=profile, model=model, reason="empty response"))
-                    continue
-
-                return LLMGenerateResult(
-                    content=content.strip(),
-                    profile=profile,
-                    model=model,
-                    provider_kind=kind,
-                    base_url=base_url,
-                    attempts=failures,
+            def _execute_in_worker() -> LLMGenerateResult:
+                return _inner_self._generate_core(
+                    messages=_inner_msgs,
+                    persona_id=persona_id,
+                    override_profile=override_profile,
+                    override_model=override_model,
+                    temperature=temperature,
+                    timeout_s=timeout_s,
+                    auxiliary=None,
                 )
 
-            reason_lines = [f"- {f.profile}/{f.model}: {f.reason}" for f in failures]
-            raise LLMClientError("所有 LLM 嘗試失敗：\n" + "\n".join(reason_lines))
+            future = _submit_priority_request(prio_level, _execute_in_worker)
+            try:
+                return future.result(timeout=lock_timeout)
+            except _cf.TimeoutError:
+                raise LLMClientError(f"LLM priority queue timeout ({lock_timeout:.1f}s, priority={priority})")
+            except Exception as exc:
+                raise
+
+        # 子任務: 走獨立 lock pool (直接執行, 不過 priority queue)
+        active_lock = _LLM_SUB_TASK_LOCK
+        acquired = True
+        if serialize:
+            acquired = active_lock.acquire(timeout=lock_timeout)
+            if not acquired:
+                raise LLMClientError(f"LLM sub_task lock timeout ({lock_timeout:.1f}s)")
+        try:
+            return self._generate_core(
+                messages=messages,
+                persona_id=persona_id,
+                override_profile=override_profile,
+                override_model=override_model,
+                temperature=temperature,
+                timeout_s=timeout_s,
+                auxiliary=auxiliary,
+            )
         finally:
             if serialize and acquired:
-                _LLM_GENERATE_LOCK.release()
+                active_lock.release()
+
+    def _generate_core(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        persona_id: str,
+        override_profile: str | None = None,
+        override_model: str | None = None,
+        temperature: float = 0.2,
+        timeout_s: float = 90.0,
+        auxiliary: str | None = None,
+    ) -> LLMGenerateResult:
+        """核心 LLM generate 邏輯 (無 lock, 由呼叫方管理)."""
+        clean_messages = _message_list(messages)
+        if not clean_messages:
+            raise LLMClientError("messages 不可為空")
+
+        cfg = load_llm_router_config(self.vault_root)
+        resolved = resolve_llm_route(
+            cfg,
+            persona_id=persona_id,
+            override_profile=override_profile,
+            override_model=override_model,
+            auxiliary=auxiliary,  # R21.x C117: 子任務 LLM 分工 propagate
+        )
+        providers = cfg.get("providers", {})
+        if not isinstance(providers, dict):
+            providers = {}
+
+        failures: list[LLMAttemptFailure] = []
+        for candidate in resolved["chain"]:
+            profile = str(candidate.get("profile", "")).strip()
+            model = str(candidate.get("model", "")).strip()
+            provider_cfg = providers.get(profile, {})
+            if not isinstance(provider_cfg, dict):
+                provider_cfg = {}
+            kind = str(provider_cfg.get("kind", "openai_compatible")).strip()
+            base_url = str(provider_cfg.get("base_url", "")).strip()
+            requires_key = bool(provider_cfg.get("requires_api_key", True))
+            key_env = str(provider_cfg.get("api_key_env", "")).strip()
+            api_key = os.getenv(key_env, "").strip() if key_env else ""
+            if requires_key and not api_key:
+                failures.append(LLMAttemptFailure(profile=profile, model=model, reason=f"missing {key_env}"))
+                continue
+            if not base_url:
+                failures.append(LLMAttemptFailure(profile=profile, model=model, reason="missing base_url"))
+                continue
+
+            # R15 C65 (Codex 第 16 焦點 T3.2/T12.3 Gemini 500):
+            # 對同一 provider 試一次 retry, 只在 transient 5xx (HTTP 5..) 或
+            # "Internal error" 字串時. 一般 4xx / network / json 錯誤直接 fallback
+            # 走 chain 下一個 provider, 不再 retry 同一個.
+            content: str | None = None
+            last_exc_msg: str = ""
+            for attempt_idx in range(2):
+                try:
+                    content = self._dispatch_generate(
+                        kind=kind,
+                        base_url=base_url,
+                        model=model,
+                        api_key=api_key,
+                        provider_cfg=provider_cfg,
+                        messages=clean_messages,
+                        temperature=temperature,
+                        timeout_s=timeout_s,
+                    )
+                    break
+                except Exception as exc:  # noqa: BLE001
+                    msg = str(exc)
+                    last_exc_msg = msg
+                    # 5xx (HTTP 5\d\d) 或 Gemini "Internal error" — transient, retry 同 provider 一次
+                    is_transient = bool(
+                        re.search(r"HTTP\s+5\d\d", msg)
+                        or "Internal error" in msg
+                        or "internal_error" in msg
+                    )
+                    if is_transient and attempt_idx == 0:
+                        time.sleep(1.0)
+                        continue
+                    break
+
+            if content is None:
+                failures.append(LLMAttemptFailure(profile=profile, model=model, reason=last_exc_msg or "unknown error"))
+                continue
+
+            if not content.strip():
+                failures.append(LLMAttemptFailure(profile=profile, model=model, reason="empty response"))
+                continue
+
+            return LLMGenerateResult(
+                content=content.strip(),
+                profile=profile,
+                model=model,
+                provider_kind=kind,
+                base_url=base_url,
+                attempts=failures,
+            )
+
+        reason_lines = [f"- {f.profile}/{f.model}: {f.reason}" for f in failures]
+        raise LLMClientError("所有 LLM 嘗試失敗：\n" + "\n".join(reason_lines))
 
     def _dispatch_generate(
         self,
@@ -391,17 +544,27 @@ class LLMClient:
         messages: list[dict[str, str]],
         temperature: float,
         timeout_s: float,
+        on_token=None,  # V3-O.10 #26: optional streaming callback (token: str) -> None
     ) -> str:
         url = base_url.rstrip("/") + "/chat/completions"
+        headers: dict[str, str] = {}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        # V3-O.10 #26: streaming mode (on_token callback 存在時啟用)
+        if on_token is not None:
+            return self._call_openai_streaming(
+                url=url, model=model, messages=messages,
+                temperature=temperature, timeout_s=timeout_s,
+                headers=headers, on_token=on_token,
+            )
+
         payload: dict[str, Any] = {
             "model": model,
             "messages": messages,
             "temperature": temperature,
             "stream": False,
         }
-        headers: dict[str, str] = {}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
         data = _post_json(url, payload, headers=headers, timeout_s=timeout_s)
         choices = data.get("choices", [])
         if not isinstance(choices, list) or not choices:
@@ -419,6 +582,60 @@ class LLMClient:
                     parts.append(str(item.get("text", "")))
             return "\n".join(parts).strip()
         raise LLMClientError(f"Unsupported content format: {content}")
+
+    def _call_openai_streaming(
+        self,
+        *,
+        url: str,
+        model: str,
+        messages: list[dict[str, str]],
+        temperature: float,
+        timeout_s: float,
+        headers: dict[str, str],
+        on_token,
+    ) -> str:
+        """V3-O.10 #26: SSE streaming — 逐 token 呼叫 on_token(chunk), 回傳完整文字."""
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        body = json.dumps(payload).encode("utf-8")
+        req = url_request.Request(url=url, data=body, method="POST")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "text/event-stream")
+        for k, v in headers.items():
+            req.add_header(k, v)
+
+        full_text = []
+        try:
+            with url_request.urlopen(req, timeout=timeout_s) as resp:
+                for line in resp:
+                    if isinstance(line, bytes):
+                        line = line.decode("utf-8")
+                    line = line.strip()
+                    if not line or line == "data: [DONE]":
+                        continue
+                    if line.startswith("data: "):
+                        try:
+                            chunk_data = json.loads(line[6:])
+                            delta = chunk_data.get("choices", [{}])[0].get("delta", {})
+                            token = delta.get("content", "")
+                            if token:
+                                full_text.append(token)
+                                try:
+                                    on_token(token)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+        except url_error.HTTPError as exc:
+            raise LLMClientError(f"HTTP {exc.code} streaming {url}") from exc
+        except url_error.URLError as exc:
+            raise LLMClientError(f"Network error streaming {url}: {exc.reason}") from exc
+
+        return "".join(full_text)
 
     def _call_anthropic(
         self,

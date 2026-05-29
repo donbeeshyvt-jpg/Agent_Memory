@@ -63,27 +63,126 @@ class _TransportBridgeHandler(BaseHTTPRequestHandler):
             path = parsed.path.strip("/")
             if path.startswith("webhook/"):
                 transport = sanitize_component(path.removeprefix("webhook/"), fallback="web").lower()
+                # V3-O.10 #26: /webhook/<transport>/stream → SSE chunked streaming
+                if path.endswith("/stream"):
+                    transport = transport.removesuffix("/stream").rstrip("/")
+                    return self._handle_webhook_streaming(transport, body)
                 return self._send_json(HTTPStatus.OK, self._handle_webhook(transport, body))
         except Exception as exc:  # noqa: BLE001
             return self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
         return self._send_json(HTTPStatus.NOT_FOUND, {"error": "not_found"})
 
+    def _handle_webhook_streaming(self, transport: str, body: dict[str, Any]) -> None:
+        """V3-O.10 #26: SSE chunked streaming response.
+
+        Client 收到 data: {"token": "..."} 逐 chunk，最後收到 data: {"done": true, "response": "..."}
+        """
+        import threading as _th
+        import queue as _q
+        token_queue: _q.Queue = _q.Queue()
+        full_parts: list[str] = []
+        error_holder: list[str] = []
+
+        def _on_token(tok: str) -> None:
+            full_parts.append(tok)
+            token_queue.put(("token", tok))
+
+        def _run() -> None:
+            try:
+                result = run_transport_event(
+                    vault_root=self.server.vault_root,
+                    transport=transport,
+                    payload={**body, "_on_token": _on_token},
+                    explicit_persona=str(body.get("persona", "")).strip() or None,
+                    context_override=str(body.get("context", "")).strip() or None,
+                    session_override=str(body.get("session", "")).strip() or None,
+                    override_profile=str(body.get("override_profile", "")).strip() or None,
+                    override_model=str(body.get("override_model", "")).strip() or None,
+                    temperature=float(body.get("temperature", 0.2)),
+                    timeout_s=float(body.get("timeout", 90.0)),
+                    memory_mode=str(body.get("memory_mode", "session_and_daily")).strip() or "session_and_daily",
+                    dialogue_mode=str(body.get("dialogue_mode", body.get("mode", ""))).strip() or None,
+                    allow_llm_degraded=_coerce_bool(body.get("allow_llm_degraded"), True),
+                )
+                token_queue.put(("done", result))
+            except Exception as exc:
+                error_holder.append(str(exc))
+                token_queue.put(("error", str(exc)))
+
+        worker = _th.Thread(target=_run, daemon=True)
+        worker.start()
+
+        # SSE headers
+        self.send_response(HTTPStatus.OK.value)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+
+        timeout_s = float(body.get("timeout", 90.0)) + 15.0
+        start = __import__("time").monotonic()
+        try:
+            while True:
+                if __import__("time").monotonic() - start > timeout_s:
+                    break
+                try:
+                    kind, data = token_queue.get(timeout=1.0)
+                except _q.Empty:
+                    continue
+                if kind == "token":
+                    line = json.dumps({"token": data}, ensure_ascii=False)
+                elif kind == "done":
+                    resp = data if isinstance(data, dict) else {"response": str(data)}
+                    line = json.dumps({"done": True, **resp}, ensure_ascii=False)
+                    self._write_sse(f"data: {line}\n\n")
+                    break
+                elif kind == "error":
+                    line = json.dumps({"error": data}, ensure_ascii=False)
+                    self._write_sse(f"data: {line}\n\n")
+                    break
+                else:
+                    continue
+                self._write_sse(f"data: {line}\n\n")
+        except Exception:
+            pass
+
+    def _write_sse(self, text: str) -> None:
+        try:
+            chunk = text.encode("utf-8")
+            self.wfile.write(f"{len(chunk):x}\r\n".encode())
+            self.wfile.write(chunk)
+            self.wfile.write(b"\r\n")
+            self.wfile.flush()
+        except Exception:
+            pass
+
     def _handle_webhook(self, transport: str, body: dict[str, Any]) -> dict[str, Any]:
-        return run_transport_event(
-            vault_root=self.server.vault_root,
-            transport=transport,
-            payload=body,
-            explicit_persona=str(body.get("persona", "")).strip() or None,
-            context_override=str(body.get("context", "")).strip() or None,
-            session_override=str(body.get("session", "")).strip() or None,
-            override_profile=str(body.get("override_profile", "")).strip() or None,
-            override_model=str(body.get("override_model", "")).strip() or None,
-            temperature=float(body.get("temperature", 0.2)),
-            timeout_s=float(body.get("timeout", 90.0)),
-            memory_mode=str(body.get("memory_mode", "session_and_daily")).strip() or "session_and_daily",
-            dialogue_mode=str(body.get("dialogue_mode", body.get("mode", ""))).strip() or None,
-            allow_llm_degraded=_coerce_bool(body.get("allow_llm_degraded"), True),
-        )
+        import concurrent.futures as _cf
+        timeout_s = float(body.get("timeout", 90.0))
+        # V3-O.10 #22: bridge timeout abort — 超時自動 abort 防殭屍 LLM call
+        abort_timeout = timeout_s + 10.0  # 給 LLM 多 10s 緩衝, 超過直接取消
+        with _cf.ThreadPoolExecutor(max_workers=1) as _executor:
+            _future = _executor.submit(
+                run_transport_event,
+                vault_root=self.server.vault_root,
+                transport=transport,
+                payload=body,
+                explicit_persona=str(body.get("persona", "")).strip() or None,
+                context_override=str(body.get("context", "")).strip() or None,
+                session_override=str(body.get("session", "")).strip() or None,
+                override_profile=str(body.get("override_profile", "")).strip() or None,
+                override_model=str(body.get("override_model", "")).strip() or None,
+                temperature=float(body.get("temperature", 0.2)),
+                timeout_s=timeout_s,
+                memory_mode=str(body.get("memory_mode", "session_and_daily")).strip() or "session_and_daily",
+                dialogue_mode=str(body.get("dialogue_mode", body.get("mode", ""))).strip() or None,
+                allow_llm_degraded=_coerce_bool(body.get("allow_llm_degraded"), True),
+            )
+            try:
+                return _future.result(timeout=abort_timeout)
+            except _cf.TimeoutError:
+                _future.cancel()
+                return {"error": f"bridge_timeout ({abort_timeout:.0f}s)", "response": ""}
 
     def _read_json(self) -> dict[str, Any]:
         length_raw = self.headers.get("Content-Length", "0").strip()
