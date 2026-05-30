@@ -395,6 +395,97 @@ def _handle_hermes_ingest(vault_root: Path, turn: "InboundTurn") -> dict[str, An
     }
 
 
+def _get_aggregator_for(vault_root: Path):
+    """V3-O.11 階段2: 從 companion_config.yaml 讀彙整門檻, 取 StreamAggregator 單例。"""
+    from agent_memory.companion.stream_aggregator import get_stream_aggregator
+    qw, thr, mx, cap = 6.0, 5, 10, 30.0
+    try:
+        import yaml as _y
+        p = vault_root / "00_System_Core" / "companion_config.yaml"
+        if p.exists():
+            cc = _y.safe_load(p.read_text(encoding="utf-8")) or {}
+            sm = (((cc.get("channels", {}) or {}).get("discord", {}) or {}).get("stream_mode", {}) or {})
+            agg_cfg = sm.get("aggregation", {}) or {}
+            qw = float(agg_cfg.get("quiet_window_s", 6.0))
+            thr = int(agg_cfg.get("meaningful_flush_threshold", 5))
+            mx = int(agg_cfg.get("max_meaningful", 10))
+            cap = float(agg_cfg.get("hard_cap_s", 30.0))
+    except Exception:
+        pass
+    return get_stream_aggregator(
+        vault_root, quiet_window_s=qw, meaningful_flush_threshold=thr,
+        max_meaningful=mx, hard_cap_s=cap,
+    )
+
+
+def _generate_aggregated_reply(vault_root: Path, msgs: list, session_id: str) -> str:
+    """V3-O.11 彙整生成: 用 main_chat 出口模型 (auxiliary=None → deepseek) + 完整 context。
+
+    階段2 骨架: 多人訊息(按時序) + 各發言者朋友卡 + 「多人對話自主綜合/個別」指示。
+    階段3 補完整: owner 記憶 + 最近對話為主 + 朋友卡彙整版(反思+近10句) + group_sentiment。
+    """
+    if not msgs:
+        return ""
+    lines = [f"{m.display_name}: {(m.content or '')[:200]}" for m in msgs]
+    block = "\n".join(lines)
+    cards = []
+    for uid in dict.fromkeys(m.user_id for m in msgs):
+        try:
+            from agent_memory.companion.audience_writer import load_viewer_profile_md
+            c = load_viewer_profile_md(vault_root, uid)
+            if c:
+                cards.append(c[:1500])
+        except Exception:
+            pass
+    cards_block = "\n\n".join(cards) if cards else "(無朋友卡, 多為初識)"
+    prompt = (
+        "這是一場多人對話。以下是各位發言者的朋友卡, 以及他們剛剛說的話。\n\n"
+        f"=== 發言者朋友卡 ===\n{cards_block}\n\n"
+        f"=== 本批發言 (按時序) ===\n{block}\n\n"
+        "請用你自己的方式統一回應這批訊息: 依每個人的話 + 你跟他的關係重要性, "
+        "自主選擇『綜合回答』或『稍微個別回答』。直接對全場說話, 不必逐一點名所有人。"
+    )
+    try:
+        from agent_memory.llm_text_helpers import call_llm_for_text
+        # auxiliary=None → 走 global_default (main_chat 出口模型, 預設 deepseek)
+        result = call_llm_for_text(
+            vault_root, prompt, persona_id="companion",
+            temperature=0.7, timeout_s=60.0, auxiliary=None,
+        )
+        return (result or "").strip()
+    except Exception:
+        return ""
+
+
+def _check_and_flush_aggregator(vault_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    """V3-O.11 階段2: relay 背景 task 呼叫 — 檢查 debounce flush, 達標則彙整生成 + 補寫。"""
+    base = {"brain_type": "companion", "persona": "companion", "aggregated": False, "response": ""}
+    try:
+        _agg = _get_aggregator_for(vault_root)
+        _channel_id = str(payload.get("channel_id") or "default")
+        if not _agg.should_flush(_channel_id):
+            return base
+        msgs = _agg.drain(_channel_id)
+        if not msgs:
+            return base
+        session_id = str(payload.get("session_id") or "aggregated")
+        channel_type = str(payload.get("channel_type") or "public_text_channel")
+        unified = _generate_aggregated_reply(vault_root, msgs, session_id)
+        if unified:
+            try:
+                from agent_memory.companion.companion_chat_runtime import append_bot_reply_event
+                user_ids = list(dict.fromkeys(m.user_id for m in msgs))
+                append_bot_reply_event(vault_root, user_ids, session_id, unified, channel_type=channel_type)
+            except Exception:
+                pass
+        return {"brain_type": "companion", "persona": "companion", "aggregated": True,
+                "response": unified, "channel_id": payload.get("channel_id", ""),
+                "speaker_count": len(set(m.user_id for m in msgs))}
+    except Exception as _e:
+        return {"brain_type": "companion", "persona": "companion", "aggregated": False,
+                "response": "", "error": str(_e)[:120]}
+
+
 def _run_companion_transport_event(
     *, vault_root: Path, transport: str, payload: dict[str, Any],
     explicit_persona: str | None = None,
@@ -409,6 +500,10 @@ def _run_companion_transport_event(
     from agent_memory.companion.companion_chat_runtime import (
         run_companion_chat_turn, ChatRequest,
     )
+
+    # V3-O.11 階段2: relay 背景 task 送來的「彙整 flush 檢查」(非 user 訊息) → 檢查+生成統一回覆
+    if payload.get("_aggregator_flush_check"):
+        return _check_and_flush_aggregator(vault_root, payload)
 
     profiles = load_transport_profiles(vault_root)
     turn = parse_inbound_turn(transport, payload, profiles)
@@ -448,8 +543,10 @@ def _run_companion_transport_event(
     except Exception:
         _bl = {}
 
+    # V3-O.11 階段2: owner 即時完整回; viewer 個別記錄(record_only)+進佇列, 不個別回
     resp = run_companion_chat_turn(
         req, vault_root,
+        record_only=(not is_owner),
         persona_baseline_balance=float(_bl.get("baseline_balance", 0.3)),
         persona_baseline_silence=float(_bl.get("baseline_silence_intolerance", 0.5)),
         persona_baseline_curiosity=float(_bl.get("curiosity_urge", 0.5)),
@@ -457,30 +554,17 @@ def _run_companion_transport_event(
         persona_baseline_engagement=float(_bl.get("engagement_seeking", 0.5)),
     )
 
-    # V3-O.10 #41 (BUG-2 wire): 直播場景吸收彙整統一發言.
-    # 對 public_stream channel + non-owner viewer: 訊息進 aggregator, 達門檻 → 統一發言取代逐則回.
-    # DM / public_text_channel 不啟用 (照常逐則回). 測試環境 public_text_channel 不受影響.
-    if channel_type == "public_stream" and not is_owner:
+    # V3-O.11 階段2: viewer 訊息進彙整佇列 (不分日常/直播), 個別記錄已完成, 不個別回。
+    # 出口統一由 relay 背景 task 觸發 _check_and_flush_aggregator → 彙整發頻道。owner 不進佇列、即時回。
+    aggregation_held = False
+    if not is_owner:
         try:
-            import yaml as _yaml_sa
-            _ccfg_sa = vault_root / "00_System_Core" / "companion_config.yaml"
-            _agg_window = 8.0
-            _stream_enabled = True
-            if _ccfg_sa.exists():
-                _cc = _yaml_sa.safe_load(_ccfg_sa.read_text(encoding="utf-8")) or {}
-                _sm = (((_cc.get("channels", {}) or {}).get("discord", {}) or {}).get("stream_mode", {}) or {})
-                _stream_enabled = bool(_sm.get("enabled", True))
-                _agg_window = float(_sm.get("aggregate_window_s", 8.0))
-            if _stream_enabled:
-                from agent_memory.companion.stream_aggregator import get_stream_aggregator
-                _agg = get_stream_aggregator(vault_root, aggregate_window_s=_agg_window)
-                _agg.add_message(req.user_id, turn.display_name or "", req.message)
-                if _agg.should_flush():
-                    _unified = _agg.flush_and_generate()
-                    if _unified:
-                        resp.response_text = _unified  # 統一發言取代逐則回
+            _agg = _get_aggregator_for(vault_root)
+            _agg.add_message(req.channel_id, req.user_id, turn.display_name or "", req.message)
+            aggregation_held = True
         except Exception:
-            pass  # non-critical, 失敗回逐則回
+            aggregation_held = False
+        resp.response_text = ""  # viewer 不個別回 (relay held, 等彙整 flush 統一發頻道)
 
     # 寫 markdown session log (companion 10_Working_Memory/11_Session_Logs/)
     try:
@@ -497,6 +581,7 @@ def _run_companion_transport_event(
         "persona": "companion",
         "brain_type": "companion",
         "response": resp.response_text,
+        "aggregation_held": aggregation_held,
         "decision": resp.decision,
         "affect_state": resp.affect_state,
         "emotion_state": resp.emotion_state,

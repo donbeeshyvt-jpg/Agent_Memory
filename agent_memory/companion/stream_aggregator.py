@@ -1,28 +1,43 @@
-"""V3-O.10 #41 — 直播場景吸收彙整統一發言 (stream_aggregator).
+"""V3-O.11 — 統一回話動態彙整 (stream_aggregator).
 
-情境: 直播聊天室不能每 viewer 都回, bot 應收集一段時間的訊息 → 彙整 → 主動發言.
+不分日常/直播: 所有 viewer 訊息進佇列, debounce 滑動視窗彙整統一發言。
+owner 豁免 (即時獨立回, 不進此佇列)。
 
-流程:
-  viewer A/B/C 連續發言 (aggregate_window_s 內)
-  → StreamAggregator 收集
-  → local_gemma/openrouter_sub 彙整 sentiment + topic
-  → bot 主動統一回覆
+觸發 (先到先發, per channel):
+  ① 安靜滿 quiet_window_s (每來新訊息 reset) 且佇列非空
+  ② 有效句達 meaningful_flush_threshold (動態 5-10; 程式快篩短句/表情不算)
+  ③ 從第一條起滿 hard_cap_s 硬上限
 
-觸發條件:
-  - aggregate_window_s 內 viewer 訊息 ≥ min_messages 個
-  - OR 同 viewer 連發 ≥ min_burst 句
-
-yaml 配置:
-  channels.discord.stream_mode.aggregate_window_s: 8
+V3-O.11 多頻道: per channel_id 分桶 (drain/should_flush 各頻道獨立), 支援多頻道並行。
+階段2 接入: transport viewer record_only + add_message; relay 背景 task 輪詢 should_flush → 彙整發頻道。
 """
 
 from __future__ import annotations
 
+import re
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+
+_CJK_RE = re.compile(r"[一-鿿]")
+_LATIN_RE = re.compile(r"[a-zA-Z]")
+
+
+def is_meaningful_message(content: str) -> bool:
+    """程式快篩 (V3-O.11 user②): 短句/純表情/純數字/無意義 → False (累積但不觸發 flush).
+
+    判準: 去空白後非純數字, 且實質字元 (中文 + 英文字母) >= 2。
+    例: "666"→F, "哈"→F, "😂😂"→F, "你好"→T, "你好可愛"→T, "ok"→T。
+    """
+    s = (content or "").strip()
+    if not s:
+        return False
+    if s.isdigit():
+        return False
+    cjk = len(_CJK_RE.findall(s))
+    latin = len(_LATIN_RE.findall(s))
+    return (cjk + latin) >= 2
 
 
 @dataclass
@@ -31,108 +46,109 @@ class _PendingMessage:
     display_name: str
     content: str
     timestamp: float
+    meaningful: bool
 
 
 class StreamAggregator:
-    """收集直播 viewer 訊息，觸發彙整發言."""
+    """收集 viewer 訊息 (per channel 分桶), debounce 滑動視窗觸發彙整統一回覆。"""
 
     def __init__(
         self,
         vault_root: Path,
         *,
-        aggregate_window_s: float = 8.0,
-        min_messages: int = 3,
-        min_burst: int = 3,
+        quiet_window_s: float = 6.0,
+        meaningful_flush_threshold: int = 5,
+        max_meaningful: int = 10,
+        hard_cap_s: float = 30.0,
     ):
         self.vault_root = vault_root
-        self.aggregate_window_s = aggregate_window_s
-        self.min_messages = min_messages
-        self.min_burst = min_burst
-        self._pending: list[_PendingMessage] = []
+        self.quiet_window_s = quiet_window_s
+        self.meaningful_flush_threshold = meaningful_flush_threshold
+        self.max_meaningful = max_meaningful
+        self.hard_cap_s = hard_cap_s
+        # V3-O.11 多頻道: channel_id → list[_PendingMessage]
+        self._pending: dict[str, list] = {}
         self._lock = threading.Lock()
-        self._last_flush: float = 0.0
 
-    def add_message(self, user_id: str, display_name: str, content: str) -> None:
-        """加入一則 viewer 訊息."""
+    def add_message(self, channel_id: str, user_id: str, display_name: str, content: str) -> None:
+        """加一則 viewer 訊息進該頻道佇列 (附程式快篩 meaningful 標記)。"""
+        ch = str(channel_id or "default")
         with self._lock:
-            self._pending.append(_PendingMessage(
+            self._pending.setdefault(ch, []).append(_PendingMessage(
                 user_id=user_id,
                 display_name=display_name or user_id,
                 content=content,
                 timestamp=time.monotonic(),
+                meaningful=is_meaningful_message(content),
             ))
 
-    def should_flush(self) -> bool:
-        """判斷是否應該觸發彙整發言.
-
-        條件: pending ≥ min_messages AND 最早訊息已超過 aggregate_window_s (window 到期)
-        OR pending ≥ min_messages * 2 (爆量立刻發)
-        """
+    def pending_count(self, channel_id: str) -> int:
         with self._lock:
-            if len(self._pending) < self.min_messages:
+            return len(self._pending.get(str(channel_id or "default"), []))
+
+    def meaningful_count(self, channel_id: str) -> int:
+        with self._lock:
+            return sum(1 for m in self._pending.get(str(channel_id or "default"), []) if m.meaningful)
+
+    def pending_channels(self) -> list:
+        """回傳目前有 pending 的 channel_id 清單 (供背景輪詢)。"""
+        with self._lock:
+            return [c for c, msgs in self._pending.items() if msgs]
+
+    def should_flush(self, channel_id: str) -> bool:
+        """debounce 滑動視窗 (該頻道): 30s硬上限 / 有效句達門檻 / 安靜6s, 先到先發。"""
+        ch = str(channel_id or "default")
+        with self._lock:
+            pend = self._pending.get(ch, [])
+            if not pend:
                 return False
             now = time.monotonic()
-            oldest = self._pending[0].timestamp
-            window_elapsed = (now - oldest) >= self.aggregate_window_s
-            burst = len(self._pending) >= self.min_messages * 2
-            return window_elapsed or burst
+            first_ts = pend[0].timestamp
+            last_ts = pend[-1].timestamp
+            meaningful = sum(1 for m in pend if m.meaningful)
+            # ① 硬上限: 從第一條起 hard_cap_s (連續刷也強制發)
+            if (now - first_ts) >= self.hard_cap_s:
+                return True
+            # ② 有效句達門檻 (動態 5-10) → 不等安靜先發, 讓直播能持續接話
+            if meaningful >= self.meaningful_flush_threshold:
+                return True
+            # ③ debounce: 安靜滿 quiet_window_s 且佇列非空 → flush (含單人/純表情批)
+            if (now - last_ts) >= self.quiet_window_s and len(pend) >= 1:
+                return True
+            return False
 
-    def flush_and_generate(self) -> Optional[str]:
-        """彙整訊息並用 LLM 生成統一回覆，清空 pending."""
+    def drain(self, channel_id: str) -> list:
+        """取出並清空該頻道 pending (給逐一序列個別處理 + 彙整用)。"""
+        ch = str(channel_id or "default")
         with self._lock:
-            if not self._pending:
-                return None
-            messages = list(self._pending)
-            self._pending.clear()
-            self._last_flush = time.monotonic()
-
-        if not messages:
-            return None
-
-        # 組裝彙整 prompt
-        lines = [f"{m.display_name}: {m.content[:100]}" for m in messages[:10]]
-        block = "\n".join(lines)
-        names = list({m.display_name for m in messages})[:5]
-        names_str = "、".join(names)
-
-        prompt = (
-            f"你是一個 VTuber 陪伴 bot，剛剛在直播聊天室中收到以下多位觀眾的訊息：\n\n"
-            f"{block}\n\n"
-            f"請用 1-2 句話統一回應這些訊息（提及主要發言者 {names_str}），"
-            f"語氣活潑自然，不要逐一點名所有人。\n"
-            f"直接輸出回覆句子，不需要說明。"
-        )
-
-        try:
-            from agent_memory.llm_text_helpers import call_llm_for_text
-            result = call_llm_for_text(
-                self.vault_root, prompt,
-                persona_id="companion",
-                temperature=0.7,
-                timeout_s=15.0,
-                auxiliary="umbrella_consolidation",
-            )
-            return result.strip() if result else None
-        except Exception:
-            return None
+            msgs = self._pending.pop(ch, [])
+            return msgs
 
 
 # ── 全域 aggregator registry (per vault_root) ──────────────────────────────
-_AGGREGATOR_REGISTRY: dict[str, StreamAggregator] = {}
+_AGGREGATOR_REGISTRY: dict = {}
 _REGISTRY_LOCK = threading.Lock()
 
 
 def get_stream_aggregator(
     vault_root: Path,
     *,
-    aggregate_window_s: float = 8.0,
+    quiet_window_s: float = 6.0,
+    meaningful_flush_threshold: int = 5,
+    max_meaningful: int = 10,
+    hard_cap_s: float = 30.0,
 ) -> StreamAggregator:
-    """取得或建立對應 vault 的 StreamAggregator."""
+    """取得或建立對應 vault 的 StreamAggregator (單例 per vault, 內部 per channel 分桶)。"""
     key = str(vault_root)
     with _REGISTRY_LOCK:
-        if key not in _AGGREGATOR_REGISTRY:
-            _AGGREGATOR_REGISTRY[key] = StreamAggregator(
+        agg = _AGGREGATOR_REGISTRY.get(key)
+        if agg is None:
+            agg = StreamAggregator(
                 vault_root,
-                aggregate_window_s=aggregate_window_s,
+                quiet_window_s=quiet_window_s,
+                meaningful_flush_threshold=meaningful_flush_threshold,
+                max_meaningful=max_meaningful,
+                hard_cap_s=hard_cap_s,
             )
-        return _AGGREGATOR_REGISTRY[key]
+            _AGGREGATOR_REGISTRY[key] = agg
+        return agg

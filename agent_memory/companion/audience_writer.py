@@ -33,18 +33,69 @@ MAX_PREF_OBS = 10  # 偏好觀察 keep 10
 MAX_DISPLAY_NAME_LEN = 80
 MAX_CONTENT_PREVIEW = 80
 
+# V3-O.11 階段3 朋友卡記憶層
+MAX_CONSOLIDATION_TURNS = 10   # 近期對話彙整餵 LLM 的對話句數上限
+MAX_REFLECTION_EVENTS = 8      # 反思餵 LLM 的高分事件數上限
+
+
+def _llm_viewer_reflection(vault_root: Path, display_name: str, raw_block: str) -> str:
+    """V3-O.11 階段3-1: 記憶模型對該 viewer 近期互動生成 2-3 句「我理解這個人是怎樣」反思.
+
+    declarative facts 風格 (「這位觀眾傾向…」而非指令). 記憶模型 = local_gemma.
+    LLM 不可用拋 Exception → caller try/except 跳過該段.
+    """
+    from agent_memory.llm_text_helpers import call_llm_for_text
+
+    prompt = (
+        "你是 精神體, 正在更新對某位『觀眾朋友』的理解 (寫進你私人的朋友卡, 觀眾看不到).\n"
+        "請依據以下近期互動, 用 2-3 句『陳述事實 (declarative)』寫下『我理解這個人是怎樣』.\n"
+        "風格要求: 用「這位觀眾傾向…」「他似乎…」「跟他相處時…」這種描述句, "
+        "不要寫成對自己的指令 (不要『我應該…』『記得要…』).\n"
+        "簡短具體, 第三人稱描述觀眾, 不要流水帳, 不要前後說明.\n\n"
+        f"觀眾: {display_name}\n"
+        f"近期互動:\n{raw_block}\n\n"
+        "請直接輸出 2-3 句反思 (純文字, 無 bullet 無標題):"
+    )
+    return call_llm_for_text(
+        vault_root, prompt, persona_id="companion",
+        temperature=0.4, timeout_s=30.0,
+        auxiliary="viewer_reflection",
+    )
+
+
+def _llm_friend_card_consolidation(vault_root: Path, display_name: str, raw_block: str) -> str:
+    """V3-O.11 階段3-2: 記憶模型把近 10 句對話壓縮成 2-3 句摘要 (取代逐句冗長).
+
+    記憶模型 = local_gemma. LLM 不可用拋 Exception → caller try/except 跳過該段.
+    """
+    from agent_memory.llm_text_helpers import call_llm_for_text
+
+    prompt = (
+        "你是 精神體, 正在整理跟某位觀眾朋友的近期對話 (寫進你私人的朋友卡).\n"
+        "請把以下對話壓縮成 2-3 句重點摘要: 聊了什麼主題 / 觀眾的狀態或在意的事 / 互動氛圍.\n"
+        "簡短具體, 不要逐句複述, 不要前後說明.\n\n"
+        f"觀眾: {display_name}\n"
+        f"近期對話:\n{raw_block}\n\n"
+        "請直接輸出 2-3 句摘要 (純文字, 無 bullet 無標題):"
+    )
+    return call_llm_for_text(
+        vault_root, prompt, persona_id="companion",
+        temperature=0.3, timeout_s=30.0,
+        auxiliary="friend_card_consolidation",
+    )
+
 
 def _intimacy_stage(intimacy_score: float) -> str:
-    """親密度 5 stage (對齊 V3 §10.2)."""
+    """親密度階段 — V3-O.11 P4: 對齊 intimacy_state._STAGES 中文名 (與 DB 一致, score-only fallback)."""
     if intimacy_score >= 0.8:
-        return "close"      # 摯友
+        return "深度理解"
     elif intimacy_score >= 0.6:
-        return "familiar"   # 熟識
+        return "親密"
     elif intimacy_score >= 0.4:
-        return "acquaintance"  # 認識
+        return "信任"
     elif intimacy_score >= 0.2:
-        return "approaching"   # 接近中
-    return "stranger"          # 初識
+        return "熟悉"
+    return "初識"
 
 
 def get_viewer_profile_path(vault_root: Path, user_id: str, loyalty_tier: str) -> Path:
@@ -83,7 +134,7 @@ def write_viewer_profile(
                 return None  # user 不存在於 DB, 跳過
 
             intim_row = conn.execute(
-                "SELECT interaction_count, intimacy_score, last_interaction_at FROM intimacy_states WHERE user_id=?",
+                "SELECT interaction_count, intimacy_score, intimacy_stage, last_interaction_at FROM intimacy_states WHERE user_id=?",
                 (user_id,),
             ).fetchone()
 
@@ -121,6 +172,29 @@ def write_viewer_profile(
             except Exception:
                 emo_density = 0.0
 
+            # V3-O.11 階段3-3 重要性加權: 撈高 emotional_salience 事件 (episodic_memories),
+            # 用 intimacy_score 排序 helper. 優先保留高分項避免無限長 (取代純時間序的冗長).
+            try:
+                weighted_events = conn.execute(
+                    "SELECT summary, valence, arousal, emotional_salience, created_at "
+                    "FROM episodic_memories WHERE user_id=? AND summary IS NOT NULL AND summary != '' "
+                    "ORDER BY emotional_salience DESC, ABS(valence) DESC, created_at DESC LIMIT ?",
+                    (user_id, MAX_REFLECTION_EVENTS),
+                ).fetchall()
+            except Exception:
+                weighted_events = []
+
+            # 近 N 句對話 (user+bot 原文, 時間序), 給彙整段壓縮用
+            try:
+                recent_turns = conn.execute(
+                    "SELECT actor, content, created_at FROM raw_events "
+                    "WHERE user_id=? AND actor IN ('user','bot') AND content IS NOT NULL "
+                    "ORDER BY created_at DESC LIMIT ?",
+                    (user_id, MAX_CONSOLIDATION_TURNS),
+                ).fetchall()
+            except Exception:
+                recent_turns = []
+
     except Exception:
         return None
 
@@ -128,7 +202,8 @@ def write_viewer_profile(
     interaction_count = (intim_row["interaction_count"] if intim_row else 0) or 0
     intimacy_score = (intim_row["intimacy_score"] if intim_row else 0.0) or 0.0
     last_interaction = (intim_row["last_interaction_at"] if intim_row else None) or user_row["last_seen_at"]
-    intim_stage = _intimacy_stage(intimacy_score)
+    # V3-O.11 P4: 優先用 DB 已存的 intimacy_stage (intimacy_state.py 權威中文值), 與 DB 一致
+    intim_stage = (intim_row["intimacy_stage"] if intim_row else "") or _intimacy_stage(intimacy_score)
 
     now_iso = datetime.now(timezone.utc).isoformat()
     final_name = (display_name or user_row["display_name"] or user_id)[:MAX_DISPLAY_NAME_LEN]
@@ -220,6 +295,61 @@ def write_viewer_profile(
     except Exception:
         pass
 
+    # ─── V3-O.11 階段3-2: 近期對話彙整 (記憶模型壓縮近 10 句, 取代逐句冗長) ───
+    # raw_events 時間序倒撈 → reverse 成正序餵 LLM. LLM 不可用 graceful 跳過該段.
+    if recent_turns:
+        turns_ordered = list(reversed(recent_turns))
+        consolidation_block = "\n".join(
+            f"  [{(t['actor'] == 'user') and '觀眾' or '我'}] "
+            f"{(t['content'] or '')[:160].strip()}"
+            for t in turns_ordered
+            if (t["content"] or "").strip()
+        )
+        if consolidation_block.strip():
+            try:
+                summary_text = _llm_friend_card_consolidation(
+                    vault_root, final_name, consolidation_block,
+                ).strip()
+            except Exception:
+                summary_text = ""
+            if summary_text:
+                lines.append("## 近期對話彙整")
+                lines.append("")
+                lines.append(summary_text[:600])
+                lines.append("")
+
+    # ─── V3-O.11 階段3-1: 我對這位的理解 (反思) ───
+    # 用高 emotional_salience 事件 (重要性加權) 為主, 不足時補近期對話原文.
+    reflection_src_lines: list[str] = []
+    for ev in (weighted_events or [])[:MAX_REFLECTION_EVENTS]:
+        _s = (ev["summary"] or "").strip()
+        if not _s:
+            continue
+        _v = float(ev["valence"] or 0.0)
+        _sal = float(ev["emotional_salience"] or 0.0)
+        reflection_src_lines.append(f"  - {_s[:160]} (情緒值={_v:+.2f}, 顯著度={_sal:.2f})")
+    if not reflection_src_lines and recent_turns:
+        # 沒有 episodic 事件 → 退回用近期對話原文當反思素材
+        for t in reversed(recent_turns):
+            _c = (t["content"] or "").strip()
+            if not _c:
+                continue
+            _who = "觀眾" if t["actor"] == "user" else "我"
+            reflection_src_lines.append(f"  - [{_who}] {_c[:160]}")
+    if reflection_src_lines:
+        reflection_block = "\n".join(reflection_src_lines[:MAX_REFLECTION_EVENTS])
+        try:
+            reflection_text = _llm_viewer_reflection(
+                vault_root, final_name, reflection_block,
+            ).strip()
+        except Exception:
+            reflection_text = ""
+        if reflection_text:
+            lines.append("## 我對這位的理解 (反思)")
+            lines.append("")
+            lines.append(reflection_text[:600])
+            lines.append("")
+
     lines.append("## 我下次對這個觀眾的策略 (dispatcher hint)")
     lines.append("")
     if loyalty_tier == "banned":
@@ -270,3 +400,84 @@ def load_viewer_profile_md(vault_root: Path, user_id: str) -> str:
     except Exception:
         pass
     return ""
+
+
+def _active_viewer_ids(vault_root: Path, *, window_days: int, limit: int = 200) -> list[str]:
+    """V3-O.11 階段3: 撈近 window_days 有互動的 non-owner viewer id (依 emotional_salience / intimacy 加權排序).
+
+    對齊重要性加權: 先取近 N 天有 raw_events 的 user, 再按該 user 的 intimacy_score
+    + 近期最高 emotional_salience 排序, 高分優先 (避免一次處理過多卡時 LLM call 爆量).
+    """
+    from datetime import timedelta
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=window_days)).isoformat()
+    try:
+        with open_companion_db(vault_root) as conn:
+            rows = conn.execute(
+                "SELECT u.user_id AS uid, "
+                "  COALESCE(i.intimacy_score, 0.0) AS intim, "
+                "  COALESCE(MAX(e.emotional_salience), 0.0) AS sal "
+                "FROM users u "
+                "JOIN raw_events r ON r.user_id = u.user_id AND r.created_at > ? "
+                "LEFT JOIN intimacy_states i ON i.user_id = u.user_id "
+                "LEFT JOIN episodic_memories e ON e.user_id = u.user_id "
+                "WHERE u.user_id IS NOT NULL AND u.user_id != 'anonymous' "
+                "  AND (u.role IS NULL OR u.role != 'owner') "
+                "GROUP BY u.user_id "
+                "ORDER BY intim DESC, sal DESC "
+                "LIMIT ?",
+                (cutoff, limit),
+            ).fetchall()
+        return [r["uid"] for r in rows if r["uid"]]
+    except Exception:
+        return []
+
+
+def daily_refine_viewer_cards(vault_root: Path, *, max_cards: int = 30) -> int:
+    """V3-O.11 階段3-4: 日重整 — 每日把各 viewer 朋友卡的反思昇華一次.
+
+    對齊 companion_curator.run_layer3_24h_medium (24h medium) 節奏:
+    撈近 24h 有互動的 viewer, 對每張卡 re-run write_viewer_profile —
+    這會用記憶模型 (local_gemma) 重生『近期對話彙整』+『我對這位的理解 (反思)』段,
+    等同把當天累積的互動昇華進反思. 重要性加權已在 write_viewer_profile 內處理.
+
+    純 background (sleep cycle), 不影響 chat retrieve-time. LLM 不可用時各段 graceful 跳過.
+    呼叫排程掛載點: companion_curator.run_layer3_24h_medium (見階段4/未來接線).
+
+    Returns: 成功重整的卡片數 (寫檔成功計數).
+    """
+    viewer_ids = _active_viewer_ids(vault_root, window_days=1, limit=max_cards)
+    refined = 0
+    for uid in viewer_ids[:max_cards]:
+        try:
+            path = write_viewer_profile(vault_root, uid)
+            if path is not None:
+                refined += 1
+        except Exception:
+            continue  # 單張卡失敗不阻塞其餘
+    return refined
+
+
+def weekly_consolidate_viewer_cards(vault_root: Path, *, max_cards: int = 60) -> int:
+    """V3-O.11 階段3-4: 7天總彙整 — 壓縮舊對話, 把一週互動整體再昇華.
+
+    對齊 companion_curator.run_layer4_7d_deep (7d deep) 節奏:
+    撈近 7d 有互動的 viewer (比 daily 更寬窗 + 更大 cap), 對每張卡 re-run
+    write_viewer_profile — 記憶模型 (local_gemma) 會把累積對話重新壓縮成彙整段
+    (取代逐句冗長) + 更新反思段, 達到「7天總彙整 / 壓縮舊對話」效果.
+
+    純 background, 不影響 chat. LLM 不可用各段 graceful 跳過.
+    呼叫排程掛載點: companion_curator.run_layer4_7d_deep (見階段4/未來接線).
+
+    Returns: 成功彙整的卡片數.
+    """
+    viewer_ids = _active_viewer_ids(vault_root, window_days=7, limit=max_cards)
+    consolidated = 0
+    for uid in viewer_ids[:max_cards]:
+        try:
+            path = write_viewer_profile(vault_root, uid)
+            if path is not None:
+                consolidated += 1
+        except Exception:
+            continue
+    return consolidated

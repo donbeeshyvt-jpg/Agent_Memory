@@ -191,6 +191,15 @@ def run_layer3_24h_medium(
     except Exception:
         pass
 
+    # V3-O.11 階段3: 朋友卡日重整昇華 (反思 + 近期對話彙整, 本地記憶模型 local_gemma)
+    try:
+        from agent_memory.companion.audience_writer import daily_refine_viewer_cards
+        _refined = daily_refine_viewer_cards(vault_root)
+        if _refined:
+            actions.append(f"viewer_cards_daily_refined({_refined})")
+    except Exception:
+        pass
+
     return CuratorRunResult(layer="layer3_24h_medium", actions_performed=actions)
 
 
@@ -435,6 +444,15 @@ def run_layer4_7d_deep(vault_root: Path) -> CuratorRunResult:
         skill_count = consolidate_skills_via_llm(vault_root)
         if skill_count > 0:
             actions.append(f"skills_consolidated({skill_count})")
+    except Exception:
+        pass
+
+    # V3-O.11 階段3: 朋友卡 7 天總彙整 (壓縮舊對話避免無限長, 本地記憶模型)
+    try:
+        from agent_memory.companion.audience_writer import weekly_consolidate_viewer_cards
+        _consolidated = weekly_consolidate_viewer_cards(vault_root)
+        if _consolidated:
+            actions.append(f"viewer_cards_weekly_consolidated({_consolidated})")
     except Exception:
         pass
 

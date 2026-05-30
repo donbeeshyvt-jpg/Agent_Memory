@@ -52,9 +52,11 @@ def main() -> None:
     if not token:
         print(f"[launch] 警告: env {token_env} 未設定, relay 可能無法啟動", file=sys.stderr)
 
-    # 讀 channel_id
+    # 讀 channel_id (V3-O.11: channel_ids 多頻道優先; 空則 fallback 單一 channel_id_env)
     ch_env = dc.get("channel_id_env", "DISCORD_CHANNEL_ID_COMPANION")
     channel_id = os.getenv(ch_env, "").strip()
+    channel_ids = [str(c).strip() for c in (dc.get("channel_ids") or []) if str(c).strip()]
+    mention_only_ids = [str(c).strip() for c in (dc.get("mention_only_channel_ids") or []) if str(c).strip()]
 
     # 讀其他設定
     allow_bots = dc.get("allow_bot_author_ids", []) or []
@@ -81,8 +83,14 @@ def main() -> None:
     ]
     if token:
         relay_cmd += ["--token-env", token_env]
-    if channel_id:
+    # V3-O.11: 多頻道優先展開成多個 --channel-id; 清單空則 fallback 單一 channel_id_env
+    if channel_ids:
+        for cid in channel_ids:
+            relay_cmd += ["--channel-id", cid]
+    elif channel_id:
         relay_cmd += ["--channel-id", channel_id]
+    for mid in mention_only_ids:
+        relay_cmd += ["--mention-only-channel-id", mid]
     if split_by_name:
         relay_cmd += ["--split-by-display-name"]
     for bot_id in allow_bots:

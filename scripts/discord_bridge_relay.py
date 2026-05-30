@@ -13,6 +13,7 @@ from urllib import error as url_error
 from urllib import request as url_request
 
 import discord
+from discord.ext import tasks
 import hashlib
 
 
@@ -137,6 +138,11 @@ class BridgeRelayClient(discord.Client):
         # split flag 開時, 對 bot author 訊息 parse 開頭 <name>: → 用 name 當 effective user_id
         # 對齊第 4 輪測試發現「觀眾 pool 62 turn 全部累在 author_id=15026... 學不到個人」
         self.split_by_display_name = bool(split_by_display_name)
+        # V3-O.11 階段4: viewer 訊息被 bridge held (進彙整佇列, 不個別回) 時,
+        # 記下該頻道; 背景 flush loop 定期問 bridge 是否該發統一回覆。
+        #   key=channel_id(int) → value=channel_type(str, "dm"/"public_text_channel")
+        self._pending_channels: dict[int, str] = {}
+        self._pending_lock = asyncio.Lock()
 
     async def _post_streaming(self, loop, url: str, payload: dict, source_message) -> dict:
         """V3-O.10 #26: SSE streaming — 收 token，定期用 message.edit() 更新 Discord."""
@@ -264,6 +270,107 @@ class BridgeRelayClient(discord.Client):
         print(f"[OK] bridge={self.bridge_url}/webhook/discord")
         if not self.enable_message_content_intent:
             print("[WARN] message_content intent disabled; guild text content may be unavailable.")
+        # V3-O.11 階段4: bot ready 後啟動彙整 flush 背景 loop (每 ~3s 問 bridge)。
+        if not self._aggregator_flush_loop.is_running():
+            self._aggregator_flush_loop.start()
+            print("[OK] aggregator flush loop started (interval=3s)")
+
+    @tasks.loop(seconds=3.0)
+    async def _aggregator_flush_loop(self) -> None:
+        """V3-O.11 階段4: 定期問 bridge「該頻道彙整佇列是否該 flush」。
+
+        對每個有 pending 的頻道 POST {_aggregator_flush_check, session_id, channel_type,
+        channel_id}; bridge 回 aggregated=true 且 response 非空 → channel.send(response)
+        (發到頻道, 不 reply 特定訊息)。debounce 時機由 bridge should_flush 判斷,
+        relay 只負責定期詢問。channel.send 失敗只記 stderr, 不可 crash loop。
+        """
+        # snapshot 目前 pending channels (複製出來避免持鎖做 HTTP/send)
+        try:
+            async with self._pending_lock:
+                pending_items = list(self._pending_channels.items())
+        except Exception:  # noqa: BLE001
+            return
+        if not pending_items:
+            return
+
+        loop = asyncio.get_running_loop()
+        for channel_id, channel_type in pending_items:
+            payload = {
+                "_aggregator_flush_check": True,
+                "session_id": f"discord-{channel_id}",
+                "channel_type": channel_type,
+                "channel_id": str(channel_id),
+            }
+            url = f"{self.bridge_url}/webhook/discord"
+            try:
+                result = await loop.run_in_executor(
+                    None, _post_json, url, payload, self.timeout_s
+                )
+            except Exception as exc:  # noqa: BLE001
+                # bridge 暫時不可用 → 保留 pending, 下個 tick 再試 (不 crash loop)
+                print(
+                    f"[ERR] aggregator flush_check failed chan={channel_id}: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+                continue
+
+            if not result.get("aggregated"):
+                # bridge 說還沒到 flush 時機 → 保留 pending, 繼續等
+                continue
+
+            # 彙整達標: bridge 已 drain 全佇列 (per-vault 單例) → 本頻道 pending 已消化。
+            async with self._pending_lock:
+                self._pending_channels.pop(channel_id, None)
+
+            response_text = str(result.get("response", "")).strip()
+            if not response_text:
+                # aggregated=true 但無文字 (生成失敗) → 不發, 已 drain 不重試。
+                continue
+            if len(response_text) > 1800:
+                response_text = response_text[:1800] + "\n...(truncated)"
+
+            # 取得 channel 物件: bridge 回傳的 channel_id 優先, fallback 查詢用的 id。
+            target_id = channel_id
+            try:
+                rid = str(result.get("channel_id", "")).strip()
+                if rid:
+                    target_id = int(rid)
+            except (TypeError, ValueError):
+                target_id = channel_id
+            channel = self.get_channel(target_id)
+            if channel is None:
+                try:
+                    channel = await self.fetch_channel(target_id)
+                except Exception as exc:  # noqa: BLE001
+                    print(
+                        f"[ERR] aggregator flush channel unavailable id={target_id}: "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
+                    continue
+            try:
+                await channel.send(response_text)
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[ERR] aggregator flush send failed chan={target_id}: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr, flush=True,
+                )
+
+    @_aggregator_flush_loop.before_loop
+    async def _before_aggregator_flush_loop(self) -> None:
+        # 確保 loop 在 bot 完全連線後才開始第一次 tick。
+        await self.wait_until_ready()
+
+    async def close(self) -> None:
+        # V3-O.11 階段4: 關閉前停掉 flush loop (避免 shutdown warning)。
+        try:
+            if self._aggregator_flush_loop.is_running():
+                self._aggregator_flush_loop.cancel()
+        except Exception:  # noqa: BLE001
+            pass
+        await super().close()
 
     async def on_message(self, message: discord.Message) -> None:
         # V3-O.9 #2: end-to-end timing 起點 (從 Discord 收到 message 算)
@@ -435,6 +542,25 @@ class BridgeRelayClient(discord.Client):
             error_reply = await message.reply(_friendly_timeout_reply(), mention_author=False)
             if self.enable_response_reaction:
                 await self._try_add_reaction(error_reply, "\u26A0\uFE0F")
+            return
+
+        # V3-O.11 階段4: viewer 訊息已被 bridge 個別記錄 + 進彙整佇列 (aggregation_held=true,
+        # response 為空) → 不個別回。記下該頻道, 交給背景 flush loop 統一發。
+        # owner 訊息無此 flag → 照常往下 reply。
+        if result.get("aggregation_held"):
+            if processing_added:
+                await self._try_remove_reaction(message, self.processing_reaction)
+            try:
+                guild_present = False
+                try:
+                    guild_present = message.guild is not None
+                except Exception:
+                    guild_present = False
+                ch_type = "public_text_channel" if guild_present else "dm"
+                async with self._pending_lock:
+                    self._pending_channels[message.channel.id] = ch_type
+            except Exception:  # noqa: BLE001
+                pass
             return
 
         response_text = str(result.get("response", "")).strip()

@@ -1438,6 +1438,44 @@ def _write_turn_timing_log(
         pass
 
 
+def append_bot_reply_event(
+    vault_root: Path,
+    user_ids: list,
+    session_id: str,
+    bot_reply: str,
+    *,
+    channel_type: str = "public_text_channel",
+) -> None:
+    """V3-O.11 階段2: 彙整生成統一回覆後, 補寫 bot raw_event 給每個發言 viewer
+    + 觸發朋友卡更新 (對應 record_only 模式延後的 bot 部分)。
+
+    record_only 模式下 run_companion_chat_turn 不寫 bot raw_event / 朋友卡;
+    彙整層 (StreamAggregator flush) 生成統一回覆後呼叫此函數補上。
+    """
+    import uuid as _uuid_ab
+    from datetime import datetime as _dt_ab, timezone as _tz_ab
+    if not user_ids or not (bot_reply or "").strip():
+        return
+    now_iso = _dt_ab.now(_tz_ab.utc).isoformat()
+    try:
+        with open_companion_db(vault_root) as _conn_ab:
+            for _uid in user_ids:
+                _conn_ab.execute(
+                    "INSERT OR IGNORE INTO raw_events (event_id, user_id, session_id, actor, content, source, injection_risk, created_at) VALUES (?, ?, ?, 'bot', ?, ?, 'low', ?)",
+                    (_uuid_ab.uuid4().hex, _uid, session_id, bot_reply, channel_type, now_iso),
+                )
+            _conn_ab.commit()
+    except Exception:
+        pass
+    # 補寫各發言者朋友卡 (彙整後; group_reply 參數待階段3 audience_writer 支援, 先兼容退回)
+    for _uid in user_ids:
+        try:
+            from agent_memory.companion.audience_writer import write_viewer_profile
+            write_viewer_profile(vault_root, _uid)
+        except Exception:
+            pass
+
+
 def run_companion_chat_turn(
     request: ChatRequest,
     vault_root: Path,
@@ -1449,6 +1487,7 @@ def run_companion_chat_turn(
     persona_baseline_topic: float = 0.5,
     persona_baseline_engagement: float = 0.5,
     rng_seed: Optional[int] = None,
+    record_only: bool = False,
 ) -> ChatResponse:
     """V3 §21.2: 22-step pipeline 主入口.
 
@@ -1603,6 +1642,7 @@ def run_companion_chat_turn(
                         _dt_apr.now(_tz_apr.utc).isoformat(),
                     ),
                 )
+                _conn_apr.commit()
         except Exception:
             pass
 
@@ -1624,6 +1664,7 @@ def run_companion_chat_turn(
                         _dt_aff.now(_tz_aff.utc).isoformat(),
                     ),
                 )
+                _conn_aff.commit()
         except Exception:
             pass
 
@@ -2051,7 +2092,9 @@ def run_companion_chat_turn(
     _mark_step_time(_step_timings, "step14_5_inner_monologue")
 
     # ─── Step 15: LLM Client (stub) ───
-    raw_response = llm_fn(prompt_packet)
+    # V3-O.11 階段2: record_only (viewer 個別記錄模式) 不呼叫 LLM、不生回覆,
+    # 出口由彙整層 (StreamAggregator flush) 用 main_chat 統一生成。
+    raw_response = "" if record_only else llm_fn(prompt_packet)
     resp.pipeline_steps_done.append(15)
     _mark_step_time(_step_timings, "step15_llm_call")
 
@@ -2115,9 +2158,13 @@ def run_companion_chat_turn(
             session_id=request.session_id,
             look_back_turns=5,
         )
-        final_response = maybe_prefix_correction(response_with_dd, _meta_result)
+        # V3-O.11 P2 (#10 反思不硬拋): 矛盾偵測保留供 audit, 但不再 prefix 到 viewer 可見回覆,
+        # 避免「等等我剛才講X又講Y, 讓我修一下」這種內部自我修正外漏給觀眾。
+        _ = _meta_result  # 偵測結果保留 (未來可改在 step15 前注入 prompt), 此處不外顯
+        # V3-O.11 階段2: record_only 不生回覆 (出口由彙整層統一生成), 強制空
+        final_response = "" if record_only else response_with_dd
     except Exception:
-        final_response = response_with_dd
+        final_response = "" if record_only else response_with_dd
     resp.pipeline_steps_done.append(166)
     _mark_step_time(_step_timings, "step16_6_tics")
 
@@ -2132,12 +2179,14 @@ def run_companion_chat_turn(
              request.channel_type, injection_risk, now_iso),
         )
         # V3-E1 Bug 12: 也寫 bot raw_event (給連續對話 history 用)
-        bot_event_id = str(uuid.uuid4())
-        conn.execute(
-            "INSERT OR IGNORE INTO raw_events (event_id, user_id, session_id, actor, content, source, injection_risk, created_at) VALUES (?, ?, ?, 'bot', ?, ?, 'low', ?)",
-            (bot_event_id, request.user_id, request.session_id, final_response,
-             request.channel_type, now_iso),
-        )
+        # V3-O.11 階段2: record_only 不寫 bot raw_event (回覆由彙整層生成後, 用 append_bot_reply_event 補寫)
+        if not record_only:
+            bot_event_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT OR IGNORE INTO raw_events (event_id, user_id, session_id, actor, content, source, injection_risk, created_at) VALUES (?, ?, ?, 'bot', ?, ?, 'low', ?)",
+                (bot_event_id, request.user_id, request.session_id, final_response,
+                 request.channel_type, now_iso),
+            )
         # V3-E1 Bug 3: scanner 抓到 → 寫 injection_detected (audit 表)
         if scanner_hits.get("detected"):
             conn.execute(
@@ -2260,7 +2309,8 @@ def run_companion_chat_turn(
     # user 2026-05-27 第 3 輪深度觀察 Q2+Q3 拍板 — 觀眾應該有個別記憶塊.
     # 對齊 V3 §5 vault skeleton 雙寫 + V3 §13 Memory Router L3 viewer 擴展.
     # owner 不寫 (已有 00.08_Owner_Profile.md, V3-E5 動態讀).
-    if not request.is_owner:
+    # V3-O.11 階段2: record_only 不寫朋友卡 (彙整生成後才補寫 highlight, 標 group_reply)
+    if not request.is_owner and not record_only:
         try:
             from agent_memory.companion.audience_writer import write_viewer_profile
             write_viewer_profile(vault_root, request.user_id)

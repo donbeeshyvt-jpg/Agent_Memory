@@ -345,12 +345,16 @@ class LLMClient:
                 raise
 
         # 子任務: 走獨立 lock pool (直接執行, 不過 priority queue)
+        # V3-O.11 P1 快速 degrade: 子任務 lock timeout 用自身 timeout_s (不用全域 120s)。
+        # barrage 積壓時 ~timeout_s 內等不到 lock 就快速放棄 → 上層 except 退 keyword/跳過,
+        # 不再卡滿 120s 拖垮整個 turn (壓測雪崩主因)。
         active_lock = _LLM_SUB_TASK_LOCK
+        sub_lock_timeout = max(5.0, float(timeout_s) + 5.0)
         acquired = True
         if serialize:
-            acquired = active_lock.acquire(timeout=lock_timeout)
+            acquired = active_lock.acquire(timeout=sub_lock_timeout)
             if not acquired:
-                raise LLMClientError(f"LLM sub_task lock timeout ({lock_timeout:.1f}s)")
+                raise LLMClientError(f"LLM sub_task lock timeout ({sub_lock_timeout:.1f}s, degraded)")
         try:
             return self._generate_core(
                 messages=messages,
