@@ -398,7 +398,8 @@ def _handle_hermes_ingest(vault_root: Path, turn: "InboundTurn") -> dict[str, An
 def _get_aggregator_for(vault_root: Path):
     """V3-O.11 階段2: 從 companion_config.yaml 讀彙整門檻, 取 StreamAggregator 單例。"""
     from agent_memory.companion.stream_aggregator import get_stream_aggregator
-    qw, thr, mx, cap = 6.0, 5, 10, 30.0
+    # V3-O.11+ user 2026-06-02: quiet 6→7 給連發更多空間, hard_cap 30→28 控制體感上限
+    qw, thr, mx, cap = 7.0, 5, 10, 28.0
     try:
         import yaml as _y
         p = vault_root / "00_System_Core" / "companion_config.yaml"
@@ -474,7 +475,10 @@ def _check_and_flush_aggregator(vault_root: Path, payload: dict[str, Any]) -> di
     try:
         _agg = _get_aggregator_for(vault_root)
         _channel_id = str(payload.get("channel_id") or "default")
-        if not _agg.should_flush(_channel_id):
+        # V3-O.11+ user 2026-06-02: force_flush 跳過 should_flush window check
+        # (給 @bot in-turn 立刻 flush — bot @ 進來時連帶 queue 內所有訊息一起 batch 回應, 不再分兩條獨立 path)
+        _force = bool(payload.get("_force_flush", False))
+        if not _force and not _agg.should_flush(_channel_id):
             return base
         msgs = _agg.drain(_channel_id)
         if not msgs:
@@ -540,8 +544,13 @@ def _check_and_flush_aggregator(vault_root: Path, payload: dict[str, Any]) -> di
 
         if unified:
             try:
+                # V3-O.11+ user 2026-06-02 dedup fix: rep_uid 的 bot reply 已由
+                # run_companion_chat_turn step17_memory_write_db 寫進去, 這裡只給「其他 user」
+                # (多 user 場景 viewer A/B 也要看到 bot 回他們的話) 補寫, 避免雙寫.
                 user_ids = list(dict.fromkeys(m.user_id for m in msgs))
-                append_bot_reply_event(vault_root, user_ids, session_id, unified, channel_type=channel_type)
+                extra_ids = [u for u in user_ids if str(u) != str(rep_uid)]
+                if extra_ids:
+                    append_bot_reply_event(vault_root, extra_ids, session_id, unified, channel_type=channel_type)
             except Exception:
                 pass
             # BUG-2 fix: 寫 markdown session log (owner 下個 turn 讀歷史能看到彙整回覆)
@@ -621,6 +630,8 @@ def _run_companion_transport_event(
         _bl = {}
 
     # V3-O.11+ (user 2026-06-02): 全員預設進佇列統一彙整(含 owner); 唯一例外 = 被 @mention 才即時單回
+    # ⚠️ 2026-06-02 修法 B revert: @bot 進 queue + force_flush 邏輯讓 sub_task 跑 2x 加速 llama-cpp-python
+    # CUDA pool corruption (連發 2 句就卡). 回到原邏輯: @bot 即時出口, 沒 @ 進 queue.
     is_mention = bool(payload.get("is_mention", False))
     resp = run_companion_chat_turn(
         req, vault_root,
@@ -632,8 +643,7 @@ def _run_companion_transport_event(
         persona_baseline_engagement=float(_bl.get("engagement_seeking", 0.5)),
     )
 
-    # V3-O.11 階段2: viewer 訊息進彙整佇列 (不分日常/直播), 個別記錄已完成, 不個別回。
-    # 出口統一由 relay 背景 task 觸發 _check_and_flush_aggregator → 彙整發頻道。owner 不進佇列、即時回。
+    # 不 @ 進 aggregator queue, 等 background polling flush
     aggregation_held = False
     if not is_mention:
         try:
@@ -642,7 +652,7 @@ def _run_companion_transport_event(
             aggregation_held = True
         except Exception:
             aggregation_held = False
-        resp.response_text = ""  # 沒被 @mention 一律 held (含 owner), 等彙整 flush 統一發頻道
+        resp.response_text = ""  # held, 等彙整 flush 統一發頻道
 
     # 寫 markdown session log (companion 10_Working_Memory/11_Session_Logs/)
     # V3-O.11+ BUG-2 fix (user 2026-06-02): held 時不寫(等彙整 flush 統一寫),

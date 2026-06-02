@@ -19,9 +19,70 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+import threading
+import queue as _queue_mod
+import sys as _sys
 
 from agent_memory.companion.companion_db import open_companion_db
 from agent_memory.security.atomic import atomic_write
+
+
+# ─── V3-O.11+ user 2026-06-03 修法 E: 朋友卡寫入 background serial queue ───
+# 設計: 一個 worker thread FIFO 處理 (max_workers=1 等效), 避免 N viewer 並發
+# 觸發 N × 2 個 LLM call (viewer_reflection + friend_card_consolidation) 同時打 LLM
+# → lock contention / rate limit / 卡住主 chat flow.
+# 改成: chat flow 立刻 enqueue + return, worker 後台一個一個 sequential 處理.
+_AUDIENCE_QUEUE: _queue_mod.Queue = _queue_mod.Queue()
+_AUDIENCE_WORKER_STARTED = False
+_AUDIENCE_WORKER_LOCK = threading.Lock()
+
+
+def _audience_worker_loop() -> None:
+    """Background worker: FIFO drain queue, 一次處理一張卡 (serial)."""
+    while True:
+        try:
+            item = _AUDIENCE_QUEUE.get()
+            if item is None:  # poison pill (graceful shutdown, not used currently)
+                break
+            vault_root, user_id, display_name = item
+            try:
+                write_viewer_profile(vault_root, user_id, display_name=display_name)
+            except Exception as exc:
+                try:
+                    print(f"[audience worker FAIL] uid={user_id[:18]} {type(exc).__name__}: {str(exc)[:200]}", file=_sys.stderr)
+                except Exception:
+                    pass
+            finally:
+                try:
+                    _AUDIENCE_QUEUE.task_done()
+                except Exception:
+                    pass
+        except Exception:
+            pass  # 永不破 worker (continue loop)
+
+
+def _ensure_audience_worker_started() -> None:
+    """Singleton ensure: 第一次 enqueue 時起 daemon worker thread."""
+    global _AUDIENCE_WORKER_STARTED
+    with _AUDIENCE_WORKER_LOCK:
+        if not _AUDIENCE_WORKER_STARTED:
+            t = threading.Thread(
+                target=_audience_worker_loop,
+                daemon=True,
+                name="audience-writer-worker",
+            )
+            t.start()
+            _AUDIENCE_WORKER_STARTED = True
+
+
+def enqueue_viewer_profile_write(vault_root: Path, user_id: str, display_name: str = "") -> int:
+    """V3-O.11+ user 2026-06-03 修法 E: 朋友卡寫入進 background serial queue.
+
+    Non-blocking — 立刻 return queue 內 pending 數量 (給 telemetry 看堆積).
+    """
+    _ensure_audience_worker_started()
+    _AUDIENCE_QUEUE.put((vault_root, user_id, display_name))
+    return _AUDIENCE_QUEUE.qsize()
 
 
 CASUAL_DIR = "20_Audience_Graph/22_Casual_Viewers"

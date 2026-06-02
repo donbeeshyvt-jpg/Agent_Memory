@@ -56,10 +56,10 @@ class StreamAggregator:
         self,
         vault_root: Path,
         *,
-        quiet_window_s: float = 6.0,
+        quiet_window_s: float = 7.0,    # V3-O.11+ user 2026-06-02: 6→7 給連發更多空間
         meaningful_flush_threshold: int = 5,
         max_meaningful: int = 10,
-        hard_cap_s: float = 30.0,
+        hard_cap_s: float = 28.0,       # V3-O.11+ user 2026-06-02: 30→28 控制體感上限
     ):
         self.vault_root = vault_root
         self.quiet_window_s = quiet_window_s

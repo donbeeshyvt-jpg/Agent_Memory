@@ -1783,7 +1783,9 @@ def run_companion_chat_turn(
     # ─── Step 4.5: LLM emotion fallback (V3-O.10 #10, Q7: 每 turn 觸發) ───
     # keyword valence ~0 時呼叫 openrouter_sub 輕量模型補判情緒 (解 B3 完整版)
     # Q7 拍板: 每 turn 跑, openrouter_sub 不佔主對話 lock
-    if vault_root is not None and abs(appraisal.emotion_valence_offset) < 0.1 and len(request.message) > 5:
+    # V3-O.11+ user 2026-06-02 修法 A: record_only 模式 skip sub_task LLM (避免每 user 訊息都跑
+    # N 個 sub_task LLM call 雪崩, 出口統一在 aggregator flush 跑一次 deepseek + sub_task)
+    if not record_only and vault_root is not None and abs(appraisal.emotion_valence_offset) < 0.1 and len(request.message) > 5:
         try:
             from agent_memory.llm_text_helpers import call_llm_for_text
             _emo_prompt = (
@@ -2422,10 +2424,15 @@ def run_companion_chat_turn(
     # 對齊 V3 §5 vault skeleton 雙寫 + V3 §13 Memory Router L3 viewer 擴展.
     # owner 不寫 (已有 00.08_Owner_Profile.md, V3-E5 動態讀).
     # V3-O.11 階段2: record_only 不寫朋友卡 (彙整生成後才補寫 highlight, 標 group_reply)
+    # V3-O.11+ user 2026-06-03 修法 E: 改 enqueue background serial worker (避 N viewer × 2 LLM
+    # call 同時打卡住 flush 出口, worker 一個一個 sequential 處理朋友卡寫入)
     if not request.is_owner and not record_only:
         try:
-            from agent_memory.companion.audience_writer import write_viewer_profile
-            write_viewer_profile(vault_root, request.user_id)
+            from agent_memory.companion.audience_writer import enqueue_viewer_profile_write
+            enqueue_viewer_profile_write(
+                vault_root, request.user_id,
+                display_name=getattr(request, "display_name", "") or "",
+            )
         except Exception:
             pass  # non-critical, 失敗不阻塞 chat
     resp.pipeline_steps_done.append(175)

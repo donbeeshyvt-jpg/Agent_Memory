@@ -719,6 +719,22 @@ class LLMClient:
         flash_attn = _as_bool(provider_cfg.get("flash_attn"), default=True)
         chat_format = str(provider_cfg.get("chat_format", "")).strip()
         max_tokens = _as_int(provider_cfg.get("max_tokens"), default=1024, min_value=1)
+
+        # V3-O.11+ user 2026-06-02 BUG-1 中期 quick fix: input cap before sending to gemma.
+        # 避免 input 超 n_ctx 導致 llama-sampler GGML_ASSERT(logits != null) crash 帶死整個 bridge.
+        # ★ 公式修正 (user 2026-06-02 reported still crashing): 中文每 token ~1.5-2 char (CJK 1 char ≈ 1 token),
+        #   舊版用 3 char/tok 太樂觀 → cap 算太大 → 還是會超. 改用 1.5 char/tok 保守.
+        # 留 80% buffer 給 system message + output, input cap = (n_ctx - max_tokens) * 1.5 * 0.8 char.
+        # 超過 → raise LLMClientError → _generate_core 抓 → graceful fallback to chain rank 2 (qwen).
+        _total_input_chars = sum(len(m.get("content", "") or "") for m in messages)
+        _max_input_chars = int(max(1, (n_ctx - max_tokens)) * 1.5 * 0.8)
+        if _total_input_chars > _max_input_chars:
+            raise LLMClientError(
+                f"local_gemma input too large ({_total_input_chars} chars > cap {_max_input_chars}, "
+                f"n_ctx={n_ctx}, max_tokens={max_tokens}). Skipping gemma to avoid GGML_ASSERT crash; "
+                f"will fallback to next chain entry."
+            )
+
         top_p = _as_float(provider_cfg.get("top_p"), default=0.95, min_value=0.0)
         top_k = _as_int(provider_cfg.get("top_k"), default=40, min_value=0)
         min_p = _as_float(provider_cfg.get("min_p"), default=0.05, min_value=0.0)

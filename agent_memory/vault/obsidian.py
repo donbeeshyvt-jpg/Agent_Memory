@@ -774,7 +774,7 @@ class ObsidianVaultAdapter(VaultAdapter):
             "    local_gemma:                   # V3-O.10 #1 本地子任務 (gemma-4-E4B-it-Q8, GPU)\n"
             "      kind: llama_cpp_python\n"
             "      model_path: \"Z:/Cursor練習用/Agent_Memory/0_Models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q8_0.gguf\"\n"
-            "      n_ctx: 8192                  # V3-O.11+ user 2026-06-02 BUG-1 fix (2048 太小 子任務 input 超 ctx → CUDA error/GGML_ASSERT 帶死 bridge)\n"
+            "      n_ctx: 8192                  # V3-O.11+ user 2026-06-02: 32K/16K 都 GGML assert, 8K 最穩 + llm_client.py input cap 兜底超大 input → fallback qwen\n"
             "      n_gpu_layers: -1             # -1 全 GPU (RTX 3090); 0 純 CPU\n"
             "      max_tokens: 300\n\n"
             "# ── 效能 / log (V3-O.10 #24) ────────────────────────────\n"
