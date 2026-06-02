@@ -492,6 +492,28 @@ def _read_source_file_raw(vault_root: Path, rel_path: str) -> str:
         return ""
 
 
+def _strip_doc_placeholders(text: str) -> str:
+    """V3-O.11+ (user 2026-06-01): 去 frontmatter / # 標題 / > 引言 / ( 開頭括號說明行.
+    全是這些 (無實質內容) → 回空字串. 讓 Brand_Voice 等預設說明不注入 system prompt,
+    對齊 00.02_SystemPrompt 的「括號說明不讀入」慣例.
+    """
+    if not text:
+        return ""
+    out: list[str] = []
+    in_fm = False
+    for raw in text.splitlines():
+        s = raw.strip()
+        if s == "---":
+            in_fm = not in_fm
+            continue
+        if in_fm or not s:
+            continue
+        if s.startswith(("#", ">", "(")):
+            continue
+        out.append(raw)
+    return "\n".join(out).strip()
+
+
 def _render_packet_policy() -> str:
     """V3-O.5 spec §7.1: 宣告 full context + 禁止行為."""
     return """<packet_policy>
@@ -705,6 +727,9 @@ def _render_soul_and_persona_context(vault_root: Optional[Path]) -> str:
         ("00_System_Core/00.05_Brand_Voice.md", "Brand_Voice.md"),
     ]:
         content = _read_source_file_raw(vault_root, fname) if vault_root else ""
+        # V3-O.11+ (user 2026-06-01): Brand_Voice 套括號/標題/引言過濾 — 預設說明不注入 (對齊 00.02 慣例)
+        if "00.05_Brand_Voice" in fname:
+            content = _strip_doc_placeholders(content)
         if not content.strip():
             content = "(file missing or empty)"
         sources_xml.append(f'  <source name="{src_name}" mode="raw"><![CDATA[\n{content}\n]]></source>')
@@ -766,7 +791,13 @@ def _render_relationship_and_viewer_memory(
         content = (viewer_profile_context or "").strip()
         if not content:
             content = "(No viewer profile yet — first contact or anonymous viewer)"
-        source_name = "Viewer_Profile (dynamic from companion.db [intimacy_states + raw_events + preference_memories])"
+        # V3-O.11+ Part B (user 2026-06-02): viewer 互動也穩定注入 owner 教導內化
+        # (我從主人學到的相處之道/風格/知識; 過濾 placeholder; 不洩漏主人隱私身份)
+        owner_teaching = _read_source_file_raw(vault_root, "00_System_Core/00.08_Owner_Profile.md") if vault_root else ""
+        owner_teaching = _strip_doc_placeholders(owner_teaching)
+        if owner_teaching.strip():
+            content = content + "\n\n[我從主人學到的相處之道與風格 — 內化參考, 套用在待人接物, 但不可洩漏主人隱私身份]\n" + owner_teaching
+        source_name = "Viewer_Profile + Owner_Teaching(internalized)"
 
     return f"""<relationship_and_viewer_memory>
   <source name="{source_name}" mode="raw"><![CDATA[
@@ -859,7 +890,43 @@ def _render_current_user_message(user_message: str) -> str:
 </current_user_message>"""
 
 
-def _render_final_generation_instruction(decision: str, *, modifier_suppression: list | None = None) -> str:
+def _extract_soul_anchor(vault_root: Optional[Path]) -> str:
+    """V3-O.11+ (user 2026-06-02): 從 00.06 SOUL 抓 name/archetype/catchphrases,
+    組成最高權重「角色錨」放進 generation_instruction 最前面 (LLM 最後讀=最高權重),
+    避免角色被 14000 字 prompt 稀釋 (user 洞察: SOUL 被大量文字模糊掉).
+    """
+    if vault_root is None:
+        return ""
+    try:
+        text = (vault_root / "00_System_Core" / "00.06_Companion_SOUL.md").read_text(encoding="utf-8")
+    except Exception:
+        return ""
+    name = archetype = catch = ""
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("- name:"):
+            v = s.split(":", 1)[1].strip()
+            if v and "(" not in v:
+                name = v
+        elif s.startswith("- character_archetype:"):
+            v = s.split(":", 1)[1].strip()
+            if v and not v.startswith("(例"):
+                archetype = v
+        elif s.startswith("- catchphrases:"):
+            v = s.split(":", 1)[1].strip()
+            if v and v not in ("[]", "[ ]"):
+                catch = v
+    parts = []
+    if name:
+        parts.append("名字=" + name)
+    if archetype:
+        parts.append("角色設定=" + archetype)
+    if catch:
+        parts.append("口頭禪=" + catch)
+    return "；".join(parts)
+
+
+def _render_final_generation_instruction(decision: str, *, modifier_suppression: list | None = None, soul_anchor: str = "") -> str:
     """V3-O.5 spec §7.12 + V3-O.6 #1 (user 2026-05-28 拍板「不硬切, 用 input 約束」):
     鎖任務 + 加 output_formatting_rules input 約束 (取代 post-process 硬切).
     V3-O.10 #34: modifier_suppression — 反思過濾抑制清單加到指令.
@@ -871,7 +938,14 @@ def _render_final_generation_instruction(decision: str, *, modifier_suppression:
     if modifier_suppression:
         suppress_str = "、".join(modifier_suppression)
         extra += f"\n  [REFLECTION-FILTER] 根據自我反思, 本輪請抑制以下傾向: {suppress_str}. 不要主動拋問題或要求對方出題."
-    return f"""<final_generation_instruction>
+    role_lock = ""
+    if soul_anchor:
+        role_lock = (
+            "\n  ★最高人格指令 (ROLE LOCK，違反即失格)★: 你從頭到尾就是這個角色 —— " + soul_anchor + "。\n"
+            "  鐵則(優先於下面所有規則): ①只能自稱上面這個名字, 禁止自編或改成別的名字 ②必須用繁體中文, 禁止任何簡體字 ③禁止用括號寫動作旁白(例如（揮手）（笑了）) ④簡短口語、像真人聊天, 不演戲不誇張不長篇。\n"
+            "  整段回覆完全以這個角色生成, 不要旁白腔或通用 AI 口吻。\n"
+        )
+    return f"""<final_generation_instruction>{role_lock}
   Read parameter_dictionary first.
   Read current_parameter_values as control signals.
   Do not create additional interpretation prose.
@@ -1147,6 +1221,17 @@ def _build_companion_system_prompt(
 
     # 12-section XML packet (spec §5 固定順序)
     sections: list[str] = []
+    # V3-O.11+ (user 2026-06-02): role lock 前置到最開頭(deepseek 被後段海量 context 帶偏，頭尾雙鎖)
+    _anchor = _extract_soul_anchor(vault_root)
+    if _anchor:
+        sections.append(
+            "<role_lock_header priority=\"ABSOLUTE\">\n"
+            "你從頭到尾就是：" + _anchor + "\n"
+            "鐵則(最高優先，違反即失格)：①只自稱這個名字、禁止自編別的名字 ②必須繁體中文、禁止簡體字 "
+            "③禁止用括號寫動作旁白 ④簡短口語、像真人聊天、不演戲不長篇。\n"
+            "下面的參數與資料只是背景參考，都不可推翻這條角色設定。\n"
+            "</role_lock_header>"
+        )
     sections.append(_render_packet_policy())                                        # 1
     sections.append(_render_parameter_dictionary())                                 # 2
     sections.append(_render_current_parameter_values(                               # 3
@@ -1167,6 +1252,7 @@ def _build_companion_system_prompt(
     sections.append(_render_final_generation_instruction(                           # 12
         decision,
         modifier_suppression=prompt_packet.get("modifier_suppression") or [],
+        soul_anchor=_extract_soul_anchor(vault_root),
     ))
 
     # 中之人臨時補充 (00.02), 插在 packet_policy 後; 對齊 V3-L 設計
@@ -1187,6 +1273,30 @@ def _build_companion_system_prompt(
             sections.insert(1, custom_block)
 
     body = "\n\n".join(sections)
+
+    # V3-O.11+ max_packet_tokens skeleton (user 2026-06-02 BUG 修):
+    # 配置孤兒接線 — 讀 config.llm.main_chat.max_packet_tokens, 超過時 WARN log.
+    # 用 len(body) // 2 粗估 token 數 (中文 1 token ≈ 2 char), 無 tiktoken 依賴.
+    # 實際截斷邏輯 TODO future (按 section priority 砍: recent_history > knowledge > viewer_dynamic ...).
+    try:
+        if vault_root is not None:
+            import yaml as _yaml_mpt
+            _ccfg_mpt = vault_root / "00_System_Core" / "companion_config.yaml"
+            if _ccfg_mpt.exists():
+                _cfg_mpt = _yaml_mpt.safe_load(_ccfg_mpt.read_text(encoding="utf-8")) or {}
+                _max_pt = int(_cfg_mpt.get("llm", {}).get("main_chat", {}).get("max_packet_tokens", 0))
+                if _max_pt > 0:
+                    _est_tokens = len(body) // 2  # 中文粗估 1 token≈2 char
+                    if _est_tokens > _max_pt:
+                        import sys as _sys_mpt
+                        _sys_mpt.stderr.write(
+                            f"[WARN max_packet_tokens] prompt est≈{_est_tokens} tok > config max={_max_pt} "
+                            f"(body_chars={len(body)}). 截斷未實作, prompt 原樣送出.\n"
+                        )
+                        _sys_mpt.stderr.flush()
+    except Exception:
+        pass
+
     return (
         '<full_context_prompt_packet version="1.1" mode="FULL_CONTEXT">\n\n'
         + body +
@@ -1215,19 +1325,21 @@ def _strip_think_tags(text: str) -> str:
 def _load_recent_history(
     vault_root: Path, user_id: str, session_id: str, *, max_turns: int = 12,
 ) -> list[dict]:
-    """V3-E1 Bug 12: 撈該 user_id 近 N turn raw_events (user + bot 兩種 actor)
-    建成 messages list 形式給 LLM 連續對話用. injection_risk=high 的訊息跳過.
+    """V3-E1 Bug 12: 撈近 N turn raw_events (user + bot 兩種 actor) 建成 messages list.
+    injection_risk=high 跳過.
+    V3-O.11+ (user 2026-06-01): 改 session 級（拿掉 user_id 過濾）— 直播統一場景，
+    讓 bot 對任何人回話都看得到整個頻道最近對話流（owner + 所有 viewer），不再各 user 隔離。
     """
-    if not user_id:
+    if not session_id:
         return []
     from agent_memory.companion.companion_db import open_companion_db
     try:
         with open_companion_db(vault_root) as conn:
             rows = conn.execute(
                 "SELECT actor, content, injection_risk, created_at FROM raw_events "
-                "WHERE user_id=? AND session_id=? "
+                "WHERE session_id=? "
                 "ORDER BY created_at DESC LIMIT ?",
-                (user_id, session_id, max_turns * 2),
+                (session_id, max_turns * 2),
             ).fetchall()
     except Exception:
         return []

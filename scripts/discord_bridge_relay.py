@@ -459,6 +459,7 @@ class BridgeRelayClient(discord.Client):
 
         payload = {
             "content": text,
+            "is_mention": bool(me is not None and me in message.mentions),
             "channel_id": str(message.channel.id),
             "guild_id": guild_id,
             "channel_kind": ("dm" if not guild_id else "public_text_channel"),

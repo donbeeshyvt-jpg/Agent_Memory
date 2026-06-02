@@ -84,6 +84,59 @@ def _append_section(file_path: Path, new_section: str) -> None:
     atomic_write(file_path, new_content)
 
 
+def _dedup_section_against_existing(file_path: Path, new_section: str) -> str:
+    """V3-O.11+ user 2026-06-02 BUG: owner_profile / self_reflection 重複 bullet 太多
+    (連續 flush + raw_events 視窗 overlap + LLM temp 0.4 低隨機 → 同 4 條 bullet 重複 6 次).
+
+    解析 new_section 的 bullet (- 或 *), 去掉 normalized key 已在既有檔案出現過的.
+    保留 section header (e.g. "## 2026-... self_reflection (LLM)").
+    全段 bullet 都已重複時 return "" (caller 應 skip append).
+    """
+    if not file_path.exists() or not new_section.strip():
+        return new_section
+    import re
+    existing = file_path.read_text(encoding="utf-8")
+
+    def _norm(s: str) -> str:
+        s = re.sub(r"^[\s\-\*]+", "", s).strip()
+        s = re.sub(r"[。\.\s,，]", "", s)
+        return s[:40]
+
+    existing_bullets = set()
+    for line in existing.splitlines():
+        ls = line.strip()
+        if ls.startswith(("-", "*")):
+            k = _norm(ls)
+            if k:
+                existing_bullets.add(k)
+
+    out_lines: list[str] = []
+    skipped = 0
+    for line in new_section.splitlines():
+        ls = line.strip()
+        if ls.startswith(("-", "*")):
+            k = _norm(ls)
+            if k and k in existing_bullets:
+                skipped += 1
+                continue
+            if k:
+                existing_bullets.add(k)
+        out_lines.append(line)
+
+    has_bullet = any(l.strip().startswith(("-", "*")) for l in out_lines)
+    if not has_bullet:
+        return ""
+
+    if skipped:
+        try:
+            import sys as _sys
+            print(f"[dedup section] skipped {skipped} duplicate bullets in {file_path.name}", file=_sys.stderr)
+        except Exception:
+            pass
+
+    return "\n".join(out_lines)
+
+
 def _backup_file(file_path: Path, archive_dir: Path, *, keep: int = 5) -> None:
     """V3 §12.4: backup 上一版到 99_Archive/auto_archived/companion_memory_backup/ (keep=5 對齊 hermes)."""
     if not file_path.exists():
@@ -273,7 +326,7 @@ def _llm_summarize_self_memory(
     return call_llm_for_text(
         vault_root, prompt, persona_id="companion",
         temperature=0.4, timeout_s=30.0,
-        auxiliary="companion_self_reflection",
+        auxiliary="self_modification",
     )
 
 
@@ -302,7 +355,7 @@ def _llm_summarize_owner_profile(
     return call_llm_for_text(
         vault_root, prompt, persona_id="companion",
         temperature=0.4, timeout_s=30.0,
-        auxiliary="companion_owner_profile",
+        auxiliary="owner_profile",
     )
 
 
@@ -357,6 +410,17 @@ def flush_self_memory(
         section = f"## {_now_iso()} self_reflection\n\n" + "\n".join(
             f"- {s}" for s in recent_turn_summaries
         )
+    # V3-O.11+ BUG fix (user 2026-06-02): dedup bullet vs 既有 00.07 內容, 避免 self_reflection 重複堆積
+    section = _dedup_section_against_existing(memory_path, section)
+    if not section:
+        # 全段 bullet 都已存在 → 不 append, 直接返回 (避免空 section header)
+        return {
+            "flushed": False, "reason": "all bullets duplicate (dedup)",
+            "char_limit": char_limit_mem,
+            "compressed": False,
+            "llm_used": llm_used,
+            "memory_path": str(memory_path.relative_to(vault_root)),
+        }
     _append_section(memory_path, section)
 
     # char limit check (V3-H7: 傳 vault_root 開啟 LLM 壓縮路徑)
@@ -445,7 +509,10 @@ def flush_owner_profile(
         section = f"## {_now_iso()} owner observation\n\n" + "\n".join(
             f"- {o}" for o in recent_owner_observations
         )
-    _append_section(profile_path, section)
+    # V3-O.11+ BUG fix (user 2026-06-02): dedup bullet vs 既有 00.08 內容, 避免「主人傾向…」重複 6 份
+    section = _dedup_section_against_existing(profile_path, section)
+    if section:
+        _append_section(profile_path, section)
 
     compressed = _enforce_char_limit_compress(profile_path, char_limit_owner, vault_root=vault_root)
 

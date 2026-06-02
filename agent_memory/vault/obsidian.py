@@ -314,7 +314,7 @@ class ObsidianVaultAdapter(VaultAdapter):
         )
         self._write_companion_baseline_file(
             "00_System_Core/00.05_Brand_Voice.md",
-            "# Brand Voice\n\n> VTuber 口頭禪 / 招牌動作 (跟 SOUL.md catchphrases 連動).\n",
+            "# Brand Voice\n\n> 說話習慣 / 口頭禪 / 招牌動作. 括號 () 內說明不會被讀入 system prompt.\n\n(填入說話習慣模式)\n",
         )
         self._write_companion_baseline_file(
             "00_System_Core/00.06_Companion_SOUL.md",
@@ -774,7 +774,7 @@ class ObsidianVaultAdapter(VaultAdapter):
             "    local_gemma:                   # V3-O.10 #1 本地子任務 (gemma-4-E4B-it-Q8, GPU)\n"
             "      kind: llama_cpp_python\n"
             "      model_path: \"Z:/Cursor練習用/Agent_Memory/0_Models/gemma-4-E4B-it-GGUF/gemma-4-E4B-it-Q8_0.gguf\"\n"
-            "      n_ctx: 2048\n"
+            "      n_ctx: 8192                  # V3-O.11+ user 2026-06-02 BUG-1 fix (2048 太小 子任務 input 超 ctx → CUDA error/GGML_ASSERT 帶死 bridge)\n"
             "      n_gpu_layers: -1             # -1 全 GPU (RTX 3090); 0 純 CPU\n"
             "      max_tokens: 300\n\n"
             "# ── 效能 / log (V3-O.10 #24) ────────────────────────────\n"

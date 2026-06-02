@@ -738,6 +738,30 @@ class LLMClient:
             max_cached_models=max_cached_models,
         )
 
+        # V3-O.11+ BUG-1 中期 (user 2026-06-02): gemma 子任務 input 大時超 n_ctx → GGML_ASSERT
+        # logits==null crash 帶死整個 bridge. 已上游 n_ctx 8192 緩解, 此處再加 input 截斷保護.
+        # 估算: 中文 1 token ≈ 2 char; 給 1.8x buffer + 留 max_tokens output 空間.
+        _max_in_chars = max(1024, (n_ctx - max_tokens) * 2)
+        _total_in = sum(len(str(m.get("content", ""))) for m in messages)
+        if _total_in > _max_in_chars:
+            _last_m = messages[-1]
+            _last_c = str(_last_m.get("content", ""))
+            _over = _total_in - _max_in_chars
+            if len(_last_c) > _over + 100:
+                _truncated = _last_c[: -(_over + 50)] + "\n...(input 截斷, 避 ggml_assert crash)"
+                messages = list(messages[:-1]) + [{**_last_m, "content": _truncated}]
+            else:
+                messages = list(messages[:-1]) + [{**_last_m, "content": "(內容過長截斷, 避 ggml_assert crash)"}]
+            try:
+                import sys as _sys
+                _sys.stderr.write(
+                    f"[WARN llama_cpp_python input truncate] total={_total_in} char > limit={_max_in_chars} "
+                    f"(n_ctx={n_ctx}, max_tokens={max_tokens})\n"
+                )
+                _sys.stderr.flush()
+            except Exception:
+                pass
+
         response = llm.create_chat_completion(
             messages=messages,
             temperature=temperature,

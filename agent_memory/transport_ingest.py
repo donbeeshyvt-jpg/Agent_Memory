@@ -419,11 +419,13 @@ def _get_aggregator_for(vault_root: Path):
 
 
 def _generate_aggregated_reply(vault_root: Path, msgs: list, session_id: str) -> str:
-    """V3-O.11 彙整生成: 用 main_chat 出口模型 (auxiliary=None → deepseek) + 完整 context。
+    """⚠️ DEPRECATED (V3-O.11+ user 2026-06-02 統一路徑 C 廢除): 改用 _check_and_flush_aggregator
+    內直接跑 run_companion_chat_turn 完整 22-step. 此函數短 prompt (~130 tok, 沒 SOUL/ROLE LOCK)
+    導致 bot 自由發揮戲劇腔. 保留 placeholder 避免外部 import 破裂, 內部直接 return "".
 
-    階段2 骨架: 多人訊息(按時序) + 各發言者朋友卡 + 「多人對話自主綜合/個別」指示。
-    階段3 補完整: owner 記憶 + 最近對話為主 + 朋友卡彙整版(反思+近10句) + group_sentiment。
+    舊版設計留存供參考 (line 後續為原邏輯, 不會被呼叫)。
     """
+    return ""  # ⚠️ DEPRECATED, 不再呼叫
     if not msgs:
         return ""
     lines = [f"{m.display_name}: {(m.content or '')[:200]}" for m in msgs]
@@ -458,7 +460,16 @@ def _generate_aggregated_reply(vault_root: Path, msgs: list, session_id: str) ->
 
 
 def _check_and_flush_aggregator(vault_root: Path, payload: dict[str, Any]) -> dict[str, Any]:
-    """V3-O.11 階段2: relay 背景 task 呼叫 — 檢查 debounce flush, 達標則彙整生成 + 補寫。"""
+    """V3-O.11+ user 2026-06-02 統一路徑 C: 列隊出口走 run_companion_chat_turn 完整 22-step.
+
+    舊版走 `_generate_aggregated_reply` 短 prompt (~130 tok, 沒 SOUL/ROLE LOCK/memory/dialogue),
+    導致 deepseek 自由發揮戲劇腔/簡體字/旁白. 現改成統一過 22-step pipeline:
+      - batch 內每則訊息進來時已 record_only=True 跑 22-step 算 state 寫 db (state 累積在 db)
+      - flush 時用「最後一筆 (優先 owner)」當代表, 構造 batch_msg 含整批訊息
+      - 跑 record_only=False → 走 _build_companion_system_prompt 完整 12 段 packet
+        (含 SOUL/ROLE LOCK/memory/dialogue/朋友卡/owner_profile)
+      - bot 看到所有 context, 不再「白紙化」自由發揮
+    """
     base = {"brain_type": "companion", "persona": "companion", "aggregated": False, "response": ""}
     try:
         _agg = _get_aggregator_for(vault_root)
@@ -470,12 +481,78 @@ def _check_and_flush_aggregator(vault_root: Path, payload: dict[str, Any]) -> di
             return base
         session_id = str(payload.get("session_id") or "aggregated")
         channel_type = str(payload.get("channel_type") or "public_text_channel")
-        unified = _generate_aggregated_reply(vault_root, msgs, session_id)
+        transport = str(payload.get("transport") or "discord")
+
+        # 構造 batch user_message: 列出所有 N 則訊息 with (主人/觀眾) tag
+        batch_lines: list[str] = []
+        last_owner_uid = ""
+        last_owner_display = ""
+        for i, m in enumerate(msgs, 1):
+            who = (m.display_name or m.user_id or "?")[:20]
+            is_owner_m = _check_is_owner(vault_root, m.user_id, transport=transport)
+            tag = "(主人)" if is_owner_m else "(觀眾)"
+            batch_lines.append(f"  [{i}] {who} {tag}: {(m.content or '')[:200]}")
+            if is_owner_m:
+                last_owner_uid = m.user_id
+                last_owner_display = m.display_name or ""
+
+        batch_msg = (
+            f"[本輪列隊彙整 — 共 {len(msgs)} 則訊息]\n"
+            + "\n".join(batch_lines) + "\n\n"
+            + "請統一回應這批訊息。"
+        )
+
+        # 用最後一筆 owner (有就優先) 當代表, 否則用最後一筆訊息
+        rep_uid = last_owner_uid or msgs[-1].user_id
+        rep_display = last_owner_display or (msgs[-1].display_name or "")
+        is_owner = bool(last_owner_uid)
+
+        # 構造 ChatRequest 跑完整 22-step (含 step15 LLM 出口 + 完整 12 段 packet)
+        from agent_memory.companion.companion_chat_runtime import (
+            run_companion_chat_turn, ChatRequest, append_bot_reply_event,
+        )
+        _bl: dict = {}
+        try:
+            from agent_memory.companion.personality_switcher import get_current_baselines
+            _bl = get_current_baselines(vault_root) or {}
+        except Exception:
+            _bl = {}
+
+        req = ChatRequest(
+            user_id=str(rep_uid),
+            session_id=session_id,
+            channel_id=str(payload.get("channel_id") or ""),
+            channel_type=channel_type,
+            message=batch_msg,
+            is_owner=is_owner,
+            display_name=rep_display,
+        )
+        resp = run_companion_chat_turn(
+            req, vault_root,
+            record_only=False,  # 彙整出口 = 真正跑 LLM
+            persona_baseline_balance=float(_bl.get("baseline_balance", 0.3)),
+            persona_baseline_silence=float(_bl.get("baseline_silence_intolerance", 0.5)),
+            persona_baseline_curiosity=float(_bl.get("curiosity_urge", 0.5)),
+            persona_baseline_topic=float(_bl.get("topic_drive", 0.5)),
+            persona_baseline_engagement=float(_bl.get("engagement_seeking", 0.5)),
+        )
+        unified = (resp.response_text or "").strip()
+
         if unified:
             try:
-                from agent_memory.companion.companion_chat_runtime import append_bot_reply_event
                 user_ids = list(dict.fromkeys(m.user_id for m in msgs))
                 append_bot_reply_event(vault_root, user_ids, session_id, unified, channel_type=channel_type)
+            except Exception:
+                pass
+            # BUG-2 fix: 寫 markdown session log (owner 下個 turn 讀歷史能看到彙整回覆)
+            try:
+                msgs_concat = " ｜ ".join(
+                    f"{(m.display_name or m.user_id or '?')[:20]}: {(m.content or '')[:80]}"
+                    for m in msgs
+                )
+                _append_companion_session_log(
+                    vault_root, "彙整", msgs_concat, unified, channel_type,
+                )
             except Exception:
                 pass
         return {"brain_type": "companion", "persona": "companion", "aggregated": True,
@@ -543,10 +620,11 @@ def _run_companion_transport_event(
     except Exception:
         _bl = {}
 
-    # V3-O.11 階段2: owner 即時完整回; viewer 個別記錄(record_only)+進佇列, 不個別回
+    # V3-O.11+ (user 2026-06-02): 全員預設進佇列統一彙整(含 owner); 唯一例外 = 被 @mention 才即時單回
+    is_mention = bool(payload.get("is_mention", False))
     resp = run_companion_chat_turn(
         req, vault_root,
-        record_only=(not is_owner),
+        record_only=(not is_mention),
         persona_baseline_balance=float(_bl.get("baseline_balance", 0.3)),
         persona_baseline_silence=float(_bl.get("baseline_silence_intolerance", 0.5)),
         persona_baseline_curiosity=float(_bl.get("curiosity_urge", 0.5)),
@@ -557,22 +635,25 @@ def _run_companion_transport_event(
     # V3-O.11 階段2: viewer 訊息進彙整佇列 (不分日常/直播), 個別記錄已完成, 不個別回。
     # 出口統一由 relay 背景 task 觸發 _check_and_flush_aggregator → 彙整發頻道。owner 不進佇列、即時回。
     aggregation_held = False
-    if not is_owner:
+    if not is_mention:
         try:
             _agg = _get_aggregator_for(vault_root)
             _agg.add_message(req.channel_id, req.user_id, turn.display_name or "", req.message)
             aggregation_held = True
         except Exception:
             aggregation_held = False
-        resp.response_text = ""  # viewer 不個別回 (relay held, 等彙整 flush 統一發頻道)
+        resp.response_text = ""  # 沒被 @mention 一律 held (含 owner), 等彙整 flush 統一發頻道
 
     # 寫 markdown session log (companion 10_Working_Memory/11_Session_Logs/)
-    try:
-        _append_companion_session_log(
-            vault_root, req.user_id, req.message, resp.response_text, channel_type,
-        )
-    except Exception:
-        pass  # 不破整個 transport
+    # V3-O.11+ BUG-2 fix (user 2026-06-02): held 時不寫(等彙整 flush 統一寫),
+    # 否則 normal turn 寫進 bot="" 空白行 + 彙整另寫一行 → owner 讀到「有問無答」
+    if not aggregation_held:
+        try:
+            _append_companion_session_log(
+                vault_root, req.user_id, req.message, resp.response_text, channel_type,
+            )
+        except Exception:
+            pass  # 不破整個 transport
 
     result: dict[str, Any] = {
         "transport": turn.transport,

@@ -144,9 +144,11 @@ def emotion_modulated_recall(
 
 # ─── Layer 1: 短期 hot cache (raw_events 近 10min) ─────────────────────────
 def fetch_layer1_short(
-    vault_root: Path, session_id: str, *, window_minutes: int = 10, max_items: int = 8,
+    vault_root: Path, session_id: str, *, window_minutes: int = 10, max_items: int = 20,
 ) -> list[str]:
-    """V3 §13.2 Layer 1: 從 raw_events 抓 session 內近 10min."""
+    """V3 §13.2 Layer 1: 從 raw_events 抓 session 內近 10min.
+    V3-O.11+ (user 2026-06-01): max_items 8→20 — 直播統一場景，頻道最近 N 句(不分 user)。
+    """
     cutoff = (datetime.now(timezone.utc) - timedelta(minutes=window_minutes)).isoformat()
     with open_companion_db(vault_root) as conn:
         rows = conn.execute(
