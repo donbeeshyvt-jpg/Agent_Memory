@@ -73,7 +73,46 @@ _LLM_GENERATE_LOCK = _build_llm_concurrency_primitive()
 # V3-O.10 #3 (Q1 fix): per-provider lock pool — 主對話 vs 子任務分離鎖
 # 子任務 (auxiliary != None) 用 _LLM_SUB_TASK_LOCK, 不再跟主對話搶 _LLM_GENERATE_LOCK.
 # 解 B2: self_modification / umbrella_consolidation 等不再阻塞 owner 主對話.
-_LLM_SUB_TASK_LOCK = threading.BoundedSemaphore(2)  # 子任務最多 2 個並行
+# V3-O.12 #L1 (2026-06-03 user): 從 hardcoded 2 改 lazy init, 第一次 sub_task call 時
+# 從 vault companion_config.yaml.llm.concurrency.parallel_slots 讀 (env AGENT_MEMORY_LLM_SUBTASK_PARALLEL override).
+# 啟動 dead config (V3-O.10 寫了但沒被讀過).
+_LLM_SUB_TASK_LOCK: threading.BoundedSemaphore | None = None
+_LLM_SUB_TASK_LOCK_INIT_LOCK = threading.Lock()
+
+
+def _resolve_subtask_parallel_slots(vault_root: "Path | None") -> int:
+    """V3-O.12 #L1: 算 sub_task BoundedSemaphore 大小. env > vault config > default 2."""
+    env_val = os.getenv("AGENT_MEMORY_LLM_SUBTASK_PARALLEL", "").strip()
+    if env_val:
+        try:
+            return max(1, int(env_val))
+        except ValueError:
+            pass
+    if vault_root is not None:
+        try:
+            import yaml as _yaml
+            p = Path(vault_root) / "00_System_Core" / "companion_config.yaml"
+            if p.exists():
+                cfg = _yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+                n = int(((cfg.get("llm") or {}).get("concurrency") or {}).get("parallel_slots", 2))
+                if n >= 1:
+                    return n
+        except Exception:
+            pass
+    return 2
+
+
+def _get_subtask_lock(vault_root: "Path | None") -> threading.BoundedSemaphore:
+    """V3-O.12 #L1: lazy init module-level sub_task semaphore. Thread-safe double-check."""
+    global _LLM_SUB_TASK_LOCK
+    if _LLM_SUB_TASK_LOCK is not None:
+        return _LLM_SUB_TASK_LOCK
+    with _LLM_SUB_TASK_LOCK_INIT_LOCK:
+        if _LLM_SUB_TASK_LOCK is not None:
+            return _LLM_SUB_TASK_LOCK
+        n = _resolve_subtask_parallel_slots(vault_root)
+        _LLM_SUB_TASK_LOCK = threading.BoundedSemaphore(max(1, n))
+    return _LLM_SUB_TASK_LOCK
 
 # V3-O.10 #5: Priority Queue — owner > VIP > viewer 排隊優先
 # 實作: PriorityQueue + worker thread pool，owner priority=0, VIP=1, viewer=2
@@ -348,7 +387,7 @@ class LLMClient:
         # V3-O.11 P1 快速 degrade: 子任務 lock timeout 用自身 timeout_s (不用全域 120s)。
         # barrage 積壓時 ~timeout_s 內等不到 lock 就快速放棄 → 上層 except 退 keyword/跳過,
         # 不再卡滿 120s 拖垮整個 turn (壓測雪崩主因)。
-        active_lock = _LLM_SUB_TASK_LOCK
+        active_lock = _get_subtask_lock(self.vault_root)  # V3-O.12 #L1: lazy init from config
         sub_lock_timeout = max(5.0, float(timeout_s) + 5.0)
         acquired = True
         if serialize:

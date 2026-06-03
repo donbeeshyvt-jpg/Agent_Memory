@@ -522,12 +522,17 @@ def _check_and_flush_aggregator(vault_root: Path, payload: dict[str, Any]) -> di
         except Exception:
             _bl = {}
 
+        # V3-O.12 #F3: 給 step17 寫 raw_events 用的純 user text (無 [本輪列隊彙整] marker / 無 [編號] / 無 (主人) tag).
+        # message (batch_msg) 仍包含 marker 給 LLM 看 batch 語境, 但 raw_events 寫 raw_content
+        # 阻斷 marker 進 DB → 下輪 prompt history paste → reflection 自編「我跟店長的內部哏」的 self-reinforce loop.
+        raw_user_text = "\n".join((m.content or "").strip() for m in msgs).strip()
         req = ChatRequest(
             user_id=str(rep_uid),
             session_id=session_id,
             channel_id=str(payload.get("channel_id") or ""),
             channel_type=channel_type,
             message=batch_msg,
+            raw_content=raw_user_text,
             is_owner=is_owner,
             display_name=rep_display,
         )

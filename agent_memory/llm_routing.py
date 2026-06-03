@@ -187,6 +187,21 @@ def _merge_companion_llm_config(vault_root: Path, base_config: dict[str, Any]) -
     if aux:
         merged["auxiliary_overrides"] = aux
 
+    # 4. V3-O.12 #FB-B (2026-06-03 user): sub_task_fallback_chain → merged.sub_task_fallback_chain
+    # sub_task (auxiliary != None) 失敗走獨立 fallback chain (本地 ollama only, 不上線 OpenRouter).
+    # main_chat 失敗才走上面的 fallback_chain (允許線上). user 要求「線上只有最後收束 prompt」.
+    sub_fb_raw = llm.get("sub_task_fallback_chain", [])
+    if isinstance(sub_fb_raw, list):
+        sub_fb_chain: list[dict[str, str]] = []
+        for item in sub_fb_raw:
+            if isinstance(item, dict):
+                fp = str(item.get("provider", "")).strip()
+                fm = str(item.get("model", "")).strip()
+                if fp and fm:
+                    sub_fb_chain.append({"profile": fp, "model": fm})
+        if sub_fb_chain:
+            merged["sub_task_fallback_chain"] = sub_fb_chain
+
     return merged
 
 
@@ -282,7 +297,12 @@ def resolve_llm_route(
     if not selected_model:
         raise ValueError("無法解析 LLM model：請設定 global_default.model")
 
-    fallback_chain = config.get("fallback_chain", [])
+    # V3-O.12 #FB-B (2026-06-03 user): sub_task (auxiliary != None) 走獨立 fallback chain,
+    # 不沾線上 main_chat fallback. user 要求「線上只有最後收束 prompt」, sub_task 失敗只試本地.
+    if auxiliary:
+        fallback_chain = config.get("sub_task_fallback_chain", [])
+    else:
+        fallback_chain = config.get("fallback_chain", [])
     if not isinstance(fallback_chain, list):
         fallback_chain = []
 

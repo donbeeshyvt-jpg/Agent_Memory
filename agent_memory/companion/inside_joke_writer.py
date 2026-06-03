@@ -205,7 +205,14 @@ def maybe_inject_inside_joke(
     """V3-H5: 對 playfulness>0.5 + intim ≥ 0.4 + random 10% 注入 inside joke.
 
     對齊 V3 §29.8 H8 + verbal_tic injection pattern.
+
+    V3-O.12 #G6b (2026-06-03): user 觀察「(還記得我們的 X 哏嗎)」固定樣板太死 +
+    inside_joke detector 把系統包裝詞 (列隊彙整) 誤判為哏 → 暫關注入. 待 G5 升級
+    用 LLM 動態生成 callback 句式 (取代固定「(還記得 X 哏嗎)」格式) 再 re-enable.
+    detect / write md 仍正常跑 (累積 inside_jokes 候選, 為 G5 LLM 生成提供 context).
     """
+    return response_text
+    # ↓ 以下原邏輯保留以便 G5 階段快速 re-enable + 改 prompt
     if not response_text or not jokes:
         return response_text
     if playfulness <= 0.5 or intimacy_score < 0.4:

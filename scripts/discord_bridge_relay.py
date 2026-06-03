@@ -17,6 +17,61 @@ from discord.ext import tasks
 import hashlib
 
 
+def _load_channels_from_vault_config(vault_root_str: str) -> dict:
+    """V3-O.12 #F-channel: 從 vault companion_config.yaml channels.discord 補 channel sets.
+
+    讓 relay 不必硬塞 --channel-id, user 改 vault config 就能切換頻道.
+    優先序: channel_ids (多頻道清單) > channel_id_env (向後相容單頻道 env name) -> os.environ.
+    mention_only_channel_ids / allow_bot_author_ids 同步讀.
+    錯誤/缺檔/缺 yaml -> 空 dict + 警告, 不阻擋 relay 啟動.
+    """
+    out: dict = {"channel_ids": set(), "mention_only": set(), "allow_bot_author": set()}
+    if not vault_root_str:
+        return out
+    try:
+        import yaml as _yaml
+        from pathlib import Path as _Path
+    except Exception as e:
+        print(f"[WARN] config-fallback skipped (yaml/pathlib import fail): {e}")
+        return out
+    cfg_path = _Path(vault_root_str).expanduser().resolve() / "00_System_Core" / "companion_config.yaml"
+    if not cfg_path.exists():
+        return out
+    try:
+        with cfg_path.open("r", encoding="utf-8") as fh:
+            cfg = _yaml.safe_load(fh) or {}
+        dc = ((cfg.get("channels") or {}).get("discord") or {})
+        ids = dc.get("channel_ids") or []
+        if ids:
+            for x in ids:
+                try:
+                    out["channel_ids"].add(int(str(x).strip()))
+                except (ValueError, TypeError):
+                    pass
+        else:
+            env_name = (dc.get("channel_id_env") or "").strip()
+            if env_name:
+                raw = os.getenv(env_name, "").strip()
+                if raw:
+                    try:
+                        out["channel_ids"].add(int(raw))
+                    except ValueError:
+                        pass
+        for x in (dc.get("mention_only_channel_ids") or []):
+            try:
+                out["mention_only"].add(int(str(x).strip()))
+            except (ValueError, TypeError):
+                pass
+        for x in (dc.get("allow_bot_author_ids") or []):
+            try:
+                out["allow_bot_author"].add(int(str(x).strip()))
+            except (ValueError, TypeError):
+                pass
+    except Exception as e:
+        print(f"[WARN] config-fallback parse failed: {e}")
+    return out
+
+
 # V3-O.7 RC2: CJK viewer ID 碰撞修正.
 # 原本 f"ai-viewer-{viewer_prefix}" 直接用 CJK prefix → sanitize_component 剝掉全部 CJK
 # → 所有中文名觀眾塌陷成同一個 "ai-viewer" ID.
@@ -695,6 +750,21 @@ def main() -> int:
         except ValueError:
             print(f"[ERR] invalid allow-bot-author id: {text}")
             return 2
+
+    # V3-O.12 #F-channel: 命令列三 set 任一為空 + 有 --vault → 從 vault config 補.
+    # 命令列覆寫 config (最高優先), 兩者都空時 = relay 收全部頻道 (legacy 行為).
+    # 讓未來改頻道只動 vault config, 不必碰命令列.
+    if args.vault:
+        _fb = _load_channels_from_vault_config(args.vault)
+        if not allowed_channels and _fb["channel_ids"]:
+            allowed_channels = _fb["channel_ids"]
+            print(f"[OK] channels from vault config: {sorted(allowed_channels)}")
+        if not mention_only_channels and _fb["mention_only"]:
+            mention_only_channels = _fb["mention_only"]
+            print(f"[OK] mention-only channels from vault config: {sorted(mention_only_channels)}")
+        if not allow_bot_author_ids and _fb["allow_bot_author"]:
+            allow_bot_author_ids = _fb["allow_bot_author"]
+            print(f"[OK] allow-bot-author ids from vault config: {sorted(allow_bot_author_ids)}")
 
     client = BridgeRelayClient(
         bridge_url=args.bridge_url,

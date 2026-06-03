@@ -23,33 +23,18 @@ from agent_memory.companion.affect_manager import AffectState
 from agent_memory.companion.seven_emotions_balance import BalanceState, EmotionState
 
 
-# 內心獨白 prefix templates by style (Phase 1 用 keyword pool, Phase 3 可改 LLM 生成)
-_MONOLOGUE_TEMPLATES = {
-    "structured": [
-        "等等讓我想想",
-        "嗯讓我整理一下",
-        "我需要分兩件事看",
-    ],
-    "anxious": [
-        "欸我有點亂",
-        "嗯這個有點難說",
-        "我不確定怎麼回",
-    ],
-    "playful": [
-        "哦這讓我想到",
-        "哈這有點意思",
-        "等等 我先反應一下",
-    ],
-    "curious": [
-        "咦真的嗎",
-        "等一下 你是說",
-        "我好奇",
-    ],
-    "warm": [
-        "嗯我聽你說",
-        "我懂",
-        "等我消化一下",
-    ],
+# V3-O.12 #G5 (2026-06-03): hardcoded template list 廢棄.
+# user 觀察「固定句子很怪」+ 「哦這讓我想到」每 turn 重複→ phrase 死板.
+# 改由 _render_final_generation_instruction 內加 instruction, 讓 LLM 根據當前
+# affect/balance/emotion state 在 reply 內自然體現思考過渡語感, 取代 hardcoded list 抽取.
+# 保留 _MONOLOGUE_TEMPLATES key 結構供 _pick_style 仍可 return 合法 style label,
+# 但內容全空 → generate_inner_monologue 不再抽出 phrase, monologue_text/leak 永遠空.
+_MONOLOGUE_TEMPLATES: dict[str, list[str]] = {
+    "structured": [],
+    "anxious": [],
+    "playful": [],
+    "curious": [],
+    "warm": [],
 }
 
 
@@ -101,19 +86,17 @@ def generate_inner_monologue(
     """
     rng = rng or random.Random()
     style = _pick_style(affect, emotion, balance, policy_strategy)
-    template_pool = _MONOLOGUE_TEMPLATES.get(style, _MONOLOGUE_TEMPLATES["structured"])
-    monologue = rng.choice(template_pool)
-
-    # pre-utterance leak: balance.whimsy > 0.6 OR policy_inner_monologue_visible 才外顯
-    leak = ""
-    if policy_inner_monologue_visible or balance.whimsy > 0.6:
-        leak = f"{monologue}..."
+    # V3-O.12 #G5: hardcoded template 廢棄, phrase 改由 main LLM 在 final_generation_instruction
+    # 規範下自然生成. 此處只保留 style 算出 (給 trace / audit), monologue_text/leak 永遠空.
+    template_pool = _MONOLOGUE_TEMPLATES.get(style, [])
+    monologue = rng.choice(template_pool) if template_pool else ""
+    leak = ""  # G5: 永不 inject hardcoded prefix
 
     return InnerMonologueResult(
         monologue_text=monologue,
         pre_utterance_leak=leak,
         style=style,
-        used_template=True,
+        used_template=bool(template_pool),
     )
 
 

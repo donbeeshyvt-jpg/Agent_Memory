@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import time as _step_time  # V3-O.9: per-step latency profiling
 import uuid
 from dataclasses import dataclass, field
@@ -104,6 +105,9 @@ class ChatRequest:
     channel_id: str = ""
     channel_type: str = "normal"
     message: str = ""
+    # V3-O.12 #F3: aggregator batch flush 寫 raw_events 用的純 text (無 [本輪列隊彙整] marker).
+    # 留空 fallback 用 message. transport_ingest.py 構 batch flush ChatRequest 時帶上.
+    raw_content: str = ""
     is_owner: bool = False
     is_first_interaction_today: bool = False
     concurrent_viewers: int = 0
@@ -135,6 +139,32 @@ class ChatResponse:
     og_rule_triggered: str = ""
     scanner_hits_count: int = 0
     injection_risk: str = "low"
+
+
+# V3-O.12 #F2: strip LLM 自編 self-reinforce 句式. bot 之前看過 raw_events 內出現
+# 多次「列隊彙整」之類系統包裝詞 → 反思 LLM 自編「我跟店長的內部哏」→ step15 LLM
+# few-shot 模仿在 reply 結尾自編「(還記得我們的 X 哏嗎)」「(自我提示: X)」這類
+# meta-comment 樣式. 一旦進 raw_events 就 self-reinforce 擴散. 在 step16 output
+# 階段 strip 結尾 meta-句式, 阻斷擴散.
+_SELF_REINFORCE_TAIL_RE = re.compile(
+    r"\s*[(（]\s*("
+    r"還記得[^()（）]{1,40}哏[嗎吧]?"
+    r"|自我提示[:：][^()（）]{1,60}"
+    r"|內部[:：][^()（）]{1,60}"
+    r")\s*[)）]\s*$"
+)
+
+
+def _strip_self_reinforce_phrases(text: str) -> str:
+    """V3-O.12 #F2: 移除 reply 結尾的 self-reinforce meta-句式."""
+    if not text:
+        return text
+    prev = None
+    out = text
+    while prev != out:
+        prev = out
+        out = _SELF_REINFORCE_TAIL_RE.sub("", out).rstrip()
+    return out
 
 
 # Default LLM stub (Phase 1 MVP fallback) — V3-E1 強化 (Bug 14 user 觀察)
@@ -964,6 +994,20 @@ def _render_final_generation_instruction(decision: str, *, modifier_suppression:
   <output_formatting_rules>
     長度: 整段回應約 1 到 6 句之間. 每句約 12 到 20 個中文字 (含標點, 軟性建議, 不要為了字數硬截斷自然句子, 寧可少一句也不要切句中).
     標點: 用全形「，。？！」. 不用破折號「—」「──」. 不用半形「, . ? !」 (除非引用程式碼/英文).
+    反固定樣板 prefix (V3-O.12 #G5, 違反就失格):
+      禁止在 reply 開頭加 hardcoded 思考過渡 prefix. 過去版本曾用過的固定 phrase (現已全廢, 看到一律不准):
+        「哦這讓我想到」「哈這有點意思」「等等 我先反應一下」
+        「等等讓我想想」「嗯讓我整理一下」「我需要分兩件事看」
+        「欸我有點亂」「嗯這個有點難說」「我不確定怎麼回」
+        「咦真的嗎」「等一下 你是說」「我好奇」
+        「嗯我聽你說」「我懂」「等我消化一下」
+      若 current_parameter_values 的 balance/affect/emotion 顯示需要思考過渡(例如 playfulness 高 → 玩鬧氛圍, uncertainty 高 → 不確定感),
+      請用「當下對話脈絡 + 自然語感」自己造短句, 每次不一樣, 不重複套用同一個 prefix.
+    反固定 callback 樣板 (V3-O.12 #G5):
+      禁止 reply 結尾加 meta-旁白固定格式:
+        「(還記得我們的 X 哏嗎)」「(自我提示: X)」「(內部: X)」「(XXX 自我提示)」
+      若 retrieved_second_brain_context 或 recent_dialogue 顯示有共同記憶 / inside joke 可呼應,
+      自然融入對話脈絡 (例如直接引用情境名稱、或續寫笑點), 不要用括號 meta 註解.
     禁用詞 (AI 顧問 / 客服風, 違反就失格):
       穩穩、接住、拉回來、照顧到、飄走、拿捏、框住、化解、安心地、收緊、收穩、托底、節奏、邊界、分寸、保持距離.
     禁洩漏技術詞:
@@ -2242,7 +2286,9 @@ def run_companion_chat_turn(
         record_tic_usage(vault_root, tic_sel, session_id=request.session_id, user_id=request.user_id)
     # V3-E1 Bug 13: monologue leak 機率二次降 — 即使 pre_utterance_leak 有值
     # 也只 15% 機率真的注進 response (避免「等等 我先反應一下」「哈這有點意思」每 turn 都出)
-    _leak_roll = rng.random() < 0.15 and monologue.pre_utterance_leak != ""
+    # V3-O.12 #G6 (2026-06-03): user 觀察 hardcoded template「哦這讓我想到」依舊每 turn 出現 (15% × playful trigger
+    # 機率仍高), 暫關 inner monologue inject. 待 G5 升級用 LLM 動態生成 monologue 再 re-enable.
+    _leak_roll = False  # 原 rng.random() < 0.15 and monologue.pre_utterance_leak != ""
     response_with_monologue = maybe_inject_into_response(raw_response, monologue, inject=_leak_roll)
     response_with_tic = maybe_inject_tic_into_response(response_with_monologue, tic_sel.tic)
     # ⭐ V3-H5 殘-11: H8 Inside Jokes 注入 (對 playfulness>0.5 + intim ≥ 0.4 + 10% 機率)
@@ -2279,6 +2325,9 @@ def run_companion_chat_turn(
         final_response = "" if record_only else response_with_dd
     except Exception:
         final_response = "" if record_only else response_with_dd
+    # V3-O.12 #F2: strip LLM 自編 self-reinforce 句式 (見 _strip_self_reinforce_phrases doc).
+    if not record_only and final_response:
+        final_response = _strip_self_reinforce_phrases(final_response)
     resp.pipeline_steps_done.append(166)
     _mark_step_time(_step_timings, "step16_6_tics")
 
@@ -2289,7 +2338,10 @@ def run_companion_chat_turn(
         # V3-E1 Bug 12: 寫 user raw_event
         conn.execute(
             "INSERT OR IGNORE INTO raw_events (event_id, user_id, session_id, actor, content, source, injection_risk, created_at) VALUES (?, ?, ?, 'user', ?, ?, ?, ?)",
-            (event_id, request.user_id, request.session_id, request.message,
+            # V3-O.12 #F3: raw_events.content 寫純 user text (raw_content 來自 transport_ingest aggregator).
+            # 留空 fallback request.message. 阻斷「[本輪列隊彙整]」marker 進 raw_events → history → reflection 的 self-reinforce loop.
+            (event_id, request.user_id, request.session_id,
+             (request.raw_content or request.message),
              request.channel_type, injection_risk, now_iso),
         )
         # V3-E1 Bug 12: 也寫 bot raw_event (給連續對話 history 用)
