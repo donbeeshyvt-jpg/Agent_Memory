@@ -1008,6 +1008,12 @@ def _render_final_generation_instruction(decision: str, *, modifier_suppression:
         「(還記得我們的 X 哏嗎)」「(自我提示: X)」「(內部: X)」「(XXX 自我提示)」
       若 retrieved_second_brain_context 或 recent_dialogue 顯示有共同記憶 / inside joke 可呼應,
       自然融入對話脈絡 (例如直接引用情境名稱、或續寫笑點), 不要用括號 meta 註解.
+    反招牌句重複 (V3-O.13 #CR2):
+      收尾前自我檢查: 如果本次 reply 結尾的招牌威脅 / 招牌動作 / 招牌詞組
+      跟 recent_dialogue 內最近 3 次 reply 結尾相同或極相似, 用幽默口吻換個說法表達.
+      保留角色語氣 + 原本意圖, 但表達方式每次不同, 避免讓觀眾覺得 bot 只會同一招.
+      原則: 角色穩定但招式變化, 每 reply 一個新點子比一個固定招牌句更有人感.
+      (註: 程式層另有 CR3 動態偵測 3 次以上重複時自動 call LLM 改寫兜底, 本條 instruction 是第一道軟性提示.)
     禁用詞 (AI 顧問 / 客服風, 違反就失格):
       穩穩、接住、拉回來、照顧到、飄走、拿捏、框住、化解、安心地、收緊、收穩、托底、節奏、邊界、分寸、保持距離.
     禁洩漏技術詞:
@@ -2328,22 +2334,38 @@ def run_companion_chat_turn(
     # V3-O.12 #F2: strip LLM 自編 self-reinforce 句式 (見 _strip_self_reinforce_phrases doc).
     if not record_only and final_response:
         final_response = _strip_self_reinforce_phrases(final_response)
+    # V3-O.13 #CR3 (2026-06-04 user): 偵測 LLM 自編 catchphrase 重複 ≥3 次 → sub_task LLM 改寫.
+    # 解 G6b 無法 strip 的「自編招牌句」(沒固定 marker), 例「我要拿澆花壺敲你」連續 5 turn 出現.
+    # 只在重複達門檻才 call LLM (大多 turn 不會觸發, 不阻塞 nominal case).
+    if not record_only and final_response:
+        try:
+            from agent_memory.companion.catchphrase_dedup import maybe_rewrite_if_repeated
+            final_response = maybe_rewrite_if_repeated(
+                vault_root, final_response, request.user_id,
+            )
+        except Exception:
+            pass  # 改寫失敗就保留原 reply, 不破對話
     resp.pipeline_steps_done.append(166)
     _mark_step_time(_step_timings, "step16_6_tics")
 
     # ─── Step 17: Memory Write Gate (raw_event user+bot + episodic + injection_detected) ───
     event_id = str(uuid.uuid4())
     now_iso = datetime.now(timezone.utc).isoformat()
+    # V3-O.13 #DEDUP (2026-06-04 user): aggregator flush 真 turn 不寫 user raw_event,
+    # 因為 record_only path 已個別寫過每條 user message. 若雙寫, bot 反思 history 看 user
+    # 「同句重複」, self_modification 誤判「owner 反覆說相同訊息」反思誤導.
+    # 判斷: raw_content 有值 + record_only=False = aggregator flush → skip 寫.
+    # record_only=True (個別記錄路徑) OR raw_content 空 (@mention 普通真 turn) → 仍寫.
+    _skip_user_raw = bool(request.raw_content) and (not record_only)
     with open_companion_db(vault_root) as conn:
-        # V3-E1 Bug 12: 寫 user raw_event
-        conn.execute(
-            "INSERT OR IGNORE INTO raw_events (event_id, user_id, session_id, actor, content, source, injection_risk, created_at) VALUES (?, ?, ?, 'user', ?, ?, ?, ?)",
-            # V3-O.12 #F3: raw_events.content 寫純 user text (raw_content 來自 transport_ingest aggregator).
-            # 留空 fallback request.message. 阻斷「[本輪列隊彙整]」marker 進 raw_events → history → reflection 的 self-reinforce loop.
-            (event_id, request.user_id, request.session_id,
-             (request.raw_content or request.message),
-             request.channel_type, injection_risk, now_iso),
-        )
+        # V3-E1 Bug 12: 寫 user raw_event (V3-O.13 #DEDUP 條件 skip aggregator flush)
+        if not _skip_user_raw:
+            conn.execute(
+                "INSERT OR IGNORE INTO raw_events (event_id, user_id, session_id, actor, content, source, injection_risk, created_at) VALUES (?, ?, ?, 'user', ?, ?, ?, ?)",
+                (event_id, request.user_id, request.session_id,
+                 (request.raw_content or request.message),
+                 request.channel_type, injection_risk, now_iso),
+            )
         # V3-E1 Bug 12: 也寫 bot raw_event (給連續對話 history 用)
         # V3-O.11 階段2: record_only 不寫 bot raw_event (回覆由彙整層生成後, 用 append_bot_reply_event 補寫)
         if not record_only:
