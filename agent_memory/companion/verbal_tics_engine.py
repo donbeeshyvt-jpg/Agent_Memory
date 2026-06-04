@@ -5,7 +5,15 @@
 真人口頭禪不是規則式套用每句, 是「情緒/疲勞/興奮自然浮現」.
 本模組: tic 池 + trigger_condition (affect/balance/emotion 連動) + probability 觸發.
 
-SOUL.md verbal_tics 區塊範例:
+V3-O.13.3 #G5-tics (2026-06-04): G5 化 — 廢除 hardcoded default tic pool, 改交給 main LLM
+動態生成符合當下情緒的語氣詞 / 口頭禪 (對齊 V3-O.12 #G5-lite 對 inner_monologue 的做法).
+本模組保留 select_tic / record_tic_usage / cooldown / DB schema 等 plumbing (給 SOUL.md
+可 override 載入 + audit trail), 只把 _DEFAULT_TICS 清空 — 空 pool 時 select_tic 一律
+回 tic=None, caller (step 16.6) 不 inject, 後續語氣詞完全在 main_chat reply 內由 LLM
+依當下 affect/emotion/balance 自然生成. 反固定樣板 instruction 加在
+_render_final_generation_instruction.
+
+SOUL.md verbal_tics 區塊範例 (未來若要 user-defined 自訂池仍可載入):
   - tic: "ㄜㄜㄜ"
     trigger: balance.playfulness>0.5, joy>0.6
     base_probability: 0.3
@@ -46,19 +54,13 @@ class TicDefinition:
     trigger_affect_arousal_min: float = 0.0
 
 
-# Phase 1 default tics (對應「主播風」persona, SOUL.md 可 override)
-_DEFAULT_TICS: tuple[TicDefinition, ...] = (
-    TicDefinition(tic="ㄜㄜㄜ", base_probability=0.3, cooldown_turns=5,
-                  trigger_balance_playfulness_min=0.5, trigger_emotion_joy_min=0.6),
-    TicDefinition(tic="哦哦哦", base_probability=0.25, cooldown_turns=5,
-                  trigger_emotion_joy_min=0.5, trigger_affect_arousal_min=0.5),
-    TicDefinition(tic="欸欸我想想", base_probability=0.35, cooldown_turns=8,
-                  trigger_affect_uncertainty_min=0.5),
-    TicDefinition(tic="嗯哼", base_probability=0.2, cooldown_turns=3,
-                  trigger_emotion_joy_min=0.5),
-    TicDefinition(tic="啊啊啊不對", base_probability=0.4, cooldown_turns=8,
-                  trigger_affect_uncertainty_min=0.5, trigger_affect_arousal_min=0.4),
-)
+# V3-O.13.3 #G5-tics (2026-06-04): G5 化 — 廢除 hardcoded default tic pool.
+# 原 5 條 ("ㄜㄜㄜ"/"哦哦哦"/"欸欸我想想"/"嗯哼"/"啊啊啊不對") 改交給 main_chat LLM
+# 依當下 affect/emotion/balance 自然生成 (對齊 V3-O.12 #G5-lite inner_monologue 做法).
+# 反固定 instruction 加在 _render_final_generation_instruction 「反固定口頭禪 / 語氣詞」段.
+# Pool 留空 → select_tic 永遠回 tic=None → step 16.6 不 inject → reply 內語氣詞由 LLM 出.
+# SOUL.md 載入未來若要 user-defined 自訂池, 可呼叫 select_tic(tics=...) 顯式傳入 override.
+_DEFAULT_TICS: tuple[TicDefinition, ...] = ()
 
 
 @dataclass(slots=True)

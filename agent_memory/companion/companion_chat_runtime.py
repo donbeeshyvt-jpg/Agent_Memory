@@ -1008,6 +1008,12 @@ def _render_final_generation_instruction(decision: str, *, modifier_suppression:
         「(還記得我們的 X 哏嗎)」「(自我提示: X)」「(內部: X)」「(XXX 自我提示)」
       若 retrieved_second_brain_context 或 recent_dialogue 顯示有共同記憶 / inside joke 可呼應,
       自然融入對話脈絡 (例如直接引用情境名稱、或續寫笑點), 不要用括號 meta 註解.
+    反固定口頭禪 / 語氣詞 (V3-O.13.3 #G5-tics, 違反就失格):
+      過去版本曾用固定 5 條 hardcoded 口頭禪 (現已全廢, 不准再固定套同一字串).
+      若當下情緒適合語氣詞 / 口頭禪 / 反應詞 (例如 affect.uncertainty 高 → 猶豫詞,
+      affect.arousal 高 → 驚嘆 / 反應詞, balance.playfulness 高 → 玩鬧腔), 請依
+      當下對話脈絡與情緒自然產出, 每次不一樣, 不要套用同一個固定字串.
+      原則: 語氣詞是「情緒自然浮現」, 不是規則套用; 寧可沒有, 也不要 hardcoded 重複.
     反招牌句重複 (V3-O.13 #CR2):
       收尾前自我檢查: 如果本次 reply 結尾的招牌威脅 / 招牌動作 / 招牌詞組
       跟 recent_dialogue 內最近 3 次 reply 結尾相同或極相似, 用幽默口吻換個說法表達.
@@ -1324,10 +1330,15 @@ def _build_companion_system_prompt(
 
     body = "\n\n".join(sections)
 
-    # V3-O.11+ max_packet_tokens skeleton (user 2026-06-02 BUG 修):
-    # 配置孤兒接線 — 讀 config.llm.main_chat.max_packet_tokens, 超過時 WARN log.
-    # 用 len(body) // 2 粗估 token 數 (中文 1 token ≈ 2 char), 無 tiktoken 依賴.
-    # 實際截斷邏輯 TODO future (按 section priority 砍: recent_history > knowledge > viewer_dynamic ...).
+    # V3-O.13.1 (2026-06-04 user 拍板「不要主動截斷, 結構壓縮層自治」):
+    # max_packet_tokens 是 ops sentinel 不是 enforcement gate. 超過 → 印 WARN log 監測,
+    # 不主動砍 sections. design rationale:
+    #   1. input 對 main_chat (DeepSeek V4 Pro / V4 Flash) 成本極低 (output 才是主成本).
+    #   2. 結構已自治壓縮: recent_dialogue spec §7.10 近 12 turn 硬上限 / audience_writer
+    #      MAX_CONSOLIDATION_TURNS=10 / MAX_REFLECTION_EVENTS=8 / memory_router 4-layer
+    #      L3 daily + L4 weekly curator 把舊對話濃縮成摘要. prompt 不會無限膨脹.
+    #   3. user 反覆強調「資料正確 > 速度/成本」, 主動截斷會砍掉壓縮層產出的關鍵脈絡.
+    # 若日誌真出現極端膨脹 (>100k tok), 才考慮升級壓縮層, 不在這層砍.
     try:
         if vault_root is not None:
             import yaml as _yaml_mpt
@@ -1340,8 +1351,9 @@ def _build_companion_system_prompt(
                     if _est_tokens > _max_pt:
                         import sys as _sys_mpt
                         _sys_mpt.stderr.write(
-                            f"[WARN max_packet_tokens] prompt est≈{_est_tokens} tok > config max={_max_pt} "
-                            f"(body_chars={len(body)}). 截斷未實作, prompt 原樣送出.\n"
+                            f"[WARN max_packet_tokens] prompt est~{_est_tokens} tok > config max={_max_pt} "
+                            f"(body_chars={len(body)}). by design: 不主動截斷, prompt 原樣送出. "
+                            f"若反覆極端膨脹請追壓縮層 (memory_router / audience_writer / recent_dialogue cap).\n"
                         )
                         _sys_mpt.stderr.flush()
     except Exception:

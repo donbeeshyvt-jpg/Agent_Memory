@@ -8,6 +8,7 @@ import random
 import re
 import sys
 import time as _relay_time  # V3-O.9 #2: end-to-end timing
+from concurrent.futures import ThreadPoolExecutor  # V3-O.13.2: 隔離 flush_check executor
 from typing import Any
 from urllib import error as url_error
 from urllib import request as url_request
@@ -198,6 +199,22 @@ class BridgeRelayClient(discord.Client):
         #   key=channel_id(int) → value=channel_type(str, "dm"/"public_text_channel")
         self._pending_channels: dict[int, str] = {}
         self._pending_lock = asyncio.Lock()
+        # V3-O.13.2 relay 健壯性升級 (對齊 doc §5 優先 2):
+        # (a) 拆獨立 executor — flush_check 不再跟主 reply HTTP 搶 default executor thread.
+        # (b) per-channel circuit breaker — 連續 N 次失敗後 exp backoff cooldown, 避免雪崩.
+        # (c) in-flight 防重複 dispatch — 上輪還沒回來的 channel 不再 fire 新 task.
+        self._flush_executor: ThreadPoolExecutor = ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="bridge_flush",
+        )
+        # flush_check 用較短 timeout (60s) — 它只是 should_flush 詢問, 不該跟主 LLM 240s 平起平坐.
+        self._flush_check_timeout_s: float = 60.0
+        # 連續失敗 ≥3 次才開始 exp backoff. backoff = base * 2^(fail - threshold), cap @ max.
+        self._FLUSH_FAIL_THRESHOLD: int = 3
+        self._FLUSH_BACKOFF_BASE_S: float = 5.0
+        self._FLUSH_BACKOFF_MAX_S: float = 60.0
+        self._flush_failure_state: dict[int, dict[str, float]] = {}
+        # 上輪 task 還在跑的 channel: 避免本輪重複 dispatch 把 executor 占爆.
+        self._flush_in_flight: set[int] = set()
 
     async def _post_streaming(self, loop, url: str, payload: dict, source_message) -> dict:
         """V3-O.10 #26: SSE streaming — 收 token，定期用 message.edit() 更新 Discord."""
@@ -332,12 +349,18 @@ class BridgeRelayClient(discord.Client):
 
     @tasks.loop(seconds=3.0)
     async def _aggregator_flush_loop(self) -> None:
-        """V3-O.11 階段4: 定期問 bridge「該頻道彙整佇列是否該 flush」。
+        """V3-O.11 階段4 → V3-O.13.2 健壯性升級: 定期問 bridge「該頻道彙整佇列是否該 flush」。
 
         對每個有 pending 的頻道 POST {_aggregator_flush_check, session_id, channel_type,
         channel_id}; bridge 回 aggregated=true 且 response 非空 → channel.send(response)
         (發到頻道, 不 reply 特定訊息)。debounce 時機由 bridge should_flush 判斷,
         relay 只負責定期詢問。channel.send 失敗只記 stderr, 不可 crash loop。
+
+        V3-O.13.2 升級點:
+        (a) 拆 _flush_one_channel — 每 channel 在獨立 ThreadPoolExecutor + 獨立 task 跑,
+            sequential → fire-and-forget concurrent. 一個慢 channel 不再卡其他.
+        (b) per-channel circuit breaker — 連續失敗 N 次後 exp backoff 不再 dispatch.
+        (c) in-flight 防重複 — 上輪未回的 channel 本輪 skip, 避免 executor 雪崩.
         """
         # snapshot 目前 pending channels (複製出來避免持鎖做 HTTP/send)
         try:
@@ -348,40 +371,80 @@ class BridgeRelayClient(discord.Client):
         if not pending_items:
             return
 
-        loop = asyncio.get_running_loop()
+        now = _relay_time.perf_counter()
         for channel_id, channel_type in pending_items:
-            payload = {
-                "_aggregator_flush_check": True,
-                "session_id": f"discord-{channel_id}",
-                "channel_type": channel_type,
-                "channel_id": str(channel_id),
-            }
-            url = f"{self.bridge_url}/webhook/discord"
+            # V3-O.13.2 (c): in-flight 跳過 (上輪 task 還沒回來)
+            if channel_id in self._flush_in_flight:
+                continue
+            # V3-O.13.2 (b): circuit breaker — 在 backoff cooldown 內 skip
+            st = self._flush_failure_state.get(channel_id)
+            if st and st.get("next_allowed_at", 0.0) > now:
+                continue
+            # fire-and-forget; _flush_one_channel 自己管 in_flight set + failure state
+            self._flush_in_flight.add(channel_id)
+            asyncio.create_task(self._flush_one_channel(channel_id, channel_type))
+
+    async def _flush_one_channel(self, channel_id: int, channel_type: str) -> None:
+        """V3-O.13.2: 單 channel 的 flush_check + send 流程, 跑在 dedicated executor。
+
+        - 用 self._flush_executor (max_workers=4) 隔離主 reply HTTP 的 default executor.
+        - 用 self._flush_check_timeout_s (60s) 較短 timeout (vs 主 reply 240s).
+        - 成功: reset failure state.
+        - 失敗: fail_count++; 連續 ≥ threshold 時觸發 exp backoff (cap 60s).
+        - 不論成敗一定從 _flush_in_flight 移除 (finally), 避免 stuck.
+        """
+        loop = asyncio.get_running_loop()
+        payload = {
+            "_aggregator_flush_check": True,
+            "session_id": f"discord-{channel_id}",
+            "channel_type": channel_type,
+            "channel_id": str(channel_id),
+        }
+        url = f"{self.bridge_url}/webhook/discord"
+        try:
             try:
                 result = await loop.run_in_executor(
-                    None, _post_json, url, payload, self.timeout_s
+                    self._flush_executor, _post_json, url, payload, self._flush_check_timeout_s,
                 )
             except Exception as exc:  # noqa: BLE001
-                # bridge 暫時不可用 → 保留 pending, 下個 tick 再試 (不 crash loop)
-                print(
-                    f"[ERR] aggregator flush_check failed chan={channel_id}: "
-                    f"{type(exc).__name__}: {exc}",
-                    file=sys.stderr, flush=True,
+                # V3-O.13.2 (b): 累積失敗 → exp backoff (從 threshold 次後啟動)
+                st = self._flush_failure_state.setdefault(
+                    channel_id, {"fail_count": 0.0, "next_allowed_at": 0.0},
                 )
-                continue
+                st["fail_count"] = float(st.get("fail_count", 0.0)) + 1.0
+                fc = int(st["fail_count"])
+                if fc >= self._FLUSH_FAIL_THRESHOLD:
+                    backoff = min(
+                        self._FLUSH_BACKOFF_MAX_S,
+                        self._FLUSH_BACKOFF_BASE_S * (2 ** (fc - self._FLUSH_FAIL_THRESHOLD)),
+                    )
+                    st["next_allowed_at"] = _relay_time.perf_counter() + backoff
+                    print(
+                        f"[WARN] flush_check chan={channel_id} consecutive fail={fc}, "
+                        f"backoff {backoff:.0f}s. {type(exc).__name__}: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
+                else:
+                    print(
+                        f"[ERR] aggregator flush_check failed chan={channel_id} (fail={fc}): "
+                        f"{type(exc).__name__}: {exc}",
+                        file=sys.stderr, flush=True,
+                    )
+                return
+
+            # 成功 → reset failure state (從 cooldown 解除)
+            self._flush_failure_state.pop(channel_id, None)
 
             if not result.get("aggregated"):
-                # bridge 說還沒到 flush 時機 → 保留 pending, 繼續等
-                continue
+                return
 
-            # 彙整達標: bridge 已 drain 全佇列 (per-vault 單例) → 本頻道 pending 已消化。
+            # 彙整達標: bridge 已 drain 全佇列 → 本頻道 pending 已消化。
             async with self._pending_lock:
                 self._pending_channels.pop(channel_id, None)
 
             response_text = str(result.get("response", "")).strip()
             if not response_text:
-                # aggregated=true 但無文字 (生成失敗) → 不發, 已 drain 不重試。
-                continue
+                return
             if len(response_text) > 1800:
                 response_text = response_text[:1800] + "\n...(truncated)"
 
@@ -403,7 +466,7 @@ class BridgeRelayClient(discord.Client):
                         f"{type(exc).__name__}: {exc}",
                         file=sys.stderr, flush=True,
                     )
-                    continue
+                    return
             try:
                 await channel.send(response_text)
             except Exception as exc:  # noqa: BLE001
@@ -412,6 +475,9 @@ class BridgeRelayClient(discord.Client):
                     f"{type(exc).__name__}: {exc}",
                     file=sys.stderr, flush=True,
                 )
+        finally:
+            # 不論成敗一定釋放 in_flight 槽位
+            self._flush_in_flight.discard(channel_id)
 
     @_aggregator_flush_loop.before_loop
     async def _before_aggregator_flush_loop(self) -> None:
