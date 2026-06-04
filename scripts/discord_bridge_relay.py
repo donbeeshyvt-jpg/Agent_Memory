@@ -512,12 +512,21 @@ class BridgeRelayClient(discord.Client):
                 viewer_prefix = m.group(1).strip()
                 effective_user_id = f"ai-viewer-{_make_viewer_slug(viewer_prefix)}"
 
+        # V3-O.13 #ORD: 帶上 discord server 端 timestamp (snowflake-based) 給 aggregator 排序.
+        # 用 message.created_at (discord server 收到時間, monotonic per channel) 而不是
+        # relay 收到時間 → 修「server→relay 路徑 reorder」(client→server 段無解).
+        try:
+            _src_ts_iso = message.created_at.isoformat()
+        except Exception:
+            _src_ts_iso = ""
+
         payload = {
             "content": text,
             "is_mention": bool(me is not None and me in message.mentions),
             "channel_id": str(message.channel.id),
             "guild_id": guild_id,
             "channel_kind": ("dm" if not guild_id else "public_text_channel"),
+            "source_created_at": _src_ts_iso,  # V3-O.13 #ORD: discord server timestamp 給 aggregator 排序用
             "author": {
                 "id": effective_user_id,
                 "real_id": real_author_id,

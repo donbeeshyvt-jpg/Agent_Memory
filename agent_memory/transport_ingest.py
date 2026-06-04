@@ -653,7 +653,17 @@ def _run_companion_transport_event(
     if not is_mention:
         try:
             _agg = _get_aggregator_for(vault_root)
-            _agg.add_message(req.channel_id, req.user_id, turn.display_name or "", req.message)
+            # V3-O.13 #ORD (2026-06-04 user): 從 payload 取來源平台 timestamp (discord
+            # message.created_at ISO) 給 aggregator 排序用. 缺/parse 失敗 → 0.0 退化用收到時間.
+            _src_ts = 0.0
+            _src_iso = str(payload.get("source_created_at") or "").strip()
+            if _src_iso:
+                try:
+                    from datetime import datetime as _dt
+                    _src_ts = _dt.fromisoformat(_src_iso.replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    _src_ts = 0.0
+            _agg.add_message(req.channel_id, req.user_id, turn.display_name or "", req.message, source_ts=_src_ts)
             aggregation_held = True
         except Exception:
             aggregation_held = False
