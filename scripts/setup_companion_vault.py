@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -124,6 +125,7 @@ def setup_companion_vault(
     owner_label: str = "我的中之人",
     owner_directive_weight: float = 0.85,
     soul_path: str = "00_System_Core/00.06_Companion_SOUL.md",
+    channel_ids: list[str] | None = None,
 ) -> None:
     vault = Path(vault).expanduser().resolve()
     vault.mkdir(parents=True, exist_ok=True)
@@ -252,6 +254,27 @@ def setup_companion_vault(
             config_yaml.write_text(new_text, encoding="utf-8")
             print(f"[step 3b] companion_config.yaml.owner 對齊 (discord_user_id={owner_user_id})")
 
+    # ⭐ V3-O.13.6 (2026-06-04 user 拍板): env-driven channel_ids 寫進 yaml
+    # 對齊 user「測試環境也用 .env 帶進來的值, 創大腦時就把 channel 設好」.
+    # bootstrap 模板出來是空的 (channel_ids: [] 對齊 user「出來時也要是空的」), 此處用
+    # --channel-id (預設讀 env DISCORD_CHANNEL_ID_COMPANION) 填回去. prod 同流程, 換 prod env.
+    if channel_ids and config_yaml.exists():
+        import re
+        text = config_yaml.read_text(encoding="utf-8")
+        # 過濾空字串
+        valid_ids = [c.strip() for c in channel_ids if c and c.strip()]
+        if valid_ids:
+            joined = ", ".join(f'"{c}"' for c in valid_ids)
+            new_text = re.sub(
+                r'(\n\s*channel_ids:\s*)\[\]([ \t]*#[^\n]*)?',
+                lambda m: f'{m.group(1)}[{joined}]{m.group(2) or ""}',
+                text,
+                count=1,
+            )
+            if new_text != text:
+                config_yaml.write_text(new_text, encoding="utf-8")
+                print(f"[step 3c] companion_config.yaml.channels.discord.channel_ids 對齊 ({valid_ids})")
+
     # 建 Companion SOUL.md placeholder (使用者要去填角色設定)
     soul_full = vault / soul_path
     if not soul_full.exists():
@@ -285,21 +308,38 @@ def setup_companion_vault(
 
 
 def main(argv: list[str] | None = None) -> int:
+    # V3-O.13.6 (2026-06-04 user 拍板): env 是「測試/prod 環境參數的單一來源」.
+    # CLI args 仍可顯式 override; 沒給就讀 env (COMPANION_OWNER_USER_ID / DISCORD_CHANNEL_ID_COMPANION).
     parser = argparse.ArgumentParser(description="V3 companion vault setup")
     parser.add_argument("--vault", required=True, help="vault 路徑 (e.g. SecondBrains/companion_test)")
-    parser.add_argument("--owner-user-id", required=True,
-                        help="Owner Discord user id (e.g. 123456789012345678)")
+    parser.add_argument("--owner-user-id",
+                        default=os.getenv("COMPANION_OWNER_USER_ID", "").strip(),
+                        help="Owner Discord user id. 預設讀 env COMPANION_OWNER_USER_ID.")
     parser.add_argument("--owner-label", default="我的中之人",
                         help="Owner 標籤 (e.g. 我的爸爸 / 我的中之人)")
     parser.add_argument("--owner-directive-weight", type=float, default=0.85,
                         help="Owner directive 接受權重 (0.5-0.95, default 0.85)")
+    parser.add_argument("--channel-id", action="append", default=None,
+                        help="Discord channel id to write into vault config. Repeatable. "
+                             "預設讀 env DISCORD_CHANNEL_ID_COMPANION (單頻道).")
     args = parser.parse_args(argv)
+
+    if not args.owner_user_id:
+        parser.error("--owner-user-id required (or set env COMPANION_OWNER_USER_ID)")
+
+    # channel_ids: CLI 優先, 沒給就讀 env (V3-O.13.6 env-driven default)
+    channel_ids = list(args.channel_id) if args.channel_id else []
+    if not channel_ids:
+        _env_ch = os.getenv("DISCORD_CHANNEL_ID_COMPANION", "").strip()
+        if _env_ch:
+            channel_ids = [_env_ch]
 
     setup_companion_vault(
         vault=Path(args.vault),
         owner_user_id=args.owner_user_id,
         owner_label=args.owner_label,
         owner_directive_weight=args.owner_directive_weight,
+        channel_ids=channel_ids,
     )
     return 0
 
