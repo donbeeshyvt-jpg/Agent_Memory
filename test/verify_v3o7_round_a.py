@@ -67,36 +67,24 @@ def test_rc1_viewer_profile_written():
     return True
 
 
-# ─── RC2: _make_viewer_slug CJK 不碰撞 ───
+# ─── RC2 (V3-O.13.5 翻轉): AI viewer pool 模擬路徑已淨化, 驗證 relay 不再有 _make_viewer_slug ───
+# 原 V3-O.7 RC2 測試 CJK slug 不碰撞 — 屬「single-bot 模擬多 viewer」hack 的支援 code.
+# V3-O.13.5 user 拍板「測試/正式都不用」全淨化, 朋友卡只收真實 Discord 用戶真實互動.
+# 本 test 翻轉成 regression assert: 確保 _make_viewer_slug / ai-viewer- prefix / hashlib import
+# 在 relay 內已徹底移除, 將來若有誤加回去會被本 test 擋下.
 def test_rc2_slug_no_collision():
-    # 直接測試 slug 邏輯
-    def _make_viewer_slug(name: str) -> str:
-        ascii_part = re.sub(r"[^A-Za-z0-9._-]", "", name)[:12]
-        hash_suffix = hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]
-        return f"{ascii_part}-{hash_suffix}" if ascii_part else f"v-{hash_suffix}"
-
-    slug_a = _make_viewer_slug("小米奇")
-    slug_b = _make_viewer_slug("小精靈")
-    slug_alice = _make_viewer_slug("Alice")
-    slug_a2 = _make_viewer_slug("小米奇")  # same as slug_a
-
-    assert slug_a != slug_b, f"RC2 FAIL: 小米奇 == 小精靈 ({slug_a})"
-    assert slug_a == slug_a2, f"RC2 FAIL: same name gives different slugs"
-    assert len(slug_a) <= 25, f"RC2: slug too long: {slug_a!r}"
-    # ASCII part should be preserved for ASCII names
-    assert slug_alice.startswith("Alice-"), f"RC2 FAIL: Alice slug missing ASCII part: {slug_alice!r}"
-    # Pure CJK → starts with "v-"
-    assert slug_a.startswith("v-"), f"RC2 FAIL: pure CJK should start with v-: {slug_a!r}"
-
-    # relay 模組真的用了 _make_viewer_slug
     relay_path = pathlib.Path(__file__).parent.parent / "scripts" / "discord_bridge_relay.py"
     src = relay_path.read_text(encoding="utf-8")
-    assert "_make_viewer_slug" in src, "RC2 FAIL: _make_viewer_slug not in relay"
-    assert "ai-viewer-{_make_viewer_slug" in src, "RC2 FAIL: relay not using _make_viewer_slug"
-    # hashlib import in relay
-    assert "import hashlib" in src, "RC2 FAIL: hashlib not imported in relay"
-
-    print(f"  RC2 PASS: 小米奇={slug_a!r} 小精靈={slug_b!r} Alice={slug_alice!r}")
+    # 淨化 regression: 這 4 個 substring 都應該已不在 relay
+    forbidden = [
+        ("_make_viewer_slug", "RC2 (V3-O.13.5): _make_viewer_slug 應已淨化, 不該在 relay"),
+        ("ai-viewer-", "RC2 (V3-O.13.5): ai-viewer-<slug> prefix 應已淨化, 不該在 relay"),
+        ("allow_bot_author_ids = set", "RC2 (V3-O.13.5): allow_bot_author_ids state 應已淨化"),
+        ("self.split_by_display_name", "RC2 (V3-O.13.5): split_by_display_name flag 應已淨化"),
+    ]
+    for needle, msg in forbidden:
+        assert needle not in src, msg
+    print("  RC2 PASS (V3-O.13.5 淨化 regression): AI viewer pool 模擬路徑徹底移除")
     return True
 
 

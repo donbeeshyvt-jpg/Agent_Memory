@@ -6,9 +6,10 @@
 自動讀取:
   - channels.discord.bot_token_env → 從 env 撈 token
   - channels.discord.channel_id_env → 從 env 撈 channel_id
-  - channels.discord.allow_bot_author_ids
-  - channels.discord.split_by_display_name
   - channels.discord.relay_timeout_s
+
+V3-O.13.5: AI viewer pool 模擬路徑 (allow_bot_author_ids / split_by_display_name)
+已完全淨化, 不再讀也不再傳給 relay.
 """
 
 from __future__ import annotations
@@ -58,9 +59,7 @@ def main() -> None:
     channel_ids = [str(c).strip() for c in (dc.get("channel_ids") or []) if str(c).strip()]
     mention_only_ids = [str(c).strip() for c in (dc.get("mention_only_channel_ids") or []) if str(c).strip()]
 
-    # 讀其他設定
-    allow_bots = dc.get("allow_bot_author_ids", []) or []
-    split_by_name = bool(dc.get("split_by_display_name", True))
+    # 讀其他設定 (V3-O.13.5: AI viewer pool 模擬路徑已淨化, 不再讀 allow_bot_author_ids / split_by_display_name)
     relay_timeout = int(dc.get("relay_timeout_s", 240))
 
     bridge_port = args.bridge_port
@@ -91,10 +90,7 @@ def main() -> None:
         relay_cmd += ["--channel-id", channel_id]
     for mid in mention_only_ids:
         relay_cmd += ["--mention-only-channel-id", mid]
-    if split_by_name:
-        relay_cmd += ["--split-by-display-name"]
-    for bot_id in allow_bots:
-        relay_cmd += ["--allow-bot-author", str(bot_id)]
+    # V3-O.13.5: --split-by-display-name / --allow-bot-author 已淨化, 不再傳給 relay.
 
     print(f"[launch] vault: {vault}")
     print(f"[launch] bridge: {' '.join(bridge_cmd)}")

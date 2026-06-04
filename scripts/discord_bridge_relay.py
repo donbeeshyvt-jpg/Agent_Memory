@@ -15,7 +15,6 @@ from urllib import request as url_request
 
 import discord
 from discord.ext import tasks
-import hashlib
 
 
 def _load_channels_from_vault_config(vault_root_str: str) -> dict:
@@ -23,10 +22,11 @@ def _load_channels_from_vault_config(vault_root_str: str) -> dict:
 
     讓 relay 不必硬塞 --channel-id, user 改 vault config 就能切換頻道.
     優先序: channel_ids (多頻道清單) > channel_id_env (向後相容單頻道 env name) -> os.environ.
-    mention_only_channel_ids / allow_bot_author_ids 同步讀.
+    mention_only_channel_ids 同步讀.
     錯誤/缺檔/缺 yaml -> 空 dict + 警告, 不阻擋 relay 啟動.
+    (V3-O.13.5: allow_bot_author_ids 路徑已淨化, 不再讀.)
     """
-    out: dict = {"channel_ids": set(), "mention_only": set(), "allow_bot_author": set()}
+    out: dict = {"channel_ids": set(), "mention_only": set()}
     if not vault_root_str:
         return out
     try:
@@ -63,24 +63,9 @@ def _load_channels_from_vault_config(vault_root_str: str) -> dict:
                 out["mention_only"].add(int(str(x).strip()))
             except (ValueError, TypeError):
                 pass
-        for x in (dc.get("allow_bot_author_ids") or []):
-            try:
-                out["allow_bot_author"].add(int(str(x).strip()))
-            except (ValueError, TypeError):
-                pass
     except Exception as e:
         print(f"[WARN] config-fallback parse failed: {e}")
     return out
-
-
-# V3-O.7 RC2: CJK viewer ID 碰撞修正.
-# 原本 f"ai-viewer-{viewer_prefix}" 直接用 CJK prefix → sanitize_component 剝掉全部 CJK
-# → 所有中文名觀眾塌陷成同一個 "ai-viewer" ID.
-# 改用 ASCII slug (最多 12 字元) + SHA-1 hash suffix (6 字元) 確保唯一且可讀.
-def _make_viewer_slug(name: str) -> str:
-    ascii_part = re.sub(r"[^A-Za-z0-9._-]", "", name)[:12]
-    hash_suffix = hashlib.sha1(name.encode("utf-8")).hexdigest()[:6]
-    return f"{ascii_part}-{hash_suffix}" if ascii_part else f"v-{hash_suffix}"
 
 
 # V3-O.6.2 #9 (user 2026-05-28): bridge timeout / HTTP error 友善訊息池.
@@ -162,8 +147,6 @@ class BridgeRelayClient(discord.Client):
         enable_response_reaction: bool,
         enable_message_content_intent: bool,
         mention_only_channels: set[int],
-        allow_bot_author_ids: set[int] | None = None,
-        split_by_display_name: bool = False,
         vault_root: "Path | None" = None,
     ) -> None:
         from pathlib import Path as _Path
@@ -186,14 +169,10 @@ class BridgeRelayClient(discord.Client):
         self.enable_response_reaction = enable_response_reaction
         self.enable_message_content_intent = bool(enable_message_content_intent)
         self.mention_only_channels = set(mention_only_channels)
-        # V3-D7 2026-05-26: bot author whitelist (給 AI 模擬觀眾 用)
-        # 自己 (self.user.id) 一律 ignore (避免無限 loop), 白名單內其他 bot 可被處理
-        self.allow_bot_author_ids = set(allow_bot_author_ids or set())
-        # V3-O.6 #5 (user 2026-05-28): AI viewer pool 用單個 bot 帳號發多 viewer prefix 訊息
-        # ("tako_yaki_8: 夜更かしして見てる" / "akari_chan: 笑い声かわいい"...).
-        # split flag 開時, 對 bot author 訊息 parse 開頭 <name>: → 用 name 當 effective user_id
-        # 對齊第 4 輪測試發現「觀眾 pool 62 turn 全部累在 author_id=15026... 學不到個人」
-        self.split_by_display_name = bool(split_by_display_name)
+        # V3-O.13.5 (2026-06-04 user 拍板「測試/正式都不用」): 全淨化 AI viewer pool 模擬路徑.
+        # 原 V3-D7 bot author whitelist + V3-O.6 #5 split-by-display-name 已移除 — 真人/真 bot
+        # 各有自己的 Discord author.id, 不再需要 prefix hack 解 ID 衝突. 對齊 V3-O.6 #5 當時拍板
+        # 「下次以 DC ID」收尾. 朋友卡只收真實 Discord 用戶的真實互動, 不再被 AI 模擬污染.
         # V3-O.11 階段4: viewer 訊息被 bridge held (進彙整佇列, 不個別回) 時,
         # 記下該頻道; 背景 flush loop 定期問 bridge 是否該發統一回覆。
         #   key=channel_id(int) → value=channel_type(str, "dm"/"public_text_channel")
@@ -496,14 +475,14 @@ class BridgeRelayClient(discord.Client):
     async def on_message(self, message: discord.Message) -> None:
         # V3-O.9 #2: end-to-end timing 起點 (從 Discord 收到 message 算)
         _t_recv = _relay_time.perf_counter()
-        # V3-D7 2026-05-26: bot author handling
+        # V3-O.13.5 (淨化 AI viewer pool 後): bot author handling 簡化為「真人 only」.
         # 1. 自己 (self.user) 一律 ignore (避免無限 loop)
-        # 2. 其他 bot: 白名單內過, 不在白名單 ignore
-        # 3. 真人 (author.bot=False) 一律過
+        # 2. 其他任何 bot: 一律 ignore (不再有 AI 模擬觀眾白名單)
+        # 3. 真人 (author.bot=False) 才過
         me = self.user
         if me is not None and message.author.id == me.id:
             return
-        if message.author.bot and message.author.id not in self.allow_bot_author_ids:
+        if message.author.bot:
             return
         if self.allowed_channels and message.channel.id not in self.allowed_channels:
             return
@@ -557,26 +536,12 @@ class BridgeRelayClient(discord.Client):
         except Exception:
             pass
 
-        # V3-O.6 #4+#5: display_name 帶給 bridge.
-        #   #4: owner turn 自學進 .ai/owner_aliases.json (Discord 真實 display_name)
-        #   #5: AI bot viewer pool, parse 訊息開頭 <name>: → 用 name 當 effective user_id
+        # V3-O.6 #4: display_name 帶給 bridge — owner turn 自學進 .ai/owner_aliases.json
+        # (Discord 真實 display_name). (V3-O.6 #5 split-by-display-name 已於 V3-O.13.5 淨化.)
         real_author_id = str(message.author.id)
         effective_user_id = real_author_id
         real_display_name = str(getattr(message.author, "display_name", "") or "").strip()
         viewer_prefix = ""
-        is_whitelisted_bot = bool(
-            getattr(message.author, "bot", False)
-            and message.author.id in self.allow_bot_author_ids
-        )
-        if self.split_by_display_name and is_whitelisted_bot:
-            m = re.match(
-                r"^([A-Za-z0-9_一-鿿぀-ゟ゠-ヿ\-\.]{2,32})\s*[:：]\s*(.*)",
-                text,
-                flags=re.DOTALL,
-            )
-            if m:
-                viewer_prefix = m.group(1).strip()
-                effective_user_id = f"ai-viewer-{_make_viewer_slug(viewer_prefix)}"
 
         # V3-O.13 #ORD: 帶上 discord server 端 timestamp (snowflake-based) 給 aggregator 排序.
         # 用 message.created_at (discord server 收到時間, monotonic per channel) 而不是
@@ -763,16 +728,8 @@ def _parse_args() -> argparse.Namespace:
         help=("Bridge HTTP timeout in seconds. V3-O.6.2: default 90→240 給 LLM lock (120s) + "
               "並行 (env AGENT_MEMORY_LLM_PARALLEL) buffer."),
     )
-    parser.add_argument(
-        "--allow-bot-author", action="append", default=[],
-        help="V3-D7: 允許處理該 bot id 送的訊息 (給 AI 模擬觀眾用, 可重複). 自己一律 ignore."
-    )
-    parser.add_argument(
-        "--split-by-display-name", action="store_true",
-        help=("V3-O.6 #5: 對 --allow-bot-author 內 bot 訊息 parse 開頭 '<name>:' prefix → "
-              "用 name 當 effective user_id (synth 'ai-viewer-<name>'). "
-              "解 AI viewer pool 共用單一 bot 帳號 → 所有觀眾累在同 user_id, 學不到個人."),
-    )
+    # V3-O.13.5: --allow-bot-author + --split-by-display-name 兩 flag 已淨化移除.
+    # 真實 Discord 用戶各有自己的 author.id, 不需要 single-bot prefix hack.
     parser.add_argument("--vault", default="", help="Vault root path (用於寫 .ai/failed_turns.jsonl, V3-O.10 #23)")
     parser.add_argument("--read-reaction", default="\U0001F440", help="Emoji for read-ack on incoming message.")
     parser.add_argument("--processing-reaction", default="\U0001F9E0", help="Emoji while waiting bridge response.")
@@ -815,20 +772,10 @@ def main() -> int:
             print(f"[ERR] invalid mention-only channel id: {text}")
             return 2
 
-    allow_bot_author_ids: set[int] = set()
-    for raw in args.allow_bot_author:
-        text = str(raw).strip()
-        if not text:
-            continue
-        try:
-            allow_bot_author_ids.add(int(text))
-        except ValueError:
-            print(f"[ERR] invalid allow-bot-author id: {text}")
-            return 2
-
-    # V3-O.12 #F-channel: 命令列三 set 任一為空 + 有 --vault → 從 vault config 補.
+    # V3-O.12 #F-channel: 命令列兩 set 任一為空 + 有 --vault → 從 vault config 補.
     # 命令列覆寫 config (最高優先), 兩者都空時 = relay 收全部頻道 (legacy 行為).
     # 讓未來改頻道只動 vault config, 不必碰命令列.
+    # V3-O.13.5: allow_bot_author_ids 路徑已淨化, 不再有對應 fallback.
     if args.vault:
         _fb = _load_channels_from_vault_config(args.vault)
         if not allowed_channels and _fb["channel_ids"]:
@@ -837,9 +784,6 @@ def main() -> int:
         if not mention_only_channels and _fb["mention_only"]:
             mention_only_channels = _fb["mention_only"]
             print(f"[OK] mention-only channels from vault config: {sorted(mention_only_channels)}")
-        if not allow_bot_author_ids and _fb["allow_bot_author"]:
-            allow_bot_author_ids = _fb["allow_bot_author"]
-            print(f"[OK] allow-bot-author ids from vault config: {sorted(allow_bot_author_ids)}")
 
     client = BridgeRelayClient(
         bridge_url=args.bridge_url,
@@ -855,8 +799,6 @@ def main() -> int:
         enable_response_reaction=not bool(args.no_response_reaction),
         enable_message_content_intent=not bool(args.disable_message_content_intent),
         mention_only_channels=mention_only_channels,
-        allow_bot_author_ids=allow_bot_author_ids,
-        split_by_display_name=bool(args.split_by_display_name),
         vault_root=args.vault or None,
     )
     client.run(token)

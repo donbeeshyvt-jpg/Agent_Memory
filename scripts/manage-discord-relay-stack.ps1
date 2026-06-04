@@ -158,8 +158,7 @@ function Build-RelaySpec {
     # 必須 @() wrap 才能保證收到 array 並能用 .Count
     $channelIds = @(To-StringArray -InputObject (Get-OptionalValue -Source $Relay -Name "channel_ids" -Default @()))
     $mentionOnlyIds = @(To-StringArray -InputObject (Get-OptionalValue -Source $Relay -Name "mention_only_channel_ids" -Default @()))
-    # V3-D7 2026-05-26: bot author whitelist (給 V3 companion 接 AI 模擬觀眾用)
-    $allowBotAuthorIds = @(To-StringArray -InputObject (Get-OptionalValue -Source $Relay -Name "allow_bot_author_ids" -Default @()))
+    # V3-O.13.5: AI viewer pool 模擬路徑 (allow_bot_author_ids) 已淨化, 不再讀也不再傳給 relay.
     if ($channelIds.Count -eq 0) {
         throw "relay.channel_ids is required for relay '$name'."
     }
@@ -181,9 +180,7 @@ function Build-RelaySpec {
     foreach ($mid in $mentionOnlyIds) {
         $args += @("--mention-only-channel-id", $mid)
     }
-    foreach ($bid in $allowBotAuthorIds) {
-        $args += @("--allow-bot-author", $bid)
-    }
+    # V3-O.13.5: --allow-bot-author 已淨化, 不再傳給 relay.
     if ($allowDegraded) {
         $args += "--allow-llm-degraded"
     }
@@ -203,7 +200,6 @@ function Build-RelaySpec {
         disable_message_content_intent = $disableMessageIntent
         channel_ids = $channelIds
         mention_only_channel_ids = $mentionOnlyIds
-        allow_bot_author_ids = $allowBotAuthorIds
         args = $args
     }
 }
