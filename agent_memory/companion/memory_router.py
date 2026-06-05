@@ -433,14 +433,21 @@ def _render(ctx: MemoryContext, l2_strs: list[str], l4_strs: list[str]) -> str:
 def render_skills_and_knowledge_sections(
     vault_root, current_message: str = "",
 ) -> dict:
-    """V3-O.15: 給 step15 prompt assembly 用的 40+50 section 內容.
+    """V3-O.15 + V3-O.15.6: 給 step15 prompt assembly 用的 40+50+20 section 內容.
 
-    永遠 emit 結構 — 即使 0 hit 也回 "(本輪未撈到, 但若情境符合可主動 callback)" stub.
-    Returns: {"learned_skills_relevant": str, "knowledge_base_relevant_hits": str}
+    永遠 emit 結構 — 即使 0 hit 也回 stub.
+    V3-O.15.6 加 retrieved_friend_cards (RAG 撈相關 viewer 朋友卡, 標明「查回來的」).
+
+    Returns: {
+        "learned_skills_relevant": str,
+        "knowledge_base_relevant_hits": str,
+        "retrieved_friend_cards": str,  # V3-O.15.6
+    }
     """
     out = {
         "learned_skills_relevant": "(本輪未撈到相關技能, 但若情境符合可主動 callback 學過的東西)",
         "knowledge_base_relevant_hits": "(本輪未撈到相關外部知識, 若需要可主動表示需要查資料)",
+        "retrieved_friend_cards": "(本輪未撈到相關朋友卡, 若你「記得」某人但內容模糊, 可能是因為他不在最近對話)",
     }
     if not current_message or not vault_root:
         return out
@@ -464,6 +471,17 @@ def render_skills_and_knowledge_sections(
             for h in hits:
                 lines.append(f"### {h['path']}\n{h['content']}")
             out["knowledge_base_relevant_hits"] = "\n\n".join(lines)
+    except Exception:
+        pass
+    # ⭐ V3-O.15.6: 20 — friend cards RAG (整張卡, 標明「查回來的」)
+    try:
+        from agent_memory.companion.vault_md_search import retrieve_friend_cards
+        hits = retrieve_friend_cards(vault_root, current_message, top_k=3, max_chars=5000)
+        if hits:
+            lines = []
+            for h in hits:
+                lines.append(f"### {h['path']}\n{h['content']}")
+            out["retrieved_friend_cards"] = "\n\n".join(lines)
     except Exception:
         pass
     return out

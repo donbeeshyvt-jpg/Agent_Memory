@@ -197,6 +197,31 @@ def retrieve_external_knowledge(
     )
 
 
+def retrieve_friend_cards(
+    vault_root: Path, query: str, *, top_k: int = 3, max_chars: int = 5000,
+) -> list[dict]:
+    """V3-O.15.6 (2026-06-06 user 拍板): 撈 20_Audience_Graph 朋友卡 RAG.
+
+    任何對話都 RAG, 不限 owner. 撈到的整張卡 (含 frontmatter + highlight + 彙整 + 反思
+    + 偏好觀察) 進 prompt, 給 LLM 「查回來的記憶」用.
+
+    user 拍板: 「當朋友被叫到時可以撈到該卡片, 真撈到該卡片就可以看跟他的對話大綱, 他可
+    能就可以回答那位朋友的問題. 整張卡近來沒關係, 因為收束 prompt 大容量」.
+
+    撈範圍:
+    - 22_Casual_Viewers/ ✓ 主要
+    - 21_VIP_Viewers/ ✓
+    - 排除 23_Inside_Jokes/ (跨 viewer 共用的, 不是個人卡)
+    """
+    return retrieve_md_by_prefix(
+        vault_root, query,
+        source_path_prefix="20_Audience_Graph",
+        top_k=top_k,
+        max_chars_per_hit=max_chars,
+        exclude_subdirs=["23_Inside_Jokes"],
+    )
+
+
 def retrieve_daily_journal(
     vault_root: Path, query: str = "", *, top_k: int = 2, max_chars: int = 400,
 ) -> list[dict]:

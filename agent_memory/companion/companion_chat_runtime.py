@@ -877,6 +877,22 @@ def _render_retrieved_second_brain_context(
         f'{sk_kb_sections.get("knowledge_base_relevant_hits", "(本輪未撈到)")}\n'
         f']]></knowledge_base_relevant_hits>'
     )
+    # ⭐ V3-O.15.6 (2026-06-06 user 拍板): 朋友卡 RAG section, 永遠 emit, 內含 retrieval_policy
+    # 標明「這是查回來的, 不是腦內鮮明記憶」, 避免 bot 假裝完整 fluent 記憶.
+    items.append(
+        f'  <retrieved_friend_cards mode="raw">\n'
+        f'    <retrieval_policy>\n'
+        f'      這段是「我從朋友卡資料庫查回來的」, 不是腦內鮮明記憶.\n'
+        f'      當你說「我記得 XX」時, 內心應該是「我查到資料寫 XX」.\n'
+        f'      若引用內容回答, 可以坦白說「我有去翻紀錄」「果凍腦袋裡的檔案寫」「我去看了一下朋友卡」.\n'
+        f'      不要假裝這些細節是你腦海中跳出來的, 因為其實是查資料才看到的.\n'
+        f'      若朋友卡內容跟現在對話無關 (本輪未撈到), 就照常聊, 別硬扯.\n'
+        f'    </retrieval_policy>\n'
+        f'    <![CDATA[\n'
+        f'{sk_kb_sections.get("retrieved_friend_cards", "(本輪未撈到)")}\n'
+        f']]>\n'
+        f'  </retrieved_friend_cards>'
+    )
 
     # legacy: 維持原 knowledge_base_rag_hits section (step 11.85 撈的) 也保留
     if knowledge_hits:

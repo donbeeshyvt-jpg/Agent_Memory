@@ -64,21 +64,83 @@ def ensure_skill_candidates_schema(conn) -> None:
 def canonicalize_concept(name: str) -> str:
     """概念名 → canonical id (kebab-case, 限長).
 
+    V3-O.15.6 (2026-06-06 user 拍板): 強化 — 移除常見 prefix + 中英文同義詞 mapping,
+    避免「Discord 標記人」「discord標記人方法」「標記人」「使用者標記」全變不同 concept_id.
+
     「菜單管理」 → "菜單管理"
     「Menu Management」 → "menu-management"
-    「店裡的菜單系統」 → "店裡菜單系統"
+    「Discord 標記人」「discord標記人方法」「標記顯示禮儀」 → 全部 → "標記人"
     """
     if not name:
         return ""
     cleaned = name.strip().lower()
-    # 中文虛字 (字內也算, 中文沒 word boundary)
-    for w in ["的", "了", "在", "是"]:
+
+    # V3-O.15.6: 移除常見 prefix / suffix (不影響核心概念)
+    _STRIP_PREFIXES = [
+        "discord ", "discord-", "discord", "yt ", "youtube ", "line ",
+        "如何", "怎麼", "怎样", "使用者", "用戶",
+    ]
+    _STRIP_SUFFIXES = [
+        " 方法", "方法", " 流程", "流程", " 禮儀", "禮儀",
+        " 系統", "系統", " 機制", "機制", " 規範", "規範",
+    ]
+    for p in _STRIP_PREFIXES:
+        if cleaned.startswith(p):
+            cleaned = cleaned[len(p):]
+    for s in _STRIP_SUFFIXES:
+        if cleaned.endswith(s):
+            cleaned = cleaned[: -len(s)]
+
+    # V3-O.15.6: 同義詞 mapping (簡單 dict, 不用 embedding)
+    # 移除「顯示」「呼叫」等通用動詞 — 不該被誤判同義詞
+    _SYN_MAP = {
+        "mention": "標記",
+        "tag": "標記",
+        "@": "標記",
+        "標注": "標記",
+        "標註": "標記",
+        "menu": "菜單",
+        "餐單": "菜單",
+        "menu management": "菜單管理",
+        "customer card": "客人檔案",
+        "customer profile": "客人檔案",
+        "客戶檔案": "客人檔案",
+    }
+    for k, v in _SYN_MAP.items():
+        cleaned = cleaned.replace(k, v)
+
+    # 中文虛字 (字內也算)
+    for w in ["的", "了", "在", "是", "一", "個", "些"]:
         cleaned = cleaned.replace(w, "")
-    # 英文虛字 (word boundary, 避免把字母從詞中間挖掉, 例 "management" 不該變 "mngement")
-    cleaned = re.sub(r"\b(to|the|a|an|of|in|on|for)\b", "", cleaned)
+    # 英文虛字 (word boundary)
+    cleaned = re.sub(r"\b(to|the|a|an|of|in|on|for|with)\b", "", cleaned)
     cleaned = re.sub(r"[^\w一-鿿_-]+", "-", cleaned)
     cleaned = cleaned.strip("-")[:60]
     return cleaned or "untitled"
+
+
+def _concept_jaccard_similarity(a: str, b: str) -> float:
+    """V3-O.15.6: 計算 2 個 concept_name 的 jaccard 字元相似度.
+
+    用 2-gram 字元集, 適合中英文混合.
+    "標記人" vs "標記顯示禮儀" → 中等相似 (共享「標記」)
+    "Discord 標記人" vs "discord標記人方法" → 高相似
+    """
+    if not a or not b:
+        return 0.0
+
+    def _bigrams(s: str) -> set:
+        s = s.strip().lower()
+        if len(s) < 2:
+            return {s} if s else set()
+        return {s[i:i+2] for i in range(len(s) - 1)}
+
+    sa, sb = _bigrams(a), _bigrams(b)
+    if not sa or not sb:
+        return 0.0
+    inter = sa & sb
+    union = sa | sb
+    return len(inter) / len(union) if union else 0.0
 
 
 # ─── V3-O.15.3 (2026-06-06 user 拍正): 第二層 — 攻擊偵測 ──────────────────
@@ -275,18 +337,27 @@ def detect_teaching_intent(
         "viewer": f"觀眾朋友 ({speaker_display_name})" if speaker_display_name else "觀眾朋友",
         "audience": f"觀眾 ({speaker_display_name})" if speaker_display_name else "觀眾",
     }.get(speaker_role, speaker_display_name or "說話者")
+    # V3-O.15.6: prompt 加 examples + 一致性指示 — 同一概念多次教學 LLM 要抽出同名字
     prompt = (
         "你是夥伴大腦的 teaching-intent 偵測 sub_task.\n"
-        f"判斷『{_speaker_label}是否正在教夥伴一個可以重複套用的新概念/技能/流程』.\n"
+        f"判斷『{_speaker_label}是否正在教夥伴一個可以重複套用的新概念/技能/流程』.\n\n"
         "教學的特徵: 對方解釋規則 / 給範例步驟 / 要夥伴記住一套做法 / 對既有做法做修正/擴充 / "
         "提供新分類框架 / 介紹一個概念名 + 用法.\n"
         "非教學: 一般聊天 / 點餐 / 情緒交流 / 命令做單次動作 / 表達當下情緒.\n"
         "注意: 觀眾朋友也會教夥伴東西 (像長輩 / 同學那種), 不限主人.\n\n"
+        "⭐ concept_name 命名規則 (重要):\n"
+        "  - 用最廣的類別名稱, 不要把細節寫進名字\n"
+        "  - 同一概念多次教學, 請一致用「同一個名字」\n"
+        "  - 範例對齊:\n"
+        "    * 教「@標記人格式」「Discord 標記方法」「不要唸 ID 只用 @」 → 都叫『標記人』(不是各種變體)\n"
+        "    * 教「菜單加菜」「驗證菜單數量」「掛上牆壁」 → 都叫『菜單管理』\n"
+        "    * 教「對付路人話術」「打發路人」「路人來時拿大絕招」 → 都叫『應對路人』\n"
+        "  - 概念類別名, 不要加 prefix (Discord/YT/LINE) 不要加 suffix (方法/流程/系統/禮儀)\n\n"
         f"近期對話:\n{recent_dialogue_excerpt[:1200]}\n\n"
         f"{_speaker_label}這一句:\n「{user_message[:500]}」\n\n"
         "輸出 (純 JSON, 不要 ```code fence```):\n"
         '{"is_teaching": true/false,'
-        ' "concept_name": "<≤20字 中文/英文, 不是這次教什麼具體東西, 而是這個技能的「類別名稱」, 例 \\"菜單管理\\" / \\"客人檔案系統\\" / \\"應對挑釁話術\\">",'
+        ' "concept_name": "<≤15字, 最廣的類別名, 中文優先>",'
         ' "summary": "<≤80字 摘要這個技能的核心>",'
         ' "confidence": 0.0~1.0}\n\n'
         "若 is_teaching=false 仍要給 concept_name=\"\", summary=\"\", confidence=0.0."
@@ -369,6 +440,40 @@ def accumulate_teaching_evidence(
             "FROM skill_candidates WHERE concept_id=? AND teacher_user_id=?",
             (concept_id, teacher_user_id),
         ).fetchone()
+
+        # ⭐ V3-O.15.6 (2026-06-06 user 拍板): 若無 exact match, 對該 teacher 所有
+        # working candidates 做 jaccard fuzzy match — ≥0.4 視為同 concept 合併.
+        # 修「@標記人」教 5 次抽出 5 個不同 concept_id 沒升格的 bug.
+        if row is None:
+            sim_rows = conn.execute(
+                "SELECT candidate_id, concept_id, concept_name, evidence_count, "
+                "evidence_event_ids, status, promotion_threshold "
+                "FROM skill_candidates WHERE teacher_user_id=? AND status='working' "
+                "ORDER BY evidence_count DESC, last_reinforced_at DESC",  # ⭐ 優先 evidence 高的
+                (teacher_user_id,),
+            ).fetchall()
+            best_sim = 0.0
+            best_match = None
+            for sr in sim_rows:
+                sim = max(
+                    _concept_jaccard_similarity(concept_id, sr["concept_id"]),
+                    _concept_jaccard_similarity(concept_name, sr["concept_name"]),
+                )
+                # tie-breaking: 同 sim 優先 evidence 高的 (因 SQL 排序已優先, 用 > 而非 >=)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_match = sr
+            if best_match is not None and best_sim >= 0.4:
+                row = best_match
+                # 用既有 concept_id (不改, 保持穩定 wikilink)
+                concept_id = best_match["concept_id"]
+                try:
+                    import sys as _sys
+                    print(f"[teaching_detector] FUZZY MATCH: '{concept_name}' → 既有 '{best_match['concept_name']}' "
+                          f"(sim={best_sim:.2f}, ev={best_match['evidence_count']})",
+                          file=_sys.stderr, flush=True)
+                except Exception:
+                    pass
 
         if row is None:
             candidate_id = str(uuid.uuid4())

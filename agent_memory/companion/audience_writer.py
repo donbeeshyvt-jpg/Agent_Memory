@@ -283,13 +283,47 @@ def write_viewer_profile(
     profile_path = get_viewer_profile_path(vault_root, user_id, loyalty_tier)
     profile_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # V3-O.15.6 (2026-06-06 user 拍板): schema v10 → v12 對齊 SKILL/KB RAG 友善格式.
+    # 加 trigger_keywords (display_name + alias 變化 + user_id) 給 FTS5 + substring 撈得到.
+    # 朋友卡寫入 = overwrite, 自動把舊 v10 朋友卡升 v12 新格式.
+
+    # 抽 trigger_keywords: display_name + alias 變化 + user_id + intimacy_stage
+    trigger_keywords = []
+    if final_name:
+        trigger_keywords.append(final_name)
+        # 拆字 (中文每 2-3 字一個 token 給 RAG 撈)
+        if len(final_name) >= 2:
+            trigger_keywords.append(final_name[:2])
+    if user_id:
+        trigger_keywords.append(user_id)
+        # Discord mention 格式
+        trigger_keywords.append(f"<@{user_id}>")
+    # alias / nickname history (from users table)
+    try:
+        import json as _json_alias
+        nh = user_row["nickname_history"] if "nickname_history" in user_row.keys() else None
+        if nh:
+            alias_list = _json_alias.loads(nh)
+            for a in alias_list[-5:]:  # 近 5 個 alias
+                _n = (a.get("name") or "").strip()
+                if _n and _n not in trigger_keywords:
+                    trigger_keywords.append(_n)
+    except Exception:
+        pass
+    trigger_keywords = trigger_keywords[:10]
+
     # ─── 組裝 markdown ───
     lines = []
     lines.append("---")
-    lines.append("type: viewer_profile")
-    lines.append("schema_version: 10")
+    lines.append("type: friend_card")  # V3-O.15.6: viewer_profile → friend_card
+    lines.append("schema_version: 12")  # V3-O.15.6: 10 → 12
     lines.append(f"user_id: {user_id}")
     lines.append(f"display_name: {final_name}")
+    lines.append(f"title: {final_name}")  # alias for KB-style RAG query
+    lines.append(f"contributor_user_id: \"{user_id}\"")
+    lines.append(f"contributor_name: \"{final_name}\"")
+    # Obsidian wikilink 回連自己 (給 backlink graph 用)
+    lines.append(f"contributor_link: \"[[{user_id}|{final_name}]]\"")
     lines.append(f"loyalty_tier: {loyalty_tier}")
     lines.append(f"intimacy_score: {intimacy_score:.4f}")
     lines.append(f"intimacy_stage: {intim_stage}")
@@ -299,6 +333,7 @@ def write_viewer_profile(
     lines.append(f"first_seen_at: {user_row['first_seen_at']}")
     lines.append(f"updated_at: {now_iso}")
     lines.append(f"role: {user_row['role']}")
+    lines.append(f"trigger_keywords: {trigger_keywords}")  # V3-O.15.6: RAG 撈用
     lines.append("---")
     lines.append("")
     lines.append(f"# Viewer Profile — {final_name}")
