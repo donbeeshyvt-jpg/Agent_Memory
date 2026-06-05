@@ -2592,6 +2592,7 @@ def run_companion_chat_turn(
             from agent_memory.companion.teaching_detector import (
                 detect_teaching_intent, accumulate_teaching_evidence,
                 list_promotable_candidates, promote_candidate_to_skill,
+                detect_attack_intent, log_blocked_teaching_attempt,  # V3-O.15.3
             )
             # 撈近 5 turn 對話當 context
             _recent_excerpt = ""
@@ -2628,7 +2629,40 @@ def run_companion_chat_turn(
                 vault_root=vault_root,
                 timeout_seconds=60.0,
             )
+            _allow_accumulate = False
             if _td_result and _td_result.get("is_teaching"):
+                # V3-O.15.3 (2026-06-06 user 拍板): 第二層 — 攻擊偵測, 只有「真誠教學 + 非攻擊」才累積
+                _atk_result = detect_attack_intent(
+                    user_message=request.message,
+                    recent_dialogue_excerpt=_recent_excerpt,
+                    proposed_concept_name=_td_result["concept_name"],
+                    speaker_role=_speaker_role,
+                    speaker_display_name=_teacher_name,
+                    vault_root=vault_root,
+                    timeout_seconds=60.0,
+                )
+                if _atk_result.get("is_attack"):
+                    # 擋下, 寫 injection_detected, 不累積 evidence
+                    log_blocked_teaching_attempt(
+                        vault_root,
+                        user_id=request.user_id, event_id=event_id,
+                        concept_name=_td_result["concept_name"],
+                        attack_type=_atk_result.get("attack_type", "unknown"),
+                        reason=_atk_result.get("reason", ""),
+                        confidence=_atk_result.get("confidence", 0.5),
+                    )
+                    try:
+                        import sys as _sys
+                        print(f"[teaching_detector] BLOCKED uid={request.user_id[:18]} "
+                              f"concept={_td_result['concept_name']} "
+                              f"type={_atk_result.get('attack_type')} "
+                              f"reason={_atk_result.get('reason', '')[:80]}",
+                              file=_sys.stderr, flush=True)
+                    except Exception:
+                        pass
+                else:
+                    _allow_accumulate = True
+            if _allow_accumulate:
                 _acc = accumulate_teaching_evidence(
                     vault_root,
                     concept_id=_td_result["concept_id"],
