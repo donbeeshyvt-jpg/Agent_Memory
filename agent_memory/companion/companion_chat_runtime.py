@@ -2582,11 +2582,12 @@ def run_companion_chat_turn(
     resp.pipeline_steps_done.append(176)
     _mark_step_time(_step_timings, "step17_6_self_concept")
 
-    # ─── Step 17.7: V3-O.14 Teaching Detector (2026-06-05) ───
-    # owner 教學偵測 → 累積 evidence → evidence≥3 升格 50_Skills_Tools/<concept>/SKILL.md.
-    # 通用化, 不只菜單. 偵測 LLM (sub_task V4 Flash, 60s timeout), 失敗整段 skip 不破對話.
-    # 只 owner 對話算 (避免 prompt injection 偽造假 skill).
-    if request.is_owner and not record_only and final_response:
+    # ─── Step 17.7: V3-O.14 + V3-O.15.2 Teaching Detector ───
+    # V3-O.15.2 (2026-06-06 user 拍正): owner-only → 任何人 (主人/觀眾朋友/路人) 都可以教.
+    # Rationale: user 原設計「他連續對這個概念教了 3 次以上 → 升技能」, 「他」=任何說話者.
+    # 防 prompt injection 由「evidence_count>=3」+「UNIQUE(concept_id, teacher_user_id)」+「LLM 抽 canonical concept_id」三重天然防禦, 不需 owner-only 過濾.
+    # 偵測 LLM (sub_task V4 Flash, 60s timeout), 失敗整段 skip 不破對話.
+    if not record_only and final_response:
         try:
             from agent_memory.companion.teaching_detector import (
                 detect_teaching_intent, accumulate_teaching_evidence,
@@ -2605,26 +2606,29 @@ def run_companion_chat_turn(
                 )
             except Exception:
                 pass
-            # V3-O.14 fix: 用 vault_root, call_llm_for_text 自會路由
+            # V3-O.15.2: 撈說話者 display_name 給 LLM prompt + 朋友卡 wikilink
+            _teacher_name = ""
+            try:
+                with open_companion_db(vault_root) as _conn_n:
+                    _r = _conn_n.execute(
+                        "SELECT display_name FROM users WHERE user_id=?",
+                        (request.user_id,),
+                    ).fetchone()
+                    if _r:
+                        _teacher_name = _r["display_name"] or ""
+            except Exception:
+                pass
+            # V3-O.15.2: speaker_role 給 LLM 判斷上下文 (主人 vs 觀眾朋友 教學語境略不同)
+            _speaker_role = "owner" if request.is_owner else "viewer"
             _td_result = detect_teaching_intent(
                 user_message=request.message,
                 recent_dialogue_excerpt=_recent_excerpt,
-                is_owner=True,
+                speaker_role=_speaker_role,
+                speaker_display_name=_teacher_name,
                 vault_root=vault_root,
                 timeout_seconds=60.0,
             )
             if _td_result and _td_result.get("is_teaching"):
-                _teacher_name = ""
-                try:
-                    with open_companion_db(vault_root) as _conn_n:
-                        _r = _conn_n.execute(
-                            "SELECT display_name FROM users WHERE user_id=?",
-                            (request.user_id,),
-                        ).fetchone()
-                        if _r:
-                            _teacher_name = _r["display_name"] or ""
-                except Exception:
-                    pass
                 _acc = accumulate_teaching_evidence(
                     vault_root,
                     concept_id=_td_result["concept_id"],

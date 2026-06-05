@@ -84,28 +84,33 @@ def canonicalize_concept(name: str) -> str:
 # ─── LLM teaching intent detection ───────────────────────────────────────
 def detect_teaching_intent(
     *, user_message: str, recent_dialogue_excerpt: str,
-    is_owner: bool, vault_root: Path,
+    speaker_role: str, vault_root: Path,
+    speaker_display_name: str = "",
     timeout_seconds: float = 60.0,
 ) -> Optional[dict]:
-    """V3-O.14: LLM 判斷「owner 是否正在教 bot 新概念」.
+    """V3-O.14 + V3-O.15.2: LLM 判斷「任何人是否正在教 bot 新概念」.
+
+    V3-O.15.2 修正 (user 2026-06-06): 從 owner-only 改成「任何人都可以教」.
+    Rationale: user 原設計「他連續對這個概念教了 3 次以上 → 升技能」, 「他」=任何說話者.
+    防 prompt injection 由 evidence_count>=3 + UNIQUE(concept_id, teacher_user_id) 天然防禦,
+    不需要 owner-only 過濾.
 
     Args:
-        user_message: 當前 owner 訊息
+        user_message: 當前說話者訊息
         recent_dialogue_excerpt: 近 3-5 turn 對話 (供 context)
-        is_owner: 必須 True 才偵測 (viewer 不算)
-        llm_client: sub_task LLM client (V4 Flash via OPENROUTER_API_KEY_SUBTASK)
+        speaker_role: "owner" / "viewer" / "audience" — 給 LLM 判斷情境用
+        speaker_display_name: 說話者顯示名 (給 LLM prompt 用)
+        vault_root: vault root (給 call_llm_for_text 路由用)
         timeout_seconds: 60s
 
     Returns: None (非 teaching) 或 {
         "is_teaching": True,
         "concept_id": "menu_management",
         "concept_name": "菜單管理",
-        "summary": "owner 在教 bot 如何維護一份遞增的菜單清單, 每加一道菜要驗證數量並重新整列",
+        "summary": "說話者在教 bot 如何維護一份遞增的菜單清單...",
         "confidence": 0.85,
     }
     """
-    if not is_owner:
-        return None
     if not user_message.strip():
         return None
 
@@ -114,13 +119,21 @@ def detect_teaching_intent(
     except Exception:
         return None
 
+    # V3-O.15.2: 通用 prompt — 任何說話者 (主人 / 觀眾朋友 / 路人) 都可能教
+    _speaker_label = {
+        "owner": f"主人 ({speaker_display_name})" if speaker_display_name else "主人",
+        "viewer": f"觀眾朋友 ({speaker_display_name})" if speaker_display_name else "觀眾朋友",
+        "audience": f"觀眾 ({speaker_display_name})" if speaker_display_name else "觀眾",
+    }.get(speaker_role, speaker_display_name or "說話者")
     prompt = (
         "你是夥伴大腦的 teaching-intent 偵測 sub_task.\n"
-        "判斷『主人是否正在教夥伴一個可以重複套用的新概念/技能/流程』.\n"
-        "教學的特徵: 主人解釋規則 / 給範例步驟 / 要夥伴記住一套做法 / 對既有做法做修正/擴充.\n"
-        "非教學: 一般聊天 / 點餐 / 情緒交流 / 命令做單次動作.\n\n"
+        f"判斷『{_speaker_label}是否正在教夥伴一個可以重複套用的新概念/技能/流程』.\n"
+        "教學的特徵: 對方解釋規則 / 給範例步驟 / 要夥伴記住一套做法 / 對既有做法做修正/擴充 / "
+        "提供新分類框架 / 介紹一個概念名 + 用法.\n"
+        "非教學: 一般聊天 / 點餐 / 情緒交流 / 命令做單次動作 / 表達當下情緒.\n"
+        "注意: 觀眾朋友也會教夥伴東西 (像長輩 / 同學那種), 不限主人.\n\n"
         f"近期對話:\n{recent_dialogue_excerpt[:1200]}\n\n"
-        f"主人這一句:\n「{user_message[:500]}」\n\n"
+        f"{_speaker_label}這一句:\n「{user_message[:500]}」\n\n"
         "輸出 (純 JSON, 不要 ```code fence```):\n"
         '{"is_teaching": true/false,'
         ' "concept_name": "<≤20字 中文/英文, 不是這次教什麼具體東西, 而是這個技能的「類別名稱」, 例 \\"菜單管理\\" / \\"客人檔案系統\\" / \\"應對挑釁話術\\">",'
