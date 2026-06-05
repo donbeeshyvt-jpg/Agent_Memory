@@ -194,6 +194,15 @@ class BridgeRelayClient(discord.Client):
         self._flush_failure_state: dict[int, dict[str, float]] = {}
         # 上輪 task 還在跑的 channel: 避免本輪重複 dispatch 把 executor 占爆.
         self._flush_in_flight: set[int] = set()
+        # ⭐ V3-O.15.4 (2026-06-06 user 拍板): Discord message.id LRU dedup.
+        # 防 discord.py library 邊緣 case (gateway 重連 backfill / cache desync / reaction event 觸發
+        # on_message refresh) 對同一 Discord message 物件 fire on_message 2 次.
+        # user 連發內容相同句 = 不同 message.id (Discord snowflake unique 64-bit), 不會誤殺.
+        # 跨平台預留: 未來 YT/LINE relay 各自加同款 (各平台 message_id 各自全域 unique).
+        # 詳見 docs/V3-O.15.4_message_id_dedup_cross_platform.md (YT 接口設計記錄).
+        from collections import OrderedDict as _OD
+        self._seen_message_ids: _OD = _OD()
+        self._SEEN_MSG_IDS_CAP: int = 2000
 
     async def _post_streaming(self, loop, url: str, payload: dict, source_message) -> dict:
         """V3-O.10 #26: SSE streaming — 收 token，定期用 message.edit() 更新 Discord."""
@@ -475,6 +484,15 @@ class BridgeRelayClient(discord.Client):
     async def on_message(self, message: discord.Message) -> None:
         # V3-O.9 #2: end-to-end timing 起點 (從 Discord 收到 message 算)
         _t_recv = _relay_time.perf_counter()
+        # ⭐ V3-O.15.4 (2026-06-06 user 拍板): Discord message.id LRU dedup (擋 lib 重 fire).
+        # 真連發 = 不同 message.id, 不會誤殺. 同 message.id fire 2 次 → 第 2 次直接 skip.
+        _msg_id = int(getattr(message, "id", 0) or 0)
+        if _msg_id:
+            if _msg_id in self._seen_message_ids:
+                return  # 已處理過, library 重 fire, 靜默 skip
+            self._seen_message_ids[_msg_id] = True
+            while len(self._seen_message_ids) > self._SEEN_MSG_IDS_CAP:
+                self._seen_message_ids.popitem(last=False)
         # V3-O.13.5 (淨化 AI viewer pool 後): bot author handling 簡化為「真人 only」.
         # 1. 自己 (self.user) 一律 ignore (避免無限 loop)
         # 2. 其他任何 bot: 一律 ignore (不再有 AI 模擬觀眾白名單)
