@@ -62,11 +62,9 @@ def consolidate_similar_skills(vault_root: Path) -> dict:
     if out["clusters"] == 0:
         return out
 
-    # 3. LLM judge per cluster
+    # 3. LLM judge per cluster (V3-O.15 fix: 不用顯式 LLMClient, call_llm_for_text 拿 vault_root)
     try:
-        from agent_memory.llm_client import LLMClient
-        from agent_memory.llm_text_helpers import call_llm_for_text
-        client = LLMClient(vault_root)
+        from agent_memory.llm_text_helpers import call_llm_for_text  # noqa: F401  early import check
     except Exception:
         return out
 
@@ -74,7 +72,7 @@ def consolidate_similar_skills(vault_root: Path) -> dict:
         if len(cluster) < MIN_CLUSTER_SIZE:
             continue
         try:
-            judge_result = _llm_judge_merge(client, cluster)
+            judge_result = _llm_judge_merge(vault_root, cluster)
         except Exception:
             continue
         if not judge_result or not judge_result.get("should_merge"):
@@ -171,8 +169,8 @@ def _cluster_by_keywords(skills: list, *, threshold: float) -> list[list]:
     return list(clusters_map.values())
 
 
-def _llm_judge_merge(llm_client, cluster: list) -> dict:
-    """LLM 判斷該不該 merge cluster 內的 N 個 skill."""
+def _llm_judge_merge(vault_root: Path, cluster: list) -> dict:
+    """LLM 判斷該不該 merge cluster 內的 N 個 skill. V3-O.15 fix: 用 vault_root."""
     from agent_memory.llm_text_helpers import call_llm_for_text
 
     cluster_summary_lines = []
@@ -209,13 +207,13 @@ def _llm_judge_merge(llm_client, cluster: list) -> dict:
         "若 should_merge=false, merged_skill 可填空 {}."
     )
     try:
-        result = call_llm_for_text(
-            llm_client, prompt,
+        text = (call_llm_for_text(
+            vault_root, prompt,
             persona_id="companion",
-            max_tokens=2000,
+            temperature=0.3,
+            timeout_s=60.0,
             auxiliary="skill_consolidation",
-        )
-        text = (result.text or "").strip()
+        ) or "").strip()
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*", "", text)
             text = re.sub(r"\s*```$", "", text)

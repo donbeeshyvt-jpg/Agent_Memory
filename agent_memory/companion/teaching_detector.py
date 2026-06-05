@@ -84,7 +84,7 @@ def canonicalize_concept(name: str) -> str:
 # ─── LLM teaching intent detection ───────────────────────────────────────
 def detect_teaching_intent(
     *, user_message: str, recent_dialogue_excerpt: str,
-    is_owner: bool, llm_client,
+    is_owner: bool, vault_root: Path,
     timeout_seconds: float = 60.0,
 ) -> Optional[dict]:
     """V3-O.14: LLM 判斷「owner 是否正在教 bot 新概念」.
@@ -130,13 +130,14 @@ def detect_teaching_intent(
     )
 
     try:
-        result = call_llm_for_text(
-            llm_client, prompt,
+        # V3-O.14 fix: call_llm_for_text 簽名 (vault_root, prompt, *, persona_id, temperature, timeout_s, auxiliary) → str
+        text = (call_llm_for_text(
+            vault_root, prompt,
             persona_id="companion",
-            max_tokens=400,
+            temperature=0.2,
+            timeout_s=timeout_seconds,
             auxiliary="teaching_intent_detect",
-        )
-        text = (result.text or "").strip()
+        ) or "").strip()
     except Exception:
         return None
 
@@ -302,7 +303,7 @@ def promote_candidate_to_skill(
     vault_root: Path,
     *,
     candidate: dict,
-    llm_client,
+    llm_client=None,  # V3-O.14 fix: unused, kept for backward compat
 ) -> Optional[str]:
     """V3-O.14 C2: 升 candidate → 寫 50_Skills_Tools/<concept_id>/SKILL.md.
 
@@ -352,12 +353,13 @@ def promote_candidate_to_skill(
             ' "procedure_steps": ["<step1, ≤40字>", "<step2>", "<step3>"],\n'
             ' "trigger_keywords": ["<keyword1>", "<keyword2>", "..."]}\n'
         )
-        result = call_llm_for_text(
-            llm_client, prompt,
-            persona_id="companion", max_tokens=600,
-            auxiliary="skill_promotion",
-        )
-        text = (result.text or "").strip()
+        text = (call_llm_for_text(
+            vault_root, prompt,
+            persona_id="companion",
+            temperature=0.3,
+            timeout_s=60.0,
+            auxiliary="skill_consolidation",
+        ) or "").strip()
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*", "", text)
             text = re.sub(r"\s*```$", "", text)

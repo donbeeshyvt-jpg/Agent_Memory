@@ -2592,7 +2592,6 @@ def run_companion_chat_turn(
                 detect_teaching_intent, accumulate_teaching_evidence,
                 list_promotable_candidates, promote_candidate_to_skill,
             )
-            from agent_memory.llm_client import LLMClient
             # 撈近 5 turn 對話當 context
             _recent_excerpt = ""
             try:
@@ -2606,12 +2605,12 @@ def run_companion_chat_turn(
                 )
             except Exception:
                 pass
-            _td_client = LLMClient(vault_root)
+            # V3-O.14 fix: 用 vault_root, call_llm_for_text 自會路由
             _td_result = detect_teaching_intent(
                 user_message=request.message,
                 recent_dialogue_excerpt=_recent_excerpt,
                 is_owner=True,
-                llm_client=_td_client,
+                vault_root=vault_root,
                 timeout_seconds=60.0,
             )
             if _td_result and _td_result.get("is_teaching"):
@@ -2640,7 +2639,7 @@ def run_companion_chat_turn(
                     for _cand in list_promotable_candidates(vault_root)[:1]:
                         try:
                             promote_candidate_to_skill(
-                                vault_root, candidate=_cand, llm_client=_td_client,
+                                vault_root, candidate=_cand,
                             )
                         except Exception:
                             pass

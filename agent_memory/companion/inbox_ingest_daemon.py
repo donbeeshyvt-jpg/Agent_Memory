@@ -196,13 +196,11 @@ def process_one_inbox_file(
     else:
         contributor_name = "Self lookup (hermes)"
 
-    # LLM call
+    # LLM call (V3-O.15 fix: call_llm_for_text 簽名 vault_root + str return)
     try:
-        from agent_memory.llm_client import LLMClient
         from agent_memory.llm_text_helpers import call_llm_for_text
-        client = LLMClient(vault_root)
     except Exception as exc:
-        return {"success": False, "error": f"llm init: {exc}"}
+        return {"success": False, "error": f"llm import: {exc}"}
 
     contributor_intro = (
         f"主人 ({contributor_name})" if is_owner
@@ -216,13 +214,13 @@ def process_one_inbox_file(
     )
 
     try:
-        result = call_llm_for_text(
-            client, prompt,
+        text = (call_llm_for_text(
+            vault_root, prompt,
             persona_id="companion",
-            max_tokens=8000,  # v12 內文可達 22000 char ≈ 8k-9k tokens
+            temperature=0.3,
+            timeout_s=60.0,
             auxiliary="knowledge_summary",
-        )
-        text = (result.text or "").strip()
+        ) or "").strip()
     except Exception as exc:
         return {"success": False, "error": f"llm call: {exc}"}
 
