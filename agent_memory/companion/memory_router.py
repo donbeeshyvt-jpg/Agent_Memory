@@ -30,9 +30,10 @@ from agent_memory.companion.companion_db import open_companion_db
 
 
 # Layer token budget (D-V3-23 對齊 R12 prompt cap 3000 char)
+# V3-O.14 (2026-06-05): L3 600→1800 因 audit 補洞 — skill RAG 完整內容 + emotion/journal/preference md
 LAYER1_BUDGET = 1200
 LAYER2_BUDGET = 1050
-LAYER3_BUDGET = 600
+LAYER3_BUDGET = 1800
 LAYER4_BUDGET = 150
 
 
@@ -199,8 +200,18 @@ def fetch_layer2_episodic(
 
 
 # ─── Layer 3: 長期 self/owner/narrative ─────────────────────────────────
-def fetch_layer3_long(vault_root: Path, *, user_id: str = "", is_owner: bool = False) -> list[str]:
-    """V3 §13.2 Layer 3: 抓 00.07/00.08/active_goals."""
+def fetch_layer3_long(
+    vault_root: Path, *,
+    user_id: str = "", is_owner: bool = False,
+    current_message: str = "",
+    current_valence: float = 0.0,
+) -> list[str]:
+    """V3 §13.2 Layer 3: 抓 00.07/00.08/active_goals.
+
+    V3-O.14 (2026-06-05): 補洞 — 加 skill RAG / 30_Emotional / 90_Daily_Journal / 60_Pref_md.
+        current_message: 給 skill RAG hybrid_search 撈相關 skill 用 (空字串 fallback 最近 N 個).
+        current_valence: 給情緒 md 決定要不要載 (|v|>0.4 才載, 避免太雜訊).
+    """
     items: list[str] = []
     # 00.07 Companion MEMORY (always)
     p = vault_root / "00_System_Core" / "00.07_Companion_MEMORY.md"
@@ -232,14 +243,50 @@ def fetch_layer3_long(vault_root: Path, *, user_id: str = "", is_owner: bool = F
             items.append(f"narrative: {n['theme']} — {n['relationship_arc'][:80]}")
     except Exception:
         pass
-    # ⭐ V3-K4 (user 2026-05-27 「升格技能」): learned skills
+    # ⭐ V3-K4 + V3-O.14 C3 (user 2026-06-05): learned skills 完整內容 by RAG
+    # 原本只回 50 字 metadata, 現在走 hybrid_search 給完整 trigger_situation + 步驟
     try:
+        from agent_memory.companion.vault_md_search import retrieve_skills
         from agent_memory.companion.skill_learning_loop import list_recent_skills_summary
-        skills = list_recent_skills_summary(vault_root, max_count=3)
-        for s in skills:
-            items.append(f"skill: {s['skill_name']} (trigger: {s['trigger_situation'][:50]})")
+        skill_hits = []
+        if current_message.strip():
+            skill_hits = retrieve_skills(
+                vault_root, current_message, top_k=3, max_chars=500,
+            )
+        if not skill_hits:
+            # fallback: 最近 N 個 metadata (relevancy 不足或無 query)
+            for s in list_recent_skills_summary(vault_root, max_count=3):
+                items.append(
+                    f"skill: {s['skill_name']} (trigger: {s['trigger_situation'][:80]})"
+                )
+        else:
+            for h in skill_hits:
+                items.append(f"[skill {h['path']}]\n{h['content']}")
     except Exception:
         pass
+    # ⭐ V3-O.14 audit 補洞: 30_Emotional_State md (val 高才載)
+    if abs(current_valence) > 0.4:
+        try:
+            from agent_memory.companion.vault_md_search import retrieve_emotional_state
+            for h in retrieve_emotional_state(vault_root, top_k=2, max_chars=200):
+                items.append(f"[emo {h['path']}]\n{h['content']}")
+        except Exception:
+            pass
+    # ⭐ V3-O.14 audit 補洞: 90_Daily_Journal 最近反思
+    try:
+        from agent_memory.companion.vault_md_search import retrieve_daily_journal
+        for h in retrieve_daily_journal(vault_root, current_message, top_k=2, max_chars=300):
+            items.append(f"[journal {h['path']}]\n{h['content']}")
+    except Exception:
+        pass
+    # ⭐ V3-O.14 audit 補洞: 60_Preference_Memory md (語義偏好, 非 DB working preference)
+    if current_message.strip():
+        try:
+            from agent_memory.companion.vault_md_search import retrieve_preferences_md
+            for h in retrieve_preferences_md(vault_root, current_message, top_k=2, max_chars=250):
+                items.append(f"[pref_md {h['path']}]\n{h['content']}")
+        except Exception:
+            pass
     return items
 
 
@@ -316,6 +363,7 @@ def build_memory_context(
     balance_playfulness: float = 0.0, balance_curiosity_urge: float = 0.0,
     intimacy_score: float = 0.0, is_owner: bool = False,
     mode: str = "reactive",
+    current_message: str = "",  # ⭐ V3-O.14: 給 L3 skill RAG hybrid_search 用
 ) -> MemoryContext:
     """V3 §13.2 主入口: 4 層融合, 套 token budget."""
     ctx = MemoryContext()
@@ -336,8 +384,11 @@ def build_memory_context(
     l2_strs, l2_used = _truncate_to_budget(l2_strs, LAYER2_BUDGET)
     ctx.layer2_mid = l2
 
-    # Layer 3
-    l3 = fetch_layer3_long(vault_root, user_id=user_id, is_owner=is_owner)
+    # Layer 3 — V3-O.14 加 current_message + current_valence (skill RAG + emo md gate)
+    l3 = fetch_layer3_long(
+        vault_root, user_id=user_id, is_owner=is_owner,
+        current_message=current_message, current_valence=current_valence,
+    )
     l3, l3_used = _truncate_to_budget(l3, LAYER3_BUDGET)
     ctx.layer3_long = l3
 

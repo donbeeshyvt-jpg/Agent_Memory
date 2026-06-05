@@ -1993,6 +1993,8 @@ def run_companion_chat_turn(
         intimacy_score=intim.intimacy_score,
         is_owner=request.is_owner,
         mode="reactive",
+        # ⭐ V3-O.14 (2026-06-05): 給 L3 skill RAG + audit 補洞 (emo / journal / pref md) 用
+        current_message=request.message,
     )
     resp.pipeline_steps_done.append(11)
     _mark_step_time(_step_timings, "step11_memory_router")
@@ -2544,6 +2546,73 @@ def run_companion_chat_turn(
             pass
     resp.pipeline_steps_done.append(176)
     _mark_step_time(_step_timings, "step17_6_self_concept")
+
+    # ─── Step 17.7: V3-O.14 Teaching Detector (2026-06-05) ───
+    # owner 教學偵測 → 累積 evidence → evidence≥3 升格 50_Skills_Tools/<concept>/SKILL.md.
+    # 通用化, 不只菜單. 偵測 LLM (sub_task V4 Flash, 60s timeout), 失敗整段 skip 不破對話.
+    # 只 owner 對話算 (避免 prompt injection 偽造假 skill).
+    if request.is_owner and not record_only and final_response:
+        try:
+            from agent_memory.companion.teaching_detector import (
+                detect_teaching_intent, accumulate_teaching_evidence,
+                list_promotable_candidates, promote_candidate_to_skill,
+            )
+            from agent_memory.llm_client import LLMClient
+            # 撈近 5 turn 對話當 context
+            _recent_excerpt = ""
+            try:
+                with open_companion_db(vault_root) as _conn_td:
+                    _rows_td = _conn_td.execute(
+                        "SELECT actor, content FROM raw_events WHERE session_id=? "
+                        "ORDER BY created_at DESC LIMIT 6", (request.session_id,),
+                    ).fetchall()
+                _recent_excerpt = "\n".join(
+                    f"[{r['actor']}] {(r['content'] or '')[:150]}" for r in reversed(_rows_td)
+                )
+            except Exception:
+                pass
+            _td_client = LLMClient(vault_root)
+            _td_result = detect_teaching_intent(
+                user_message=request.message,
+                recent_dialogue_excerpt=_recent_excerpt,
+                is_owner=True,
+                llm_client=_td_client,
+                timeout_seconds=60.0,
+            )
+            if _td_result and _td_result.get("is_teaching"):
+                _teacher_name = ""
+                try:
+                    with open_companion_db(vault_root) as _conn_n:
+                        _r = _conn_n.execute(
+                            "SELECT display_name FROM users WHERE user_id=?",
+                            (request.user_id,),
+                        ).fetchone()
+                        if _r:
+                            _teacher_name = _r["display_name"] or ""
+                except Exception:
+                    pass
+                _acc = accumulate_teaching_evidence(
+                    vault_root,
+                    concept_id=_td_result["concept_id"],
+                    concept_name=_td_result["concept_name"],
+                    teacher_user_id=request.user_id,
+                    teacher_display_name=_teacher_name,
+                    event_id=event_id,
+                    summary=_td_result.get("summary", ""),
+                )
+                # 達門檻 → 立刻嘗試 promote (1 個 candidate per turn 限制, 避免爆 sub_task)
+                if _acc.get("ready_to_promote"):
+                    for _cand in list_promotable_candidates(vault_root)[:1]:
+                        try:
+                            promote_candidate_to_skill(
+                                vault_root, candidate=_cand, llm_client=_td_client,
+                            )
+                        except Exception:
+                            pass
+        except Exception:
+            pass
+    resp.pipeline_steps_done.append(177)
+    _mark_step_time(_step_timings, "step17_7_teaching_detector")
 
     # ─── Step 18: Self-Modification check (channel-aware flush) ───
     # 簡單算 turn_count = raw_events in this session

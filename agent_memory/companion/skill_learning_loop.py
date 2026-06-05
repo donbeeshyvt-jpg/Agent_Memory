@@ -30,9 +30,18 @@ class SkillRegistration:
     description: str = ""
     trigger_situation: str = ""
     procedure_steps: list[str] = field(default_factory=list)
-    emotional_origin: str = ""  # 對應某 emotional_event_id
+    emotional_origin: str = ""  # 對應某 emotional_event_id 或 candidate_id
     success_rate: float = 0.0
-    source: str = "hermes_learning_loop"  # 或 conversation_proposal
+    source: str = "hermes_learning_loop"  # hermes_learning_loop / conversation_proposal / semantic_consolidation / teaching_detector
+    # ⭐ V3-O.14 新增 (user 2026-06-05 拍板「該技能也要寫上是誰哪時候教的 + RAG 適合格式」)
+    taught_by_user_id: str = ""
+    taught_by_name: str = ""
+    first_taught_at: str = ""
+    last_reinforced_at: str = ""
+    evidence_count: int = 0
+    evidence_event_ids: list[str] = field(default_factory=list)
+    trigger_keywords: list[str] = field(default_factory=list)  # RAG embed 用 + FTS5 keyword
+    evidence_dialogues: list[dict] = field(default_factory=list)  # [{actor, content, at, event_id}]
 
 
 def _safe_skill_id(name: str) -> str:
@@ -53,27 +62,93 @@ def register_skill(
     skill_dir = vault_root / "50_Skills_Tools" / "51_Hermes_Learned" / skill_id
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_path = skill_dir / "SKILL.md"
+    now_iso = datetime.now(timezone.utc).isoformat()
 
     steps_md = "\n".join(f"{i+1}. {s}" for i, s in enumerate(skill.procedure_steps))
     # ⭐ V3-N (user 2026-05-27): emotional_origin 加 wikilink body backlink
-    origin_link = f"\n## 來源 (Origin)\n\n- [[{skill.emotional_origin}]] (對應 semantic_concept 或 episodic memory)\n" if skill.emotional_origin else ""
-    content = (
-        f"---\n"
-        f"type: learned_skill\nschema_version: 10\n"
-        f"skill_id: {skill_id}\nskill_name: {skill.skill_name}\n"
-        f"source: {skill.source}\n"
-        f"emotional_origin: {skill.emotional_origin}\n"
-        f"success_rate: {skill.success_rate}\n"
-        f"created_at: {datetime.now(timezone.utc).isoformat()}\n"
-        f"lifecycle_state: long\npinned: true\n"
-        f"tags: [skill, learned, hermes_loop]\n"
-        f"---\n\n"
-        f"# {skill.skill_name}\n\n"
-        f"## 適用情境\n{skill.trigger_situation}\n\n"
-        f"## 描述\n{skill.description}\n\n"
-        f"## 步驟\n{steps_md or '(無)'}\n"
-        f"{origin_link}"
-    )
+    origin_link = f"\n## 來源 (Origin)\n\n- [[{skill.emotional_origin}]] (對應 semantic_concept 或 episodic memory 或 skill_candidate)\n" if skill.emotional_origin else ""
+
+    # ⭐ V3-O.14 (user 2026-06-05): 升級 SKILL.md schema — 加 taught_by + RAG 友善 sections
+    tags_list = ["skill", "learned", skill.source]
+    if skill.trigger_keywords:
+        tags_list.extend([f"trigger:{k}" for k in skill.trigger_keywords[:5]])
+
+    frontmatter_lines = [
+        "---",
+        "type: learned_skill",
+        "schema_version: 11",  # bump from 10
+        f"skill_id: {skill_id}",
+        f"skill_name: {skill.skill_name}",
+        f"source: {skill.source}",
+        f"emotional_origin: {skill.emotional_origin}",
+        f"success_rate: {skill.success_rate}",
+        f"created_at: {now_iso}",
+        "lifecycle_state: long",
+        "pinned: true",
+        f"tags: {tags_list}",
+    ]
+    # V3-O.14 教學追溯 metadata
+    if skill.taught_by_user_id:
+        frontmatter_lines.append(f"taught_by_user_id: \"{skill.taught_by_user_id}\"")
+    if skill.taught_by_name:
+        frontmatter_lines.append(f"taught_by_name: \"{skill.taught_by_name}\"")
+    if skill.first_taught_at:
+        frontmatter_lines.append(f"first_taught_at: {skill.first_taught_at}")
+    if skill.last_reinforced_at:
+        frontmatter_lines.append(f"last_reinforced_at: {skill.last_reinforced_at}")
+    if skill.evidence_count:
+        frontmatter_lines.append(f"evidence_count: {skill.evidence_count}")
+    if skill.evidence_event_ids:
+        frontmatter_lines.append(f"evidence_event_ids: {skill.evidence_event_ids}")
+    if skill.trigger_keywords:
+        frontmatter_lines.append(f"trigger_keywords: {skill.trigger_keywords}")
+    frontmatter_lines.append("---")
+    frontmatter_lines.append("")
+
+    body_lines = [
+        f"# {skill.skill_name}",
+        "",
+        "## 觸發情境",  # ⭐ RAG embed 主要靠這段
+        skill.trigger_situation or "(未填)",
+        "",
+        "## 描述",
+        skill.description or "(未填)",
+        "",
+        "## 步驟摘要",
+        steps_md or "(無明確步驟)",
+        "",
+    ]
+    # V3-O.14 範例對話 (RAG 撈時帶上下文)
+    if skill.evidence_dialogues:
+        body_lines.append("## 範例對話")
+        body_lines.append("")
+        for d in skill.evidence_dialogues[:3]:
+            at = (d.get("at") or "")[:19]
+            actor = d.get("actor", "?")
+            content = (d.get("content") or "").strip()
+            body_lines.append(f"- [{at}] **{actor}**: {content[:200]}")
+        body_lines.append("")
+    # V3-O.14 教學追溯
+    if skill.taught_by_name or skill.evidence_count:
+        body_lines.append("## 教學追溯")
+        body_lines.append("")
+        if skill.taught_by_name:
+            body_lines.append(f"- 教導者: {skill.taught_by_name} (`{skill.taught_by_user_id[:18]}`)")
+        if skill.first_taught_at:
+            body_lines.append(f"- 第一次教: {skill.first_taught_at[:19]}")
+        if skill.last_reinforced_at:
+            body_lines.append(f"- 最後強化: {skill.last_reinforced_at[:19]}")
+        if skill.evidence_count:
+            body_lines.append(f"- 重複次數: {skill.evidence_count}")
+        body_lines.append("")
+    # V3-O.14 標籤 (給 FTS5 撈 + 視覺索引)
+    if skill.trigger_keywords:
+        body_lines.append("## 標籤")
+        body_lines.append("")
+        body_lines.append(" ".join(f"#{k}" for k in skill.trigger_keywords[:8]))
+        body_lines.append("")
+
+    content = "\n".join(frontmatter_lines + body_lines) + origin_link
     atomic_write(skill_path, content)
     return {
         "registered": True,
