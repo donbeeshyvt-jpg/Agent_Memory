@@ -175,6 +175,21 @@ def run_layer3_24h_medium(
     except Exception:
         pass
 
+    # ⭐ V3-O.15.6 (2026-06-06 user 拍板): 每日 merge 類似技能 — Layer3 加 task.
+    # 對齊 user 原設計「定期把類似技能整合(一天整合一次)」.
+    # 走 jaccard cluster + LLM judge merge, 老技能 archive 到 51_Hermes_Learned/_merged/.
+    try:
+        from agent_memory.companion.skill_merge_curator import consolidate_similar_skills
+        merge_stats = consolidate_similar_skills(vault_root)
+        if merge_stats.get("merged", 0) > 0:
+            actions.append(
+                f"skills_merged({merge_stats['merged']}, "
+                f"archived={merge_stats.get('archived', 0)}, "
+                f"scanned={merge_stats.get('scanned', 0)})"
+            )
+    except Exception:
+        pass
+
     # ⭐ V3-O.8: 82_Memory_Audit — Layer3 操作稽核記錄 (writer 已備妥，此處為呼叫方)
     # 對齊 V3 §20.2 audit chain: 每次 Layer3 跑完寫一份稽核 md.
     try:
