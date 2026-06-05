@@ -89,14 +89,18 @@ CASUAL_DIR = "20_Audience_Graph/22_Casual_Viewers"
 VIP_DIR = "20_Audience_Graph/21_VIP_Viewers"
 BANNED_DIR = "20_Audience_Graph/23_Banned_Viewers"
 
-MAX_HIGHLIGHTS = 5  # 對話 highlight 保留近 5 pair (user+bot)
+MAX_HIGHLIGHTS = 8  # V3-O.15 (2026-06-05 user): 對話 highlight 5→8 pair (user+bot)
 MAX_PREF_OBS = 10  # 偏好觀察 keep 10
 MAX_DISPLAY_NAME_LEN = 80
 MAX_CONTENT_PREVIEW = 80
 
 # V3-O.11 階段3 朋友卡記憶層
-MAX_CONSOLIDATION_TURNS = 10   # 近期對話彙整餵 LLM 的對話句數上限
+# V3-O.15 (2026-06-05 user): 近期對話彙整 / 反思 字量 ×N — 拉到 5000 / 3000 字以
+# 涵蓋整段豐富互動, 不再限於 2-3 句口頭式摘要.
+MAX_CONSOLIDATION_TURNS = 20   # 彙整餵 LLM 的對話句數上限 (10→20)
 MAX_REFLECTION_EVENTS = 8      # 反思餵 LLM 的高分事件數上限
+MAX_CONSOLIDATION_OUTPUT_CHARS = 5000  # V3-O.15: 彙整段 md 上限字數
+MAX_REFLECTION_OUTPUT_CHARS = 3000     # V3-O.15: 反思段 md 上限字數
 
 
 def _llm_viewer_reflection(vault_root: Path, display_name: str, raw_block: str) -> str:
@@ -109,17 +113,20 @@ def _llm_viewer_reflection(vault_root: Path, display_name: str, raw_block: str) 
 
     prompt = (
         "你是 精神體, 正在更新對某位『觀眾朋友』的理解 (寫進你私人的朋友卡, 觀眾看不到).\n"
-        "請依據以下近期互動, 用 2-3 句『陳述事實 (declarative)』寫下『我理解這個人是怎樣』.\n"
+        "請依據以下近期互動, 用『陳述事實 (declarative)』寫下『我理解這個人是怎樣』.\n"
         "風格要求: 用「這位觀眾傾向…」「他似乎…」「跟他相處時…」這種描述句, "
         "不要寫成對自己的指令 (不要『我應該…』『記得要…』).\n"
-        "簡短具體, 第三人稱描述觀眾, 不要流水帳, 不要前後說明.\n\n"
+        "可以涵蓋: 性格 / 互動風格 / 偏好 / 雷點 / 跟我關係動態 / 觀察到的成長變化 / "
+        "他對什麼話題會熱絡 / 跟其他觀眾的對比觀察 / 我對他的長期感受.\n"
+        "第三人稱描述觀眾, 具體不流水帳, 不要前後說明.\n"
+        "V3-O.15 (2026-06-05 user 拍板): 字數最多 3000 字, 寫深入豐富的多段反思, 不再限 2-3 句.\n\n"
         f"觀眾: {display_name}\n"
         f"近期互動:\n{raw_block}\n\n"
-        "請直接輸出 2-3 句反思 (純文字, 無 bullet 無標題):"
+        "請直接輸出反思 (純文字, 可分段, 無 bullet 無標題, ≤3000 字):"
     )
     return call_llm_for_text(
         vault_root, prompt, persona_id="companion",
-        temperature=0.4, timeout_s=30.0,
+        temperature=0.4, timeout_s=60.0,  # V3-O.15: 60s 對齊統一 sub_task timeout
         auxiliary="viewer_reflection",
     )
 
@@ -133,15 +140,19 @@ def _llm_friend_card_consolidation(vault_root: Path, display_name: str, raw_bloc
 
     prompt = (
         "你是 精神體, 正在整理跟某位觀眾朋友的近期對話 (寫進你私人的朋友卡).\n"
-        "請把以下對話壓縮成 2-3 句重點摘要: 聊了什麼主題 / 觀眾的狀態或在意的事 / 互動氛圍.\n"
-        "簡短具體, 不要逐句複述, 不要前後說明.\n\n"
+        "請把以下對話彙整成詳細摘要, 涵蓋: 聊了什麼主題 / 各主題的具體內容 / "
+        "觀眾的狀態或在意的事 / 互動氛圍 / 觀眾提出的問題或建議 / 我的回應重點 / "
+        "對話走向脈絡 / 中間轉折點 / 任何值得日後記得的細節.\n"
+        "可以分段, 保留具體例子, 不要逐句複述, 不要前後說明.\n"
+        "V3-O.15 (2026-06-05 user 拍板): 字數最多 5000 字, 寫深入豐富的多段彙整, "
+        "不再限 2-3 句 — 細節是用來下次對話時 callback 的, 越完整越好.\n\n"
         f"觀眾: {display_name}\n"
         f"近期對話:\n{raw_block}\n\n"
-        "請直接輸出 2-3 句摘要 (純文字, 無 bullet 無標題):"
+        "請直接輸出彙整 (純文字, 可分段, 無 bullet 無標題, ≤5000 字):"
     )
     return call_llm_for_text(
         vault_root, prompt, persona_id="companion",
-        temperature=0.3, timeout_s=30.0,
+        temperature=0.3, timeout_s=60.0,
         auxiliary="friend_card_consolidation",
     )
 

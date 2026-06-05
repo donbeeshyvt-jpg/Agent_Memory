@@ -408,7 +408,11 @@ def build_memory_context(
 
 
 def _render(ctx: MemoryContext, l2_strs: list[str], l4_strs: list[str]) -> str:
-    """V3 §13.2: 渲染成 <memory-context> fence."""
+    """V3 §13.2: 渲染成 <memory-context> fence.
+
+    V3-O.15 (2026-06-05 user 拍板): 40+50 區段 **永遠 emit** (即使無 hit),
+    確保 LLM 永遠知道「我有外部知識 + 學過的技能可以調用, 只是這 turn 沒撈到」.
+    """
     parts = ["<memory-context>"]
     if ctx.layer1_short:
         parts.append("# recent (短期)")
@@ -424,3 +428,42 @@ def _render(ctx: MemoryContext, l2_strs: list[str], l4_strs: list[str]) -> str:
         parts.extend(l4_strs)
     parts.append("</memory-context>")
     return "\n".join(parts)
+
+
+def render_skills_and_knowledge_sections(
+    vault_root, current_message: str = "",
+) -> dict:
+    """V3-O.15: 給 step15 prompt assembly 用的 40+50 section 內容.
+
+    永遠 emit 結構 — 即使 0 hit 也回 "(本輪未撈到, 但若情境符合可主動 callback)" stub.
+    Returns: {"learned_skills_relevant": str, "knowledge_base_relevant_hits": str}
+    """
+    out = {
+        "learned_skills_relevant": "(本輪未撈到相關技能, 但若情境符合可主動 callback 學過的東西)",
+        "knowledge_base_relevant_hits": "(本輪未撈到相關外部知識, 若需要可主動表示需要查資料)",
+    }
+    if not current_message or not vault_root:
+        return out
+    # 50 — learned skills (完整內容 RAG)
+    try:
+        from agent_memory.companion.vault_md_search import retrieve_skills
+        hits = retrieve_skills(vault_root, current_message, top_k=3, max_chars=2000)
+        if hits:
+            lines = []
+            for h in hits:
+                lines.append(f"### {h['path']}\n{h['content']}")
+            out["learned_skills_relevant"] = "\n\n".join(lines)
+    except Exception:
+        pass
+    # 40 — external knowledge (完整 schema v12 內文 RAG)
+    try:
+        from agent_memory.companion.vault_md_search import retrieve_external_knowledge
+        hits = retrieve_external_knowledge(vault_root, current_message, top_k=3, max_chars=2000)
+        if hits:
+            lines = []
+            for h in hits:
+                lines.append(f"### {h['path']}\n{h['content']}")
+            out["knowledge_base_relevant_hits"] = "\n\n".join(lines)
+    except Exception:
+        pass
+    return out

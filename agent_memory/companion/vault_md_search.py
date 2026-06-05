@@ -165,17 +165,35 @@ def _tokenize_query(s: str) -> list[str]:
 # ─── thin wrappers per source ───────────────────────────────────────────
 
 def retrieve_skills(
-    vault_root: Path, query: str, *, top_k: int = 3, max_chars: int = 800,
+    vault_root: Path, query: str, *, top_k: int = 3, max_chars: int = 2000,
 ) -> list[dict]:
-    """V3-O.14 C3: 撈 50_Skills_Tools 相關完整內容 (不只 metadata).
+    """V3-O.14 C3 + V3-O.15: 撈 50_Skills_Tools 相關完整內容.
 
     給 memory_router L3 用 — 取代 list_recent_skills_summary 那 50 字 truncate.
+    V3-O.15 (2026-06-05): max_chars 800→2000 — schema v12 內文可達 25000, 撈 2000 字夠用.
     """
     return retrieve_md_by_prefix(
         vault_root, query,
         source_path_prefix="50_Skills_Tools",
         top_k=top_k,
         max_chars_per_hit=max_chars,
+    )
+
+
+def retrieve_external_knowledge(
+    vault_root: Path, query: str, *, top_k: int = 3, max_chars: int = 2000,
+) -> list[dict]:
+    """V3-O.15: 撈 40_Knowledge_Base 完整內容 (跨 41_Owner_Provided + 42_Self_Lookup).
+
+    取代原 knowledge_base.retrieve_knowledge (限 40_KB 200 字 fallback).
+    走統一 hybrid_search, max_chars 2000 對齊 SKILL.
+    """
+    return retrieve_md_by_prefix(
+        vault_root, query,
+        source_path_prefix="40_Knowledge_Base",
+        top_k=top_k,
+        max_chars_per_hit=max_chars,
+        exclude_subdirs=["_inbox", "_processed", "_ingest_inbox"],  # 跳處理中/原檔
     )
 
 

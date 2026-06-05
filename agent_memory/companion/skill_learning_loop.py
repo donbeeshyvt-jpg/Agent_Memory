@@ -68,17 +68,25 @@ def register_skill(
     # ⭐ V3-N (user 2026-05-27): emotional_origin 加 wikilink body backlink
     origin_link = f"\n## 來源 (Origin)\n\n- [[{skill.emotional_origin}]] (對應 semantic_concept 或 episodic memory 或 skill_candidate)\n" if skill.emotional_origin else ""
 
-    # ⭐ V3-O.14 (user 2026-06-05): 升級 SKILL.md schema — 加 taught_by + RAG 友善 sections
-    tags_list = ["skill", "learned", skill.source]
+    # ⭐ V3-O.14 → V3-O.15 schema_v12 對齊 knowledge_base.write_knowledge_v12
+    tags_list = ["skill", "learned", skill.source, "schema_v12"]
     if skill.trigger_keywords:
         tags_list.extend([f"trigger:{k}" for k in skill.trigger_keywords[:5]])
+
+    # V3-O.15: contributor_link — obsidian wikilink 連教學者朋友卡
+    contributor_link = ""
+    if skill.taught_by_user_id:
+        safe_uid = skill.taught_by_user_id.replace("/", "_").replace("\\", "_")[:120]
+        label = skill.taught_by_name or skill.taught_by_user_id[:18]
+        contributor_link = f"[[20_Audience_Graph/22_Casual_Viewers/{safe_uid}|{label}]]"
 
     frontmatter_lines = [
         "---",
         "type: learned_skill",
-        "schema_version: 11",  # bump from 10
+        "schema_version: 12",  # V3-O.15: 11→12 對齊 knowledge_base
         f"skill_id: {skill_id}",
         f"skill_name: {skill.skill_name}",
+        f"title: {skill.skill_name}",  # alias for KB-style query
         f"source: {skill.source}",
         f"emotional_origin: {skill.emotional_origin}",
         f"success_rate: {skill.success_rate}",
@@ -87,13 +95,18 @@ def register_skill(
         "pinned: true",
         f"tags: {tags_list}",
     ]
-    # V3-O.14 教學追溯 metadata
+    # V3-O.14 教學追溯 metadata + V3-O.15 contributor wikilink
     if skill.taught_by_user_id:
         frontmatter_lines.append(f"taught_by_user_id: \"{skill.taught_by_user_id}\"")
+        frontmatter_lines.append(f"contributor_user_id: \"{skill.taught_by_user_id}\"")  # alias for KB-style query
     if skill.taught_by_name:
         frontmatter_lines.append(f"taught_by_name: \"{skill.taught_by_name}\"")
+        frontmatter_lines.append(f"contributor_name: \"{skill.taught_by_name}\"")
+    if contributor_link:
+        frontmatter_lines.append(f"contributor_link: \"{contributor_link}\"")
     if skill.first_taught_at:
         frontmatter_lines.append(f"first_taught_at: {skill.first_taught_at}")
+        frontmatter_lines.append(f"first_contributed_at: {skill.first_taught_at}")
     if skill.last_reinforced_at:
         frontmatter_lines.append(f"last_reinforced_at: {skill.last_reinforced_at}")
     if skill.evidence_count:
@@ -102,6 +115,7 @@ def register_skill(
         frontmatter_lines.append(f"evidence_event_ids: {skill.evidence_event_ids}")
     if skill.trigger_keywords:
         frontmatter_lines.append(f"trigger_keywords: {skill.trigger_keywords}")
+        frontmatter_lines.append(f"related_concept_ids: []")  # placeholder for V3-O.15 雙關聯 (skill_merge_curator 會回填)
     frontmatter_lines.append("---")
     frontmatter_lines.append("")
 
@@ -128,11 +142,13 @@ def register_skill(
             content = (d.get("content") or "").strip()
             body_lines.append(f"- [{at}] **{actor}**: {content[:200]}")
         body_lines.append("")
-    # V3-O.14 教學追溯
+    # V3-O.14 教學追溯 + V3-O.15 contributor wikilink
     if skill.taught_by_name or skill.evidence_count:
         body_lines.append("## 教學追溯")
         body_lines.append("")
-        if skill.taught_by_name:
+        if contributor_link:
+            body_lines.append(f"- 教導者: {contributor_link}")
+        elif skill.taught_by_name:
             body_lines.append(f"- 教導者: {skill.taught_by_name} (`{skill.taught_by_user_id[:18]}`)")
         if skill.first_taught_at:
             body_lines.append(f"- 第一次教: {skill.first_taught_at[:19]}")
