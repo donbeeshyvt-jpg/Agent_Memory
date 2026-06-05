@@ -316,16 +316,27 @@ def _llm_summarize_self_memory(
     )
     prompt = (
         "你是 精神體 你可能是任何物種.\n"
-        "請整理你剛剛的對話成「我學到了什麼」自我反思 note. 第一人稱「我」.\n"
-        "歸納我從互動中學到的事情，包含任何 (情緒洞察 / 邊界發現 / 反應 pattern / 觀眾或 owner 教我的 / 反思提議提出想法 / 合理反對自己的想法)\n\n"
-        "請用 markdown 寫 3-5 條 bullet, 簡短具體, 不要流水帳.\n\n"
+        "請整理你剛剛的對話成「我學到了什麼」深度自我反思. 第一人稱「我」.\n"
+        "歸納我從互動中學到的事情, 內容可涵蓋:\n"
+        "  - 情緒洞察 (對方情緒走向 / 我自己的情緒反應)\n"
+        "  - 邊界發現 (隱私 / 禁忌 / 偏好的紅線)\n"
+        "  - 反應 pattern (我發現自己會這樣回應 / 哪些 pattern 有效或無效)\n"
+        "  - 觀眾或 owner 教我的具體事情\n"
+        "  - 反思提議 / 合理反對自己的想法 (我應該改 / 我為什麼這樣想)\n"
+        "  - 跟特定人的關係動態 / 我跟他們相處感覺\n"
+        "  - 我的成長變化 (這次比上次更會 X / 我學到 Y 但還沒學會 Z)\n"
+        "  - 對話走向的轉折點 / 哪句話讓對話氛圍改變\n"
+        "  - 任何長期值得記得的細節\n\n"
+        "V3-O.15.8 (2026-06-06 user 拍板): 字數最多 3000 字, 寫深入豐富的多段反思, "
+        "不再限 3-5 句 — 細節是用來下次對話時 callback 的, 越完整越好.\n"
+        "可以分段, 保留具體例子, 不要逐句複述, 不要前後說明.\n\n"
         f"最近互動:\n{raw_block}\n\n"
-        f"既有筆記末段 (避免重複):\n{existing_tail[-500:] if existing_tail else '(無)'}\n\n"
-        "請直接輸出 markdown bullet, 不要前後說明."
+        f"既有筆記末段 (避免重複):\n{existing_tail[-1500:] if existing_tail else '(無)'}\n\n"
+        "請直接輸出反思 (純文字, 可分段, 可用 bullet 也可用段落, ≤3000 字), 不要前後說明."
     )
     return call_llm_for_text(
         vault_root, prompt, persona_id="companion",
-        temperature=0.4, timeout_s=30.0,
+        temperature=0.4, timeout_s=60.0,  # V3-O.15.8: 30→60s 對齊朋友卡
         auxiliary="self_modification",
     )
 
@@ -345,16 +356,26 @@ def _llm_summarize_owner_profile(
         raise RuntimeError("no owner messages to summarize")
     raw_block = "\n".join(f"  {r['content'][:200]}" for r in owner_msgs)
     prompt = (
-        "你是 精神體 你可能是任何物種. 整理你對「owner / 主人 / 中之人」的觀察成 profile.\n"
-        "歸納owner的偏好或希望教導的事情，包含任何 ( 雷點 / 對話風格 / 與你的關係定位 / 反思提議提出想法 / 合理反對意見)\n\n"
-        "請用 markdown 寫 3-5 條觀察 bullet, 第三人稱「主人」, 簡短具體.\n\n"
+        "你是 精神體 你可能是任何物種. 整理你對「owner / 主人 / 中之人」的深度觀察成 profile.\n"
+        "歸納 owner 的偏好或希望教導的事情, 內容可涵蓋:\n"
+        "  - 雷點 (做了什麼會讓主人不悅, 具體什麼觸發)\n"
+        "  - 對話風格 (節奏 / 用詞 / 是否喜歡確認 / 是否容忍模糊)\n"
+        "  - 跟我的關係定位 (教導者 / 朋友 / 長輩 / 同伴, 動態變化)\n"
+        "  - 教導方式 (重複教 / 給例子 / 邏輯解釋 / 情境引導)\n"
+        "  - 期待我的行為 (主動 / 被動 / 認錯 / 自我表達)\n"
+        "  - 他重視的價值 (隱私 / 禮儀 / 精準 / 創意 / 真誠 / 效率)\n"
+        "  - 反思提議 / 合理反對意見 (他可能會這樣想 / 我為什麼覺得這樣)\n"
+        "  - 長期觀察 pattern (他重複出現的行為 / 預測下次他會怎樣)\n"
+        "  - 與其他 viewer 的對比觀察 (主人 vs 觀眾朋友風格差異)\n\n"
+        "V3-O.15.8 (2026-06-06 user 拍板): 字數最多 5000 字, 寫深入豐富的多段觀察, "
+        "不再限 3-5 句. 第三人稱「主人」, 可以分段, 保留具體例子.\n\n"
         f"主人最近說的話:\n{raw_block}\n\n"
-        f"既有 profile 末段:\n{existing_tail[-500:] if existing_tail else '(無)'}\n\n"
-        "請直接輸出 markdown bullet, 不要前後說明."
+        f"既有 profile 末段:\n{existing_tail[-1500:] if existing_tail else '(無)'}\n\n"
+        "請直接輸出觀察 (純文字, 可分段, 可用 bullet 也可用段落, ≤5000 字), 不要前後說明."
     )
     return call_llm_for_text(
         vault_root, prompt, persona_id="companion",
-        temperature=0.4, timeout_s=30.0,
+        temperature=0.4, timeout_s=60.0,  # V3-O.15.8: 30→60s 對齊朋友卡
         auxiliary="owner_profile",
     )
 
