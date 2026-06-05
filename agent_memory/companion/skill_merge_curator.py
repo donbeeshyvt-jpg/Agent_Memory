@@ -7,12 +7,12 @@
 - 用 trigger_keywords 重疊度 + LLM judge 決定 merge
 
 流程:
-  ① 掃 50_Skills_Tools/51_Hermes_Learned/* SKILL.md
+  ① 掃 50_Skills_Tools/54_Taught_Skills/* SKILL.md
   ② 解 frontmatter trigger_keywords + skill_name
   ③ 用 jaccard similarity 找 cluster (>=0.4 視為候選)
   ④ 每 cluster 送 LLM (sub_task) 判斷該不該 merge
   ⑤ merge 結果 → 寫新 SKILL.md (含 absorbed_skill_ids + 合併 evidence_count + 多教導者)
-  ⑥ 老的 archive 到 51_Hermes_Learned/_merged/<original_id>/
+  ⑥ 老的 archive 到 54_Taught_Skills/_merged/<original_id>/
 """
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ def consolidate_similar_skills(vault_root: Path) -> dict:
     Returns: {scanned: N, clusters: M, merged: K, archived: L}
     """
     out = {"scanned": 0, "clusters": 0, "merged": 0, "archived": 0}
-    skills_root = vault_root / "50_Skills_Tools" / "51_Hermes_Learned"
+    skills_root = vault_root / "50_Skills_Tools" / "54_Taught_Skills"
     if not skills_root.exists():
         return out
 

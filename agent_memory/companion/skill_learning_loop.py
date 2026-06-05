@@ -5,7 +5,7 @@
 機制 (V3 §21.3):
 - hermes 累積成功經驗 → 內建 Learning Loop 觸發
 - 對話中 skill_suggestions (R7 C20b 共用) 提議「我學會了 X, 要不要存?」
-- 中之人對話內回 yes → 寫 50_Skills_Tools/51_Hermes_Learned/<skill-id>/SKILL.md
+- 中之人對話內回 yes → 寫 50_Skills_Tools/54_Taught_Skills/<skill-id>/SKILL.md
 - 下次遇到類似情境 → Memory Router 抓到該 SKILL → 直接調用
 
 Phase 3 MVP: 介面 + skill 寫入. Phase 4 接 Memory Router retrieve.
@@ -54,12 +54,12 @@ def register_skill(
     vault_root: Path,
     skill: SkillRegistration,
 ) -> dict:
-    """V3 §21.3: 把 hermes/conversation 學到的 skill 寫進 51_Hermes_Learned/.
+    """V3 §21.3: 把 hermes/conversation 學到的 skill 寫進 54_Taught_Skills/.
 
     對齊 V3 規劃書 §A1.2 vault skeleton + R7 C20b skill_suggestions 同 pattern.
     """
     skill_id = _safe_skill_id(skill.skill_name) or skill.skill_id
-    skill_dir = vault_root / "50_Skills_Tools" / "51_Hermes_Learned" / skill_id
+    skill_dir = vault_root / "50_Skills_Tools" / "54_Taught_Skills" / skill_id
     skill_dir.mkdir(parents=True, exist_ok=True)
     skill_path = skill_dir / "SKILL.md"
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -175,7 +175,7 @@ def register_skill(
 
 def list_learned_skills(vault_root: Path) -> list[str]:
     """V3 §21.3: 列已學技能."""
-    skills_root = vault_root / "50_Skills_Tools" / "51_Hermes_Learned"
+    skills_root = vault_root / "50_Skills_Tools" / "54_Taught_Skills"
     if not skills_root.exists():
         return []
     out = []
@@ -190,7 +190,7 @@ def list_recent_skills_summary(vault_root: Path, max_count: int = 3) -> list[dic
 
     Returns: [{skill_name, trigger_situation, ...}, ...]
     """
-    skills_root = vault_root / "50_Skills_Tools" / "51_Hermes_Learned"
+    skills_root = vault_root / "50_Skills_Tools" / "54_Taught_Skills"
     if not skills_root.exists():
         return []
     skills = []
@@ -219,7 +219,7 @@ def consolidate_skills_via_llm(vault_root: Path) -> int:
     對齊 V3 §21.3 + user「自然記憶升格技能」設計理念.
 
     路徑: semantic_memories (我發現 X 有效) → LLM 提煉 → skill (適用情境/描述/步驟)
-    寫 50_Skills_Tools/51_Hermes_Learned/<skill_id>/SKILL.md
+    寫 50_Skills_Tools/54_Taught_Skills/<skill_id>/SKILL.md
 
     Returns: 新升 skill 數.
     """

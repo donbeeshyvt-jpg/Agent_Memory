@@ -112,10 +112,11 @@ _COMPANION_SKELETON_DIRS = (
     "40_Knowledge_Base/41_Daily_Knowledge",       # 對話中累積的知識 (curator L3 寫)
     "40_Knowledge_Base/42_External_Knowledge",    # user / hermes 投餵的文獻 (curator L4 寫)
     "40_Knowledge_Base/42_External_Knowledge/_ingest_inbox",  # 入口 (Watcher 偵測)
+    # V3-O.15.5 (2026-06-06 user 拍板): 50_Skills_Tools 結構改成清楚對應升格來源.
+    # 廢 52_OpenClaw_MCP + 53_Tool_Audit_Log (V3 老設計沒用到), 51 重新命名 + 新增 54.
     "50_Skills_Tools",
-    "50_Skills_Tools/51_Hermes_Learned",
-    "50_Skills_Tools/52_OpenClaw_MCP",
-    "50_Skills_Tools/53_Tool_Audit_Log",
+    "50_Skills_Tools/51_Self_Learned",     # hermes / curator 自我學 (semantic→skill 升格 + 未來 hermes agent)
+    "50_Skills_Tools/54_Taught_Skills",    # ⭐ teaching_detector 寫: 用戶/觀眾教學 evidence≥3 升格
     "60_Preference_Memory",
     "60_Preference_Memory/61_Owner_Preferences",
     "60_Preference_Memory/62_Viewer_Preferences",
