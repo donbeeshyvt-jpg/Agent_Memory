@@ -2624,6 +2624,8 @@ def run_companion_chat_turn(
             except Exception:
                 pass
             # V3-O.15.2: 撈說話者 display_name 給 LLM prompt + 朋友卡 wikilink
+            # V3-O.15.9 (2026-06-06 user 拍正): fallback chain — users.display_name (空) →
+            # yaml owner.label (對 owner) → "主人"/"觀眾朋友" 字面.
             _teacher_name = ""
             try:
                 with open_companion_db(vault_root) as _conn_n:
@@ -2635,6 +2637,18 @@ def run_companion_chat_turn(
                         _teacher_name = _r["display_name"] or ""
             except Exception:
                 pass
+            # V3-O.15.9: fallback to yaml owner.label if owner
+            if not _teacher_name and request.is_owner:
+                try:
+                    import yaml as _yaml_td
+                    _ccfg_td = vault_root / "00_System_Core" / "companion_config.yaml"
+                    if _ccfg_td.exists():
+                        _cd_td = _yaml_td.safe_load(_ccfg_td.read_text(encoding="utf-8")) or {}
+                        _teacher_name = str((_cd_td.get("owner", {}) or {}).get("label", "") or "").strip() or "主人"
+                except Exception:
+                    _teacher_name = "主人"
+            if not _teacher_name:
+                _teacher_name = "觀眾朋友" if not request.is_owner else "主人"
             # V3-O.15.2: speaker_role 給 LLM 判斷上下文 (主人 vs 觀眾朋友 教學語境略不同)
             _speaker_role = "owner" if request.is_owner else "viewer"
             _td_result = detect_teaching_intent(

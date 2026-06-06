@@ -74,11 +74,32 @@ def register_skill(
         tags_list.extend([f"trigger:{k}" for k in skill.trigger_keywords[:5]])
 
     # V3-O.15: contributor_link — obsidian wikilink 連教學者朋友卡
+    # V3-O.15.9 (2026-06-06 user 拍正): 判斷 owner — 走 00.08_Owner_Profile, 不是 22_Casual_Viewers
     contributor_link = ""
     if skill.taught_by_user_id:
-        safe_uid = skill.taught_by_user_id.replace("/", "_").replace("\\", "_")[:120]
-        label = skill.taught_by_name or skill.taught_by_user_id[:18]
-        contributor_link = f"[[20_Audience_Graph/22_Casual_Viewers/{safe_uid}|{label}]]"
+        # 撈 owner discord_user_id from yaml 判斷
+        _owner_id = ""
+        _owner_label = ""
+        try:
+            import yaml as _y
+            _ccfg = vault_root / "00_System_Core" / "companion_config.yaml"
+            if _ccfg.exists():
+                _cd = _y.safe_load(_ccfg.read_text(encoding="utf-8")) or {}
+                _ow = _cd.get("owner", {}) or {}
+                _owner_id = str(_ow.get("discord_user_id", "") or "").strip()
+                _owner_label = str(_ow.get("label", "") or "").strip()
+        except Exception:
+            pass
+
+        if _owner_id and str(skill.taught_by_user_id) == _owner_id:
+            # owner 教 → 走 00.08_Owner_Profile
+            label = skill.taught_by_name or _owner_label or "主人"
+            contributor_link = f"[[00_System_Core/00.08_Owner_Profile|{label}]]"
+        else:
+            # viewer 教 → 22_Casual_Viewers/<uid>
+            safe_uid = skill.taught_by_user_id.replace("/", "_").replace("\\", "_")[:120]
+            label = skill.taught_by_name or skill.taught_by_user_id[:18]
+            contributor_link = f"[[20_Audience_Graph/22_Casual_Viewers/{safe_uid}|{label}]]"
 
     frontmatter_lines = [
         "---",
