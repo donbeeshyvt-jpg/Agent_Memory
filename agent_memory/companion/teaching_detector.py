@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS skill_candidates (
     promoted_skill_id TEXT,             -- 升格後填 skill_id
     promoted_at TEXT,
     notes TEXT,
+    last_session_id TEXT,               -- V3-O.15.16: 最近一次教學 session, 升格時撈全對話用
     UNIQUE (concept_id, teacher_user_id)
 )
 """
@@ -58,6 +59,11 @@ CREATE TABLE IF NOT EXISTS skill_candidates (
 def ensure_skill_candidates_schema(conn) -> None:
     """確保 skill_candidates 表存在. 由 companion_db.ensure_companion_db 或本檔內呼叫."""
     conn.execute(SKILL_CANDIDATES_SCHEMA)
+    # V3-O.15.16: 既有 DB migration — 補 last_session_id 欄 (新 DB 已含)
+    try:
+        conn.execute("ALTER TABLE skill_candidates ADD COLUMN last_session_id TEXT")
+    except Exception:
+        pass  # 欄已存在 → ignore
 
 
 # ─── concept canonicalization ────────────────────────────────────────────
@@ -418,6 +424,7 @@ def accumulate_teaching_evidence(
     concept_id: str, concept_name: str,
     teacher_user_id: str, teacher_display_name: str,
     event_id: str, summary: str,
+    session_id: str = "",
 ) -> dict:
     """V3-O.14: 累積 evidence 到 skill_candidates 表.
 
@@ -481,10 +488,10 @@ def accumulate_teaching_evidence(
                 "INSERT INTO skill_candidates "
                 "(candidate_id, concept_id, concept_name, teacher_user_id, teacher_display_name, "
                 "summary, evidence_count, evidence_event_ids, first_seen_at, last_reinforced_at, "
-                "status, promotion_threshold) "
-                "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'working', 3)",
+                "status, promotion_threshold, last_session_id) "
+                "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'working', 3, ?)",
                 (candidate_id, concept_id, concept_name, teacher_user_id, teacher_display_name,
-                 summary, json.dumps([event_id]), now_iso, now_iso),
+                 summary, json.dumps([event_id]), now_iso, now_iso, session_id),
             )
             conn.commit()
             return {
@@ -505,13 +512,18 @@ def accumulate_teaching_evidence(
         if event_id not in evt_ids:
             evt_ids.append(event_id)
         evt_ids = evt_ids[-10:]  # 限 10 條
-        ready = new_count >= threshold and row["status"] == "working"
-        new_status = "promoting" if ready else row["status"]
+        # V3-O.15.16 (2026-06-06 user 拍板): 已升格技能被再教 → 重開學習週期 → 立即 re-promote
+        # → 用最新 session 全對話重新彙整覆寫 SKILL.md = 糾正/擴充技能用法.
+        # (UNIQUE(concept,teacher) 約束下同概念無法另開新 row, 故同概念走「原地重彙整」;
+        #  不同/相似概念 fuzzy 只比 working 本就不會併入已升格的 → 自然另成新技能, 交 merge curator 整合.)
+        _eff_status = "working" if row["status"] == "promoted" else row["status"]
+        ready = new_count >= threshold and _eff_status == "working"
+        new_status = "promoting" if ready else _eff_status
         conn.execute(
             "UPDATE skill_candidates SET evidence_count=?, evidence_event_ids=?, "
-            "last_reinforced_at=?, summary=?, status=? WHERE candidate_id=?",
+            "last_reinforced_at=?, summary=?, status=?, last_session_id=? WHERE candidate_id=?",
             (new_count, json.dumps(evt_ids), now_iso, summary or row[1], new_status,
-             candidate_id),
+             session_id, candidate_id),
         )
         conn.commit()
         return {
@@ -528,7 +540,7 @@ def list_promotable_candidates(vault_root: Path) -> list[dict]:
         ensure_skill_candidates_schema(conn)
         rows = conn.execute(
             "SELECT candidate_id, concept_id, concept_name, teacher_user_id, teacher_display_name, "
-            "summary, evidence_count, evidence_event_ids, first_seen_at, last_reinforced_at "
+            "summary, evidence_count, evidence_event_ids, first_seen_at, last_reinforced_at, last_session_id "
             "FROM skill_candidates WHERE status='promoting' ORDER BY last_reinforced_at DESC LIMIT 20"
         ).fetchall()
     out = []
@@ -548,6 +560,7 @@ def list_promotable_candidates(vault_root: Path) -> list[dict]:
             "evidence_event_ids": evt_ids,
             "first_seen_at": r["first_seen_at"],
             "last_reinforced_at": r["last_reinforced_at"],
+            "session_id": r["last_session_id"] or "",
         })
     return out
 
@@ -584,37 +597,49 @@ def promote_candidate_to_skill(
     from agent_memory.companion.skill_learning_loop import SkillRegistration, register_skill
     from agent_memory.companion.companion_db import open_companion_db
 
-    # 撈 evidence event 全文
+    # V3-O.15.16 (2026-06-06 user 拍板): evidence 改撈「該教學 session 全對話」(user+bot 交替),
+    # 取代原本用 evidence_event_ids 去 raw_events 撈 — aggregator flush 路徑下 user raw_event 被 skip,
+    # 那些 id 在 raw_events 撈不到 → evidence 全空, 技能只靠一行 summary. 改用 session_id 最準.
     evidence_texts = []
-    if candidate.get("evidence_event_ids"):
-        with open_companion_db(vault_root) as conn:
+    _sid = candidate.get("session_id") or candidate.get("last_session_id") or ""
+    with open_companion_db(vault_root) as conn:
+        rows = []
+        if _sid:
+            rows = conn.execute(
+                "SELECT event_id, actor, content, created_at FROM raw_events "
+                "WHERE session_id=? ORDER BY created_at ASC LIMIT 40",
+                (_sid,),
+            ).fetchall()
+        # fallback: 舊路徑 evidence_event_ids (session 撈不到時)
+        if not rows and candidate.get("evidence_event_ids"):
             placeholders = ",".join(["?"] * len(candidate["evidence_event_ids"]))
             rows = conn.execute(
                 f"SELECT event_id, actor, content, created_at FROM raw_events "
                 f"WHERE event_id IN ({placeholders}) ORDER BY created_at ASC",
                 tuple(candidate["evidence_event_ids"]),
             ).fetchall()
-        for r in rows:
-            evidence_texts.append({
-                "event_id": r["event_id"],
-                "actor": r["actor"],
-                "content": (r["content"] or "")[:300],
-                "at": r["created_at"],
-            })
+    for r in rows:
+        evidence_texts.append({
+            "event_id": r["event_id"],
+            "actor": r["actor"],
+            "content": (r["content"] or "")[:300],
+            "at": r["created_at"],
+        })
 
     # LLM 提煉 procedure + trigger_keywords (給 RAG 撈)
     try:
         from agent_memory.llm_text_helpers import call_llm_for_text
         evidence_summary = "\n".join(
             f"[{e['at'][:19]}] {e['actor']}: {e['content']}"
-            for e in evidence_texts[:5]
+            for e in evidence_texts[:30]
         )
         prompt = (
             "你是夥伴大腦的 skill consolidation curator.\n"
-            "主人最近反覆教夥伴一個概念, 整理成正式技能寫進大腦.\n\n"
+            "最近有人反覆教夥伴一個概念, 整理成正式技能寫進大腦.\n\n"
             f"概念名稱: {candidate['concept_name']}\n"
             f"摘要: {candidate.get('summary', '')}\n\n"
-            f"原始對話 evidence:\n{evidence_summary[:2000]}\n\n"
+            "下面是教學當時夥伴與對方的完整對話 (user/bot 交替), 請看整個過程理解這個概念的正確用法:\n"
+            f"{evidence_summary[:4000]}\n\n"
             "輸出純 JSON (no code fence):\n"
             '{"trigger_situation": "<≤80字, 什麼情境下會用到, 給 RAG 撈時 embed 這段>",\n'
             ' "description": "<≤120字, 核心做法>",\n'

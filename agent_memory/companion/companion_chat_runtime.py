@@ -2639,106 +2639,120 @@ def run_companion_chat_turn(
     # 防 prompt injection 由「evidence_count>=3」+「UNIQUE(concept_id, teacher_user_id)」+「LLM 抽 canonical concept_id」三重天然防禦, 不需 owner-only 過濾.
     # 偵測 LLM (sub_task V4 Flash, 60s timeout), 失敗整段 skip 不破對話.
     if not record_only and final_response:
-        try:
-            from agent_memory.companion.teaching_detector import (
-                detect_teaching_intent, accumulate_teaching_evidence,
-                list_promotable_candidates, promote_candidate_to_skill,
-                detect_attack_intent, log_blocked_teaching_attempt,  # V3-O.15.3
-            )
-            # 撈近 5 turn 對話當 context
-            _recent_excerpt = ""
+        # ⭐ V3-O.15.16 (2026-06-06 user 拍板): step17_7 教學偵測+升格 改背景 daemon thread.
+        # 原本 detect_teaching(60s) + attack(60s) + promote(LLM) 同步串在 chat turn, 升格那輪
+        # 飆 98s 卡死 bridge → relay flush timeout → bot 靜默. 背景化後主流程立刻回覆.
+        # closure 捕獲 request/event_id/vault_root (enclosing locals, 之後不再改寫), 同 _bg_flush 模式.
+        import threading as _threading_td
+        def _bg_teaching():
             try:
-                with open_companion_db(vault_root) as _conn_td:
-                    _rows_td = _conn_td.execute(
-                        "SELECT actor, content FROM raw_events WHERE session_id=? "
-                        "ORDER BY created_at DESC LIMIT 6", (request.session_id,),
-                    ).fetchall()
-                _recent_excerpt = "\n".join(
-                    f"[{r['actor']}] {(r['content'] or '')[:150]}" for r in reversed(_rows_td)
+                from agent_memory.companion.teaching_detector import (
+                    detect_teaching_intent, accumulate_teaching_evidence,
+                    list_promotable_candidates, promote_candidate_to_skill,
+                    detect_attack_intent, log_blocked_teaching_attempt,  # V3-O.15.3
                 )
-            except Exception:
-                pass
-            # V3-O.15.2: 撈說話者 display_name 給 LLM prompt + 朋友卡 wikilink
-            # V3-O.15.9 (2026-06-06 user 拍正): fallback chain — users.display_name (空) →
-            # yaml owner.label (對 owner) → "主人"/"觀眾朋友" 字面.
-            _teacher_name = ""
-            try:
-                with open_companion_db(vault_root) as _conn_n:
-                    _r = _conn_n.execute(
-                        "SELECT display_name FROM users WHERE user_id=?",
-                        (request.user_id,),
-                    ).fetchone()
-                    if _r:
-                        _teacher_name = _r["display_name"] or ""
-            except Exception:
-                pass
-            # V3-O.15.9 → V3-O.15.10: owner 直接 "主人" 字面 (user 拍板 不用 yaml.label)
-            if not _teacher_name:
-                _teacher_name = "主人" if request.is_owner else "觀眾朋友"
-            # V3-O.15.2: speaker_role 給 LLM 判斷上下文 (主人 vs 觀眾朋友 教學語境略不同)
-            _speaker_role = "owner" if request.is_owner else "viewer"
-            _td_result = detect_teaching_intent(
-                user_message=request.message,
-                recent_dialogue_excerpt=_recent_excerpt,
-                speaker_role=_speaker_role,
-                speaker_display_name=_teacher_name,
-                vault_root=vault_root,
-                timeout_seconds=60.0,
-            )
-            _allow_accumulate = False
-            if _td_result and _td_result.get("is_teaching"):
-                # V3-O.15.3 (2026-06-06 user 拍板): 第二層 — 攻擊偵測, 只有「真誠教學 + 非攻擊」才累積
-                _atk_result = detect_attack_intent(
+                # 撈近 5 turn 對話當 context
+                _recent_excerpt = ""
+                try:
+                    with open_companion_db(vault_root) as _conn_td:
+                        _rows_td = _conn_td.execute(
+                            "SELECT actor, content FROM raw_events WHERE session_id=? "
+                            "ORDER BY created_at DESC LIMIT 6", (request.session_id,),
+                        ).fetchall()
+                    _recent_excerpt = "\n".join(
+                        f"[{r['actor']}] {(r['content'] or '')[:150]}" for r in reversed(_rows_td)
+                    )
+                except Exception:
+                    pass
+                # V3-O.15.2: 撈說話者 display_name 給 LLM prompt + 朋友卡 wikilink
+                # V3-O.15.9 (2026-06-06 user 拍正): fallback chain — users.display_name (空) →
+                # yaml owner.label (對 owner) → "主人"/"觀眾朋友" 字面.
+                _teacher_name = ""
+                try:
+                    with open_companion_db(vault_root) as _conn_n:
+                        _r = _conn_n.execute(
+                            "SELECT display_name FROM users WHERE user_id=?",
+                            (request.user_id,),
+                        ).fetchone()
+                        if _r:
+                            _teacher_name = _r["display_name"] or ""
+                except Exception:
+                    pass
+                # V3-O.15.9 → V3-O.15.10: owner 直接 "主人" 字面 (user 拍板 不用 yaml.label)
+                if not _teacher_name:
+                    _teacher_name = "主人" if request.is_owner else "觀眾朋友"
+                # V3-O.15.2: speaker_role 給 LLM 判斷上下文 (主人 vs 觀眾朋友 教學語境略不同)
+                _speaker_role = "owner" if request.is_owner else "viewer"
+                _td_result = detect_teaching_intent(
                     user_message=request.message,
                     recent_dialogue_excerpt=_recent_excerpt,
-                    proposed_concept_name=_td_result["concept_name"],
                     speaker_role=_speaker_role,
                     speaker_display_name=_teacher_name,
                     vault_root=vault_root,
                     timeout_seconds=60.0,
                 )
-                if _atk_result.get("is_attack"):
-                    # 擋下, 寫 injection_detected, 不累積 evidence
-                    log_blocked_teaching_attempt(
-                        vault_root,
-                        user_id=request.user_id, event_id=event_id,
-                        concept_name=_td_result["concept_name"],
-                        attack_type=_atk_result.get("attack_type", "unknown"),
-                        reason=_atk_result.get("reason", ""),
-                        confidence=_atk_result.get("confidence", 0.5),
+                _allow_accumulate = False
+                if _td_result and _td_result.get("is_teaching"):
+                    # V3-O.15.3 (2026-06-06 user 拍板): 第二層 — 攻擊偵測, 只有「真誠教學 + 非攻擊」才累積
+                    _atk_result = detect_attack_intent(
+                        user_message=request.message,
+                        recent_dialogue_excerpt=_recent_excerpt,
+                        proposed_concept_name=_td_result["concept_name"],
+                        speaker_role=_speaker_role,
+                        speaker_display_name=_teacher_name,
+                        vault_root=vault_root,
+                        timeout_seconds=60.0,
                     )
-                    try:
-                        import sys as _sys
-                        print(f"[teaching_detector] BLOCKED uid={request.user_id[:18]} "
-                              f"concept={_td_result['concept_name']} "
-                              f"type={_atk_result.get('attack_type')} "
-                              f"reason={_atk_result.get('reason', '')[:80]}",
-                              file=_sys.stderr, flush=True)
-                    except Exception:
-                        pass
-                else:
-                    _allow_accumulate = True
-            if _allow_accumulate:
-                _acc = accumulate_teaching_evidence(
-                    vault_root,
-                    concept_id=_td_result["concept_id"],
-                    concept_name=_td_result["concept_name"],
-                    teacher_user_id=request.user_id,
-                    teacher_display_name=_teacher_name,
-                    event_id=event_id,
-                    summary=_td_result.get("summary", ""),
-                )
-                # 達門檻 → 立刻嘗試 promote (1 個 candidate per turn 限制, 避免爆 sub_task)
-                if _acc.get("ready_to_promote"):
-                    for _cand in list_promotable_candidates(vault_root)[:1]:
+                    if _atk_result.get("is_attack"):
+                        # 擋下, 寫 injection_detected, 不累積 evidence
+                        log_blocked_teaching_attempt(
+                            vault_root,
+                            user_id=request.user_id, event_id=event_id,
+                            concept_name=_td_result["concept_name"],
+                            attack_type=_atk_result.get("attack_type", "unknown"),
+                            reason=_atk_result.get("reason", ""),
+                            confidence=_atk_result.get("confidence", 0.5),
+                        )
                         try:
-                            promote_candidate_to_skill(
-                                vault_root, candidate=_cand,
-                            )
+                            import sys as _sys
+                            print(f"[teaching_detector] BLOCKED uid={request.user_id[:18]} "
+                                  f"concept={_td_result['concept_name']} "
+                                  f"type={_atk_result.get('attack_type')} "
+                                  f"reason={_atk_result.get('reason', '')[:80]}",
+                                  file=_sys.stderr, flush=True)
                         except Exception:
                             pass
-        except Exception:
-            pass
+                    else:
+                        _allow_accumulate = True
+                if _allow_accumulate:
+                    _acc = accumulate_teaching_evidence(
+                        vault_root,
+                        concept_id=_td_result["concept_id"],
+                        concept_name=_td_result["concept_name"],
+                        teacher_user_id=request.user_id,
+                        teacher_display_name=_teacher_name,
+                        event_id=event_id,
+                        summary=_td_result.get("summary", ""),
+                        session_id=request.session_id,
+                    )
+                    # 達門檻 → 立刻嘗試 promote (1 個 candidate per turn 限制, 避免爆 sub_task)
+                    if _acc.get("ready_to_promote"):
+                        for _cand in list_promotable_candidates(vault_root)[:1]:
+                            try:
+                                promote_candidate_to_skill(
+                                    vault_root, candidate=_cand,
+                                )
+                            except Exception as _pexc:
+                                import traceback as _tb, sys as _psys
+                                print(f"[V3-O.15.16 promote FAIL] {type(_pexc).__name__}: {str(_pexc)[:200]}",
+                                      file=_psys.stderr, flush=True)
+                                _tb.print_exc()
+            except Exception as _bexc:
+                import traceback as _tb2, sys as _bsys
+                print(f"[V3-O.15.16 teaching bg FAIL] {type(_bexc).__name__}: {str(_bexc)[:200]}",
+                      file=_bsys.stderr, flush=True)
+                _tb2.print_exc()
+        _threading_td.Thread(target=_bg_teaching, daemon=True, name="v3-teaching-promote").start()
     resp.pipeline_steps_done.append(177)
     _mark_step_time(_step_timings, "step17_7_teaching_detector")
 
