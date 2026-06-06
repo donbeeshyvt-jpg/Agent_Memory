@@ -363,9 +363,16 @@ def _write_merged_skill(vault_root: Path, cluster: list, merged: dict) -> Path:
 
 
 def _archive_skill_dir(skill_dir: Path) -> Path:
-    """V3-O.15.21 (2026-06-06 user 拍板「合併後舊的移除, 否則 _merged 無限增生」):
-    直接刪除被合併的舊技能目錄, 不再搬去 _merged/.
-    安全性: 被合併的內容已逐字保留進合併後技能的 ## 完整內容 (### 來自「X」) +
-    frontmatter absorbed_skill_ids, 故刪除不丟資訊."""
-    shutil.rmtree(str(skill_dir), ignore_errors=True)
-    return skill_dir
+    """V3-O.15.22 (2026-06-06 user 拍板修正): 把被合併的舊技能搬到子資料夾 _merged/ 保留 (audit),
+    不刪除. 設計: 母資料夾 (54_Taught_Skills) = 活躍技能, 持續累積新技能, RAG 撈這層;
+    子資料夾 _merged/ = 被合併的舊技能, V3-O.15.20 已讓 retrieve_skills 排除它 → 不會被撈到/搜錯,
+    故留著當紀錄不算「增生」(增生問題是出在『被檢索到』, 不是『存在』). 15min daemon 持續自動合併."""
+    parent = skill_dir.parent
+    merged_root = parent / "_merged"
+    merged_root.mkdir(parents=True, exist_ok=True)
+    dest = merged_root / skill_dir.name
+    if dest.exists():
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        dest = merged_root / f"{skill_dir.name}_{ts}"
+    shutil.move(str(skill_dir), str(dest))
+    return dest
