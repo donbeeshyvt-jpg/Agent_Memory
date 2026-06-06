@@ -605,11 +605,14 @@ def promote_candidate_to_skill(
     with open_companion_db(vault_root) as conn:
         rows = []
         if _sid:
+            # V3-O.15.17 (2026-06-06): 撈「最近 40 turn」(DESC) 再還原時序 — session 是頻道級長壽,
+            # 原本 ASC LIMIT 40 會撈到 session 最古老的招呼 (幾天前), 不是剛剛的教學對話.
             rows = conn.execute(
                 "SELECT event_id, actor, content, created_at FROM raw_events "
-                "WHERE session_id=? ORDER BY created_at ASC LIMIT 40",
+                "WHERE session_id=? ORDER BY created_at DESC LIMIT 40",
                 (_sid,),
             ).fetchall()
+            rows = list(reversed(rows))  # 還原成時間正序 (舊→新) 給 LLM 讀
         # fallback: 舊路徑 evidence_event_ids (session 撈不到時)
         if not rows and candidate.get("evidence_event_ids"):
             placeholders = ",".join(["?"] * len(candidate["evidence_event_ids"]))
