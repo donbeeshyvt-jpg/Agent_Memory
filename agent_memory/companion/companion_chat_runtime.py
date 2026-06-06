@@ -911,6 +911,24 @@ def _render_retrieved_second_brain_context(
         f'  </retrieved_friend_cards>'
     )
 
+    # ⭐ V3-O.15.15 (2026-06-06 user 拍板): 朋友名冊 (永遠 emit) — 全體 metadata, 無相處紀錄內文.
+    #    解 retrieved_friend_cards 只撈 top-3 的盲點: 「總共幾個朋友 / 列出所有人 / 誰最熟」
+    #    這類全體/數量/排序問題, 用名冊答 (完整); 個別「相處細節」才看上面 top-3 全卡.
+    #    persona-agnostic: 不 hardcode 角色台詞, 措辭交 SOUL.
+    items.append(
+        f'  <friend_roster mode="raw">\n'
+        f'    <retrieval_policy>\n'
+        f'      這是你認識的「所有人」的完整名冊 (全體 metadata: 人數 + 名字 + 互動次數 + 親密度), 不含相處紀錄內文.\n'
+        f'      被問「你認識多少朋友 / 列出所有人 / 最近跟誰最好 / 誰最熟」這類「全體 / 數量 / 排序」問題時,\n'
+        f'      請用這份名冊回答 — 它是完整的, 不是 top-3 取樣. 要講某個人的「具體相處內容」時,\n'
+        f'      才看上面 retrieved_friend_cards 撈回的整張卡 (那是依當下對話相關度的 top-3).\n'
+        f'    </retrieval_policy>\n'
+        f'    <![CDATA[\n'
+        f'{sk_kb_sections.get("friend_roster", "(本輪名冊未讀到)")}\n'
+        f']]>\n'
+        f'  </friend_roster>'
+    )
+
     # legacy: 維持原 knowledge_base_rag_hits section (step 11.85 撈的) 也保留
     if knowledge_hits:
         kh_lines: list[str] = []

@@ -430,6 +430,53 @@ def _render(ctx: MemoryContext, l2_strs: list[str], l4_strs: list[str]) -> str:
     return "\n".join(parts)
 
 
+def _build_friend_roster(vault_root) -> str:
+    """V3-O.15.15 (2026-06-06 user 拍板): 輕量「朋友名冊」— 全體 metadata, 無相處紀錄內文.
+
+    解 V3-O.15.6 朋友卡 RAG 只撈 top-3 的盲點: 被問「認識多少朋友 / 列出所有人 /
+    最近跟誰最好」這類「全體 / 數量 / 排序」問題時, top-3 RAG 撈不全也數不出來.
+    名冊查 intimacy_states ⨝ users (排除 owner + banned), 依親密度排, 極輕量
+    (~數百字 vs 全卡 ~10 萬字). 內文仍由 retrieved_friend_cards 的 top-3 提供.
+    """
+    try:
+        import sqlite3
+        from agent_memory.companion.companion_db import get_companion_db_path
+        db = get_companion_db_path(vault_root)
+        if not db.exists():
+            return ""
+        owner_uid = ""
+        try:
+            from agent_memory.companion.companion_config import get_owner_user_id_for_transport
+            owner_uid = get_owner_user_id_for_transport(vault_root, "discord") or ""
+        except Exception:
+            owner_uid = ""
+        conn = sqlite3.connect(str(db))
+        try:
+            rows = conn.execute(
+                "SELECT i.user_id, COALESCE(u.display_name, i.user_id) AS name, "
+                "i.interaction_count, i.intimacy_stage, i.intimacy_score, i.last_interaction_at "
+                "FROM intimacy_states i LEFT JOIN users u ON u.user_id = i.user_id "
+                "WHERE COALESCE(u.is_banned, 0) = 0 "
+                "ORDER BY i.intimacy_score DESC, i.interaction_count DESC"
+            ).fetchall()
+        finally:
+            conn.close()
+        friends = [r for r in rows if str(r[0]) != str(owner_uid)]
+        if not friends:
+            return ""
+        lines = [f"你目前認識 {len(friends)} 位朋友 (以下為完整名冊, 依親密度排序; 只含 metadata, 不含相處紀錄內文):"]
+        for _uid, name, n, stage, score, last in friends:
+            last10 = (last or "")[:10]
+            try:
+                score_s = round(float(score or 0), 2)
+            except Exception:
+                score_s = score
+            lines.append(f"  - {name}｜互動 {n} 次｜親密度 {stage or '?'}（{score_s}）｜最近 {last10}")
+        return "\n".join(lines)
+    except Exception:
+        return ""
+
+
 def render_skills_and_knowledge_sections(
     vault_root, current_message: str = "",
 ) -> dict:
@@ -448,6 +495,7 @@ def render_skills_and_knowledge_sections(
         "learned_skills_relevant": "(本輪未撈到相關技能, 但若情境符合可主動 callback 學過的東西)",
         "knowledge_base_relevant_hits": "(本輪未撈到相關外部知識, 若需要可主動表示需要查資料)",
         "retrieved_friend_cards": "(本輪未撈到相關朋友卡, 若你「記得」某人但內容模糊, 可能是因為他不在最近對話)",
+        "friend_roster": "(本輪名冊未讀到)",
     }
     if not current_message or not vault_root:
         return out
@@ -482,6 +530,13 @@ def render_skills_and_knowledge_sections(
             for h in hits:
                 lines.append(f"### {h['path']}\n{h['content']}")
             out["retrieved_friend_cards"] = "\n\n".join(lines)
+    except Exception:
+        pass
+    # ⭐ V3-O.15.15: 20 — 朋友名冊 (全體 metadata, 無內文) — 答「幾個朋友/列全部/誰最熟」
+    try:
+        roster = _build_friend_roster(vault_root)
+        if roster:
+            out["friend_roster"] = roster
     except Exception:
         pass
     return out
