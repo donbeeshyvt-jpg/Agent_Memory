@@ -107,11 +107,14 @@ _COMPANION_SKELETON_DIRS = (
     "30_Emotional_State/35_Self_Concepts",   # V3-O.7: 自我概念條目 (identity_relevance 事件提煉)
     "30_Emotional_State/36_Narratives",       # V3-K3: 敘事弧 (narrative_writer, curator L4 寫)
     "40_Knowledge_Base",
-    # ⭐ V3-G4 (user 2026-05-27 拍板): 廢舊 41/42/43/44 細分, 改 [日常知識 + 外部知識] 兩大入口
-    # 對齊 user「不要分 41/42/43/44, 改成 日常(對話累積) + 外部(中之人/hermes 抓)」
-    "40_Knowledge_Base/41_Daily_Knowledge",       # 對話中累積的知識 (curator L3 寫)
-    "40_Knowledge_Base/42_External_Knowledge",    # user / hermes 投餵的文獻 (curator L4 寫)
-    "40_Knowledge_Base/42_External_Knowledge/_ingest_inbox",  # 入口 (Watcher 偵測)
+    # V3-O.15.12 (2026-06-06 user): 41=主人投放 / 42=自己查 (hermes agent), 各自 _inbox + _processed.
+    # inbox_ingest_daemon 每 5min 掃 _inbox → LLM 摘整成 schema v12 md (≤25000 字內文) → 原檔搬 _processed.
+    "40_Knowledge_Base/41_Daily_Knowledge",                # 主人投放的知識 (你拖檔)
+    "40_Knowledge_Base/41_Daily_Knowledge/_inbox",         # 主人投放入口 (daemon 5min 掃)
+    "40_Knowledge_Base/41_Daily_Knowledge/_processed",     # 處理後原檔搬這
+    "40_Knowledge_Base/42_External_Knowledge",             # 自己查的知識 (hermes agent 未來自查)
+    "40_Knowledge_Base/42_External_Knowledge/_inbox",      # agent 自查放這
+    "40_Knowledge_Base/42_External_Knowledge/_processed",  # 處理後原檔搬這
     # V3-O.15.5 (2026-06-06 user 拍板): 50_Skills_Tools 結構改成清楚對應升格來源.
     # 廢 52_OpenClaw_MCP + 53_Tool_Audit_Log (V3 老設計沒用到), 51 重新命名 + 新增 54.
     "50_Skills_Tools",
