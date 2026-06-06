@@ -177,6 +177,9 @@ def retrieve_skills(
         source_path_prefix="50_Skills_Tools",
         top_k=top_k,
         max_chars_per_hit=max_chars,
+        # ⭐ V3-O.15.20 (2026-06-06 user 抓到): 排除已合併 archive 的舊技能, 否則 RAG 會同時撈到
+        # 合併版 + _merged 裡的舊版 → 搜到重複/過時技能.
+        exclude_subdirs=["_merged", "_archived", "_inbox", "_processed"],
     )
 
 
