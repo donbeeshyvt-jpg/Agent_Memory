@@ -130,6 +130,27 @@ def _daemon_loop(vault_root: Path) -> None:
         except Exception as exc:
             print(f"[inbox_daemon] skill_merge EXC {type(exc).__name__}: {str(exc)[:200]}",
                   file=sys.stderr, flush=True)
+        # ⭐ V3-O.15.23 (user 拍板): 每週一次「跨層綜合合併」(L0 母 + L1 _consolidated 一起再整合)
+        try:
+            from datetime import datetime, timezone
+            _wmk = vault_root / ".ai" / "last_weekly_merge_run.txt"
+            _do_weekly = True
+            if _wmk.exists():
+                try:
+                    _wlast = datetime.fromisoformat(_wmk.read_text(encoding="utf-8").strip())
+                    _do_weekly = (datetime.now(timezone.utc) - _wlast).total_seconds() > 604800  # 7 天
+                except Exception:
+                    _do_weekly = True
+            if _do_weekly:
+                from agent_memory.companion.skill_merge_curator import consolidate_weekly_comprehensive
+                _wmk.parent.mkdir(parents=True, exist_ok=True)
+                _wmk.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+                _wms = consolidate_weekly_comprehensive(vault_root)
+                if _wms.get("merged", 0) > 0:
+                    print(f"[inbox_daemon] weekly_merge: {_wms}", file=sys.stderr, flush=True)
+        except Exception as exc:
+            print(f"[inbox_daemon] weekly_merge EXC {type(exc).__name__}: {str(exc)[:200]}",
+                  file=sys.stderr, flush=True)
         time.sleep(_DAEMON_INTERVAL_SECONDS)
 
 

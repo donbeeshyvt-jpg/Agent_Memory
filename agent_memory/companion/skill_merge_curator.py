@@ -28,46 +28,43 @@ SIMILARITY_THRESHOLD = 0.4  # jaccard ≥ 0.4 視為 cluster 候選
 MIN_CLUSTER_SIZE = 2
 
 
-# ─── 主入口 ─────────────────────────────────────────────────
-def consolidate_similar_skills(vault_root: Path) -> dict:
-    """V3-O.15: 每日 Layer3 觸發一次. 掃 + cluster + LLM judge + merge.
+# ─── 主入口 (V3-O.15.23 三層 merge 架構) ──────────────────────
+# L0 母資料夾 54_Taught_Skills/ (直屬, 跳 _*) = 新升格技能, 15min 掃這層
+# L1 子資料夾 54_Taught_Skills/_consolidated/ = 合併結果 (已合併過一次), 15min 不掃、每週才掃
+# 合併成功 → 結果進 L1 + 被吸收的舊技能直接刪除 (內容已併進結果). RAG 兩層都撈 (retrieve 排除清單沒含 _consolidated).
+_L1_SUBDIR = "_consolidated"
 
-    Returns: {scanned: N, clusters: M, merged: K, archived: L}
-    """
-    out = {"scanned": 0, "clusters": 0, "merged": 0, "archived": 0}
-    skills_root = vault_root / "50_Skills_Tools" / "54_Taught_Skills"
-    if not skills_root.exists():
-        return out
 
-    # 1. 掃所有 SKILL.md (跳 _merged/)
+def _collect_skills(skill_dirs) -> list:
+    """掃一批 skill 目錄 → meta list (含 _dir/_path)."""
     skills = []
-    for skill_dir in skills_root.iterdir():
-        if not skill_dir.is_dir() or skill_dir.name.startswith("_"):
+    for d in skill_dirs:
+        if not d.is_dir():
             continue
-        skill_path = skill_dir / "SKILL.md"
-        if not skill_path.exists():
+        sp = d / "SKILL.md"
+        if not sp.exists():
             continue
-        meta = _parse_skill_md(skill_path)
+        meta = _parse_skill_md(sp)
         if meta:
-            meta["_dir"] = skill_dir
-            meta["_path"] = skill_path
+            meta["_dir"] = d
+            meta["_path"] = sp
             skills.append(meta)
+    return skills
+
+
+def _merge_skills(vault_root: Path, skills: list, out: dict) -> None:
+    """共用核心: cluster + LLM judge + 寫合併結果(進 L1) + 刪除被吸收的舊技能."""
     out["scanned"] = len(skills)
     if len(skills) < 2:
-        return out
-
-    # 2. cluster by trigger_keywords jaccard
+        return
     clusters = _cluster_by_keywords(skills, threshold=SIMILARITY_THRESHOLD)
     out["clusters"] = sum(1 for c in clusters if len(c) >= MIN_CLUSTER_SIZE)
     if out["clusters"] == 0:
-        return out
-
-    # 3. LLM judge per cluster (V3-O.15 fix: 不用顯式 LLMClient, call_llm_for_text 拿 vault_root)
+        return
     try:
         from agent_memory.llm_text_helpers import call_llm_for_text  # noqa: F401  early import check
     except Exception:
-        return out
-
+        return
     for cluster in clusters:
         if len(cluster) < MIN_CLUSTER_SIZE:
             continue
@@ -77,27 +74,52 @@ def consolidate_similar_skills(vault_root: Path) -> dict:
             continue
         if not judge_result or not judge_result.get("should_merge"):
             continue
-
         merged = judge_result.get("merged_skill", {})
         if not merged.get("skill_name"):
             continue
-
-        # 4. 寫新 merged SKILL.md
         try:
-            new_path = _write_merged_skill(vault_root, cluster, merged)
-            if new_path:
+            new_path = _write_merged_skill(vault_root, cluster, merged)  # 寫進 L1 _consolidated/
+            if new_path:  # 確認合併成功
                 out["merged"] += 1
-                # 5. archive 老的
-                for old in cluster:
+                for old in cluster:  # V3-O.15.23: 確認成功後刪除被吸收的舊技能 (不保留)
                     try:
-                        archived = _archive_skill_dir(old["_dir"])
-                        if archived:
-                            out["archived"] += 1
+                        _archive_skill_dir(old["_dir"])
+                        out["archived"] += 1
                     except Exception:
                         pass
         except Exception:
             pass
 
+
+def consolidate_similar_skills(vault_root: Path) -> dict:
+    """V3-O.15.23 (15 分鐘): 只掃 L0 母資料夾 (直屬, 跳 _*) → 合併 → 結果寫進 L1 _consolidated/
+    → 母資料夾被吸收的舊技能刪除. 不掃 L1 (避免重複合併已合併的). 跨層綜合由 weekly 做.
+
+    Returns: {scanned, clusters, merged, archived}
+    """
+    out = {"scanned": 0, "clusters": 0, "merged": 0, "archived": 0}
+    root = vault_root / "50_Skills_Tools" / "54_Taught_Skills"
+    if not root.exists():
+        return out
+    l0_dirs = [d for d in root.iterdir() if d.is_dir() and not d.name.startswith("_")]
+    _merge_skills(vault_root, _collect_skills(l0_dirs), out)
+    return out
+
+
+def consolidate_weekly_comprehensive(vault_root: Path) -> dict:
+    """V3-O.15.23 (每週一次): 掃 L0 母資料夾 + L1 _consolidated/ 一起 → 綜合再合併 (跨層整合)
+    → 結果寫進 L1 → 被吸收的 (不論 L0/L1) 刪除. 讓合併過一次的也能跟新技能再整合.
+
+    Returns: {scanned, clusters, merged, archived}
+    """
+    out = {"scanned": 0, "clusters": 0, "merged": 0, "archived": 0}
+    root = vault_root / "50_Skills_Tools" / "54_Taught_Skills"
+    if not root.exists():
+        return out
+    l0_dirs = [d for d in root.iterdir() if d.is_dir() and not d.name.startswith("_")]
+    l1_root = root / _L1_SUBDIR
+    l1_dirs = [d for d in l1_root.iterdir() if d.is_dir()] if l1_root.exists() else []
+    _merge_skills(vault_root, _collect_skills(l0_dirs + l1_dirs), out)
     return out
 
 
@@ -340,7 +362,7 @@ def _write_merged_skill(vault_root: Path, cluster: list, merged: dict) -> Path:
         source="skill_merge_curator",
         taught_by_user_id=primary["taught_by_user_id"],
         taught_by_name=primary["taught_by_name"],
-        first_taught_at=min(s["first_contributed_at"] for s in cluster if s["first_contributed_at"]) or "",
+        first_taught_at=min((s["first_contributed_at"] for s in cluster if s["first_contributed_at"]), default="") or "",
         last_reinforced_at=datetime.now(timezone.utc).isoformat(),
         evidence_count=total_evidence,
         evidence_event_ids=all_evt_ids,
@@ -349,30 +371,31 @@ def _write_merged_skill(vault_root: Path, cluster: list, merged: dict) -> Path:
     )
     result = register_skill(vault_root, skill)
     if result.get("registered"):
-        # 補寫 absorbed_skill_ids 到 frontmatter (作 audit)
         try:
             new_md = vault_root / result["path"]
             text = new_md.read_text(encoding="utf-8")
-            absorbed_line = f"absorbed_skill_ids: {[s['skill_id'] for s in cluster]}\n"
-            text = text.replace("---\n\n# ", f"{absorbed_line}---\n\n# ", 1)
+            # V3-O.15.23: absorbed_skill_ids + consolidated 標記 (已合併過一次)
+            marker = (f"absorbed_skill_ids: {[s['skill_id'] for s in cluster]}\n"
+                      f"consolidated: true\n")
+            text = text.replace("---\n\n# ", f"{marker}---\n\n# ", 1)
             new_md.write_text(text, encoding="utf-8")
-            return new_md
+            # V3-O.15.23: 合併結果搬進 L1 子資料夾 _consolidated/ (RAG 仍撈, 15min merge 不掃這層)
+            src_dir = new_md.parent
+            l1_root = src_dir.parent / _L1_SUBDIR
+            l1_root.mkdir(parents=True, exist_ok=True)
+            dest_dir = l1_root / src_dir.name
+            if dest_dir.exists():
+                shutil.rmtree(str(dest_dir), ignore_errors=True)
+            shutil.move(str(src_dir), str(dest_dir))
+            return dest_dir / "SKILL.md"
         except Exception:
             pass
     return None
 
 
 def _archive_skill_dir(skill_dir: Path) -> Path:
-    """V3-O.15.22 (2026-06-06 user 拍板修正): 把被合併的舊技能搬到子資料夾 _merged/ 保留 (audit),
-    不刪除. 設計: 母資料夾 (54_Taught_Skills) = 活躍技能, 持續累積新技能, RAG 撈這層;
-    子資料夾 _merged/ = 被合併的舊技能, V3-O.15.20 已讓 retrieve_skills 排除它 → 不會被撈到/搜錯,
-    故留著當紀錄不算「增生」(增生問題是出在『被檢索到』, 不是『存在』). 15min daemon 持續自動合併."""
-    parent = skill_dir.parent
-    merged_root = parent / "_merged"
-    merged_root.mkdir(parents=True, exist_ok=True)
-    dest = merged_root / skill_dir.name
-    if dest.exists():
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-        dest = merged_root / f"{skill_dir.name}_{ts}"
-    shutil.move(str(skill_dir), str(dest))
-    return dest
+    """V3-O.15.23 (2026-06-06 user 拍板): 合併成功確認後, 直接刪除被吸收的舊技能 (不保留).
+    安全: 被吸收技能的完整內容已逐字併進合併結果的 ## 完整內容 (### 來自「X」) +
+    frontmatter absorbed_skill_ids, 故刪除不丟資訊. (合併『結果』另存 L1 _consolidated/.)"""
+    shutil.rmtree(str(skill_dir), ignore_errors=True)
+    return skill_dir
