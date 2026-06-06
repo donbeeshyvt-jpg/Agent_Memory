@@ -42,6 +42,11 @@ class SkillRegistration:
     evidence_event_ids: list[str] = field(default_factory=list)
     trigger_keywords: list[str] = field(default_factory=list)  # RAG embed 用 + FTS5 keyword
     evidence_dialogues: list[dict] = field(default_factory=list)  # [{actor, content, at, event_id}]
+    # ⭐ V3-O.15.18 多面向 schema (user 拍板「形成技能要多面向」) — 皆空 default, 向後相容
+    trigger_situations: list[str] = field(default_factory=list)  # 多個觸發情境 (取代單一 trigger_situation)
+    literal_mechanism: list[dict] = field(default_factory=list)  # [{kind, literal, note}] 逐字實際 code/語法
+    worked_example: dict = field(default_factory=dict)  # {trigger_input, ideal_output, note}
+    usage_boundaries: dict = field(default_factory=dict)  # {avoid_when:[], constraints:[]}
 
 
 def _safe_skill_id(name: str) -> str:
@@ -139,19 +144,74 @@ def register_skill(
     frontmatter_lines.append("---")
     frontmatter_lines.append("")
 
-    body_lines = [
-        f"# {skill.skill_name}",
-        "",
-        "## 觸發情境",  # ⭐ RAG embed 主要靠這段
-        skill.trigger_situation or "(未填)",
-        "",
-        "## 描述",
-        skill.description or "(未填)",
-        "",
-        "## 步驟摘要",
-        steps_md or "(無明確步驟)",
-        "",
-    ]
+    # ⭐ V3-O.15.18 多面向技能模板 — literal_mechanism/worked_example 排前段
+    # (retrieve_skills max_chars=2000 截斷保護: 最關鍵的「實際打法」要在前面不被截掉)
+    body_lines = [f"# {skill.skill_name}", ""]
+    # 觸發情境 (多條優先, fallback 單條) — ⭐ RAG embed 主要靠這段
+    body_lines.append("## 觸發情境")
+    if skill.trigger_situations:
+        for s in skill.trigger_situations[:5]:
+            if s:
+                body_lines.append(f"- {s}")
+    else:
+        body_lines.append(skill.trigger_situation or "(未填)")
+    body_lines.append("")
+    # ⭐ 實際打法 (可直接複製) — 修「撈出來不知道怎麼用」核心
+    if skill.literal_mechanism:
+        body_lines.append("## 實際打法 (可直接複製)")
+        body_lines.append("")
+        for m in skill.literal_mechanism[:8]:
+            if not isinstance(m, dict):
+                continue
+            literal = (m.get("literal") or m.get("verbatim") or "").strip()
+            if not literal:
+                continue
+            kind = (m.get("kind") or "").strip()
+            note = (m.get("note") or "").strip()
+            line = "- "
+            if kind:
+                line += f"[{kind}] "
+            line += f"`{literal}`"
+            if note:
+                line += f" — {note}"
+            body_lines.append(line)
+        body_lines.append("")
+    # ⭐ 正確示範 (情境 → 成品)
+    if isinstance(skill.worked_example, dict) and skill.worked_example:
+        _we = skill.worked_example
+        _ti = (_we.get("trigger_input") or "").strip()
+        _io = (_we.get("ideal_output") or "").strip()
+        _wn = (_we.get("note") or _we.get("why") or "").strip()
+        if _ti or _io:
+            body_lines.append("## 正確示範")
+            body_lines.append("")
+            if _ti:
+                body_lines.append(f"- 情境: {_ti}")
+            if _io:
+                body_lines.append(f"- 該回: {_io}")
+            if _wn:
+                body_lines.append(f"- 重點: {_wn}")
+            body_lines.append("")
+    # 描述
+    body_lines.append("## 描述")
+    body_lines.append(skill.description or "(未填)")
+    body_lines.append("")
+    # 步驟摘要
+    body_lines.append("## 步驟摘要")
+    body_lines.append(steps_md or "(無明確步驟)")
+    body_lines.append("")
+    # ⭐ 使用邊界 (不要用 / 限制)
+    if isinstance(skill.usage_boundaries, dict) and skill.usage_boundaries:
+        _avoid = [a for a in (skill.usage_boundaries.get("avoid_when") or []) if a]
+        _cons = [c for c in (skill.usage_boundaries.get("constraints") or []) if c]
+        if _avoid or _cons:
+            body_lines.append("## 使用邊界")
+            body_lines.append("")
+            for a in _avoid[:4]:
+                body_lines.append(f"- ✗ 不要用: {a}")
+            for c in _cons[:3]:
+                body_lines.append(f"- ⚠ 限制: {c}")
+            body_lines.append("")
     # V3-O.14 範例對話 (RAG 撈時帶上下文)
     if skill.evidence_dialogues:
         body_lines.append("## 範例對話")

@@ -305,6 +305,7 @@ def detect_teaching_intent(
     speaker_role: str, vault_root: Path,
     speaker_display_name: str = "",
     timeout_seconds: float = 60.0,
+    existing_concepts: Optional[list] = None,
 ) -> Optional[dict]:
     """V3-O.14 + V3-O.15.2: LLM 判斷「任何人是否正在教 bot 新概念」.
 
@@ -343,6 +344,19 @@ def detect_teaching_intent(
         "viewer": f"觀眾朋友 ({speaker_display_name})" if speaker_display_name else "觀眾朋友",
         "audience": f"觀眾 ({speaker_display_name})" if speaker_display_name else "觀眾",
     }.get(speaker_role, speaker_display_name or "說話者")
+    # ⭐ V3-O.15.18 (2026-06-06 user 拍板): 餵這位說話者既有概念清單給 LLM, 同概念收斂用同名
+    # (修「同一件事每次取不同名 → 證據散成多候選 → 沒一個到門檻 → 升不了格」).
+    _existing_block = ""
+    if existing_concepts:
+        _names = "、".join(str(c) for c in existing_concepts[:20] if c)
+        if _names:
+            _existing_block = (
+                "\n⭐ 你已經在追蹤這位說話者的這些概念 (收斂命名, 很重要):\n"
+                f"  [{_names}]\n"
+                "  若這次教的跟上面某個概念是『同一件事』(即使措辭不同), 請務必回傳那個**一模一樣**的名字,\n"
+                "  不要發明新名字 (否則同概念的證據會散開, 永遠累積不到門檻、升不了格).\n"
+                "  只有確實是全新、不同的概念時才取新名字.\n\n"
+            )
     # V3-O.15.6: prompt 加 examples + 一致性指示 — 同一概念多次教學 LLM 要抽出同名字
     prompt = (
         "你是夥伴大腦的 teaching-intent 偵測 sub_task.\n"
@@ -359,6 +373,7 @@ def detect_teaching_intent(
         "    * 教「菜單加菜」「驗證菜單數量」「掛上牆壁」 → 都叫『菜單管理』\n"
         "    * 教「對付路人話術」「打發路人」「路人來時拿大絕招」 → 都叫『應對路人』\n"
         "  - 概念類別名, 不要加 prefix (Discord/YT/LINE) 不要加 suffix (方法/流程/系統/禮儀)\n\n"
+        f"{_existing_block}"
         f"近期對話:\n{recent_dialogue_excerpt[:1200]}\n\n"
         f"{_speaker_label}這一句:\n「{user_message[:500]}」\n\n"
         "輸出 (純 JSON, 不要 ```code fence```):\n"
@@ -643,11 +658,17 @@ def promote_candidate_to_skill(
             f"摘要: {candidate.get('summary', '')}\n\n"
             "下面是教學當時夥伴與對方的完整對話 (user/bot 交替), 請看整個過程理解這個概念的正確用法:\n"
             f"{evidence_summary[:4000]}\n\n"
-            "輸出純 JSON (no code fence):\n"
-            '{"trigger_situation": "<≤80字, 什麼情境下會用到, 給 RAG 撈時 embed 這段>",\n'
-            ' "description": "<≤120字, 核心做法>",\n'
-            ' "procedure_steps": ["<step1, ≤40字>", "<step2>", "<step3>"],\n'
-            ' "trigger_keywords": ["<keyword1>", "<keyword2>", "..."]}\n'
+            "請看完整段教學對話, 輸出純 JSON (no code fence). 目標: 讓夥伴日後撈出這條技能就能『實際做出來』, 要多面向且具體.\n"
+            "⚠ 最高優先【逐字保留】: 對話原文若出現任何可複製執行的字面內容 (emoji 完整碼如 <a:name:12345>、Discord 標記 <@數字>、貼圖檔名、URL、指令、固定話術詞), "
+            "必須一字不差原封不動放進 literal_mechanism, 連特殊字元都不可改, 嚴禁概括成抽象描述 (例: 看到 <a:donbee:123> 絕不可寫成「用表情貼」). 寧多抽不可漏.\n"
+            "其餘欄位只能依對話內容抽取, 不要臆造; 抽不到就給空字串/空陣列.\n\n"
+            '{"trigger_situations": ["<2~4 條, 每條≤60字, 不同情緒/場合/意圖的「何時用」場面>"],\n'
+            ' "description": "<≤100字 核心做法, 不要重抄觸發情境>",\n'
+            ' "literal_mechanism": [{"kind": "<類型 emoji_code/mention/話術/指令>", "literal": "<逐字原文, 一字不改>", "note": "<≤20字 何時/放哪>"}],\n'
+            ' "worked_example": {"trigger_input": "<≤40字 使用者說什麼/什麼情境>", "ideal_output": "<bot 該回的整句成品, 把 literal_mechanism 嵌在正確位置>", "note": "<≤30字 重點>"},\n'
+            ' "procedure_steps": ["<1~4 條操作步驟, 每條≤40字, 有序>"],\n'
+            ' "usage_boundaries": {"avoid_when": ["<1~3 條不該用的場合, 每條≤30字>"], "constraints": ["<1~2 條使用者親口說的限制, 如 偶爾/最後面/只在本群有效>"]},\n'
+            ' "trigger_keywords": ["<≤8 個, 含口語情緒變體(爽/讚/耶)+ literal_mechanism 關鍵 token>"]}\n'
         )
         text = (call_llm_for_text(
             vault_root, prompt,
@@ -662,17 +683,31 @@ def promote_candidate_to_skill(
         data = json.loads(text)
     except Exception:
         # LLM 失敗 → 用 candidate.summary 當 fallback
+        _s = candidate.get("summary", "")
         data = {
-            "trigger_situation": candidate.get("summary", "")[:80],
-            "description": candidate.get("summary", "")[:120],
+            "trigger_situations": [_s[:80]] if _s else [],
+            "trigger_situation": _s[:80],
+            "description": _s[:120],
             "procedure_steps": [],
+            "literal_mechanism": [],
+            "worked_example": {},
+            "usage_boundaries": {},
             "trigger_keywords": [],
         }
 
+    # ⭐ V3-O.15.18: 多面向欄位 + 向後相容回填單數 trigger_situation
+    _trig_situations = [s for s in (data.get("trigger_situations") or []) if s][:5]
+    _trig_single = (data.get("trigger_situation") or (_trig_situations[0] if _trig_situations else ""))[:120]
+    _we = data.get("worked_example")
+    _ub = data.get("usage_boundaries")
     skill = SkillRegistration(
         skill_name=candidate["concept_name"],
         description=data.get("description", "")[:200],
-        trigger_situation=data.get("trigger_situation", "")[:120],
+        trigger_situation=_trig_single,
+        trigger_situations=_trig_situations,
+        literal_mechanism=[m for m in (data.get("literal_mechanism") or []) if isinstance(m, dict)][:8],
+        worked_example=_we if isinstance(_we, dict) else {},
+        usage_boundaries=_ub if isinstance(_ub, dict) else {},
         procedure_steps=[s for s in (data.get("procedure_steps") or []) if s][:5],
         emotional_origin=candidate.get("candidate_id", ""),
         success_rate=0.0,

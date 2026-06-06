@@ -2683,6 +2683,16 @@ def run_companion_chat_turn(
                     _teacher_name = "主人" if request.is_owner else "觀眾朋友"
                 # V3-O.15.2: speaker_role 給 LLM 判斷上下文 (主人 vs 觀眾朋友 教學語境略不同)
                 _speaker_role = "owner" if request.is_owner else "viewer"
+                # ⭐ V3-O.15.18: 撈這位教學者已有的概念名, 餵給偵測器收斂命名 (修概念切碎不升格)
+                _existing_concepts = []
+                try:
+                    with open_companion_db(vault_root) as _conn_ec:
+                        _existing_concepts = [r[0] for r in _conn_ec.execute(
+                            "SELECT concept_name FROM skill_candidates WHERE teacher_user_id=? "
+                            "ORDER BY last_reinforced_at DESC LIMIT 20", (request.user_id,),
+                        ).fetchall()]
+                except Exception:
+                    pass
                 _td_result = detect_teaching_intent(
                     user_message=request.message,
                     recent_dialogue_excerpt=_recent_excerpt,
@@ -2690,6 +2700,7 @@ def run_companion_chat_turn(
                     speaker_display_name=_teacher_name,
                     vault_root=vault_root,
                     timeout_seconds=60.0,
+                    existing_concepts=_existing_concepts,
                 )
                 _allow_accumulate = False
                 if _td_result and _td_result.get("is_teaching"):
