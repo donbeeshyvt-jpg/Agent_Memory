@@ -92,9 +92,8 @@ def register_skill(
             pass
 
         if _owner_id and str(skill.taught_by_user_id) == _owner_id:
-            # owner 教 → 走 00.08_Owner_Profile
-            label = skill.taught_by_name or _owner_label or "主人"
-            contributor_link = f"[[00_System_Core/00.08_Owner_Profile|{label}]]"
+            # owner 教 → 走 00.08_Owner_Profile, 顯示 "主人" 字面 (user 拍板, 不顯示 yaml.label)
+            contributor_link = f"[[00_System_Core/00.08_Owner_Profile|主人]]"
         else:
             # viewer 教 → 22_Casual_Viewers/<uid>
             safe_uid = skill.taught_by_user_id.replace("/", "_").replace("\\", "_")[:120]
