@@ -47,6 +47,9 @@ class SkillRegistration:
     literal_mechanism: list[dict] = field(default_factory=list)  # [{kind, literal, note}] 逐字實際 code/語法
     worked_example: dict = field(default_factory=dict)  # {trigger_input, ideal_output, note}
     usage_boundaries: dict = field(default_factory=dict)  # {avoid_when:[], constraints:[]}
+    # ⭐ V3-O.15.19 (user 拍板「跟原本技能規格一樣 ~20000字內容」) — 對齊 KB write_knowledge_v12
+    core_summary: str = ""  # 核心摘要 200-400 字
+    full_content: str = ""  # 完整內容 ≤~20000 字 (完整說明書, 逐字保留 code)
 
 
 def _safe_skill_id(name: str) -> str:
@@ -196,6 +199,15 @@ def register_skill(
     body_lines.append("## 描述")
     body_lines.append(skill.description or "(未填)")
     body_lines.append("")
+    # ⭐ V3-O.15.19 核心摘要 + 完整內容 (對齊 KB write_knowledge_v12 ≤25000 字規格)
+    if skill.core_summary:
+        body_lines.append("## 核心摘要")
+        body_lines.append(skill.core_summary)
+        body_lines.append("")
+    if skill.full_content:
+        body_lines.append("## 完整內容")
+        body_lines.append(skill.full_content)
+        body_lines.append("")
     # 步驟摘要
     body_lines.append("## 步驟摘要")
     body_lines.append(steps_md or "(無明確步驟)")
@@ -231,9 +243,9 @@ def register_skill(
         elif skill.taught_by_name:
             body_lines.append(f"- 教導者: {skill.taught_by_name} (`{skill.taught_by_user_id[:18]}`)")
         if skill.first_taught_at:
-            body_lines.append(f"- 第一次教: {skill.first_taught_at[:19]}")
+            body_lines.append(f"- 第一次教: {str(skill.first_taught_at)[:19]}")
         if skill.last_reinforced_at:
-            body_lines.append(f"- 最後強化: {skill.last_reinforced_at[:19]}")
+            body_lines.append(f"- 最後強化: {str(skill.last_reinforced_at)[:19]}")
         if skill.evidence_count:
             body_lines.append(f"- 重複次數: {skill.evidence_count}")
         body_lines.append("")

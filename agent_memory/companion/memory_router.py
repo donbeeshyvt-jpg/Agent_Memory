@@ -502,7 +502,7 @@ def render_skills_and_knowledge_sections(
     # 50 — learned skills (完整內容 RAG)
     try:
         from agent_memory.companion.vault_md_search import retrieve_skills
-        hits = retrieve_skills(vault_root, current_message, top_k=3, max_chars=2000)
+        hits = retrieve_skills(vault_root, current_message, top_k=3, max_chars=4000)  # V3-O.15.19: 2000→4000 讓 rich 段落更完整進 prompt
         if hits:
             lines = []
             for h in hits:

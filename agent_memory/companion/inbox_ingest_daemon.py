@@ -109,6 +109,27 @@ def _daemon_loop(vault_root: Path) -> None:
         except Exception as exc:
             print(f"[inbox_daemon] LOOP EXC {type(exc).__name__}: {str(exc)[:200]}",
                   file=sys.stderr, flush=True)
+        # ⭐ V3-O.15.19 (user 拍板): 每 15 分鐘跑一次技能合併 (掛 5min daemon tick + 900s gate)
+        try:
+            from datetime import datetime, timezone
+            _mk = vault_root / ".ai" / "last_skill_merge_run.txt"
+            _do_merge = True
+            if _mk.exists():
+                try:
+                    _last = datetime.fromisoformat(_mk.read_text(encoding="utf-8").strip())
+                    _do_merge = (datetime.now(timezone.utc) - _last).total_seconds() > 900
+                except Exception:
+                    _do_merge = True
+            if _do_merge:
+                from agent_memory.companion.skill_merge_curator import consolidate_similar_skills
+                _mk.parent.mkdir(parents=True, exist_ok=True)
+                _mk.write_text(datetime.now(timezone.utc).isoformat(), encoding="utf-8")
+                _ms = consolidate_similar_skills(vault_root)
+                if _ms.get("merged", 0) > 0:
+                    print(f"[inbox_daemon] skill_merge: {_ms}", file=sys.stderr, flush=True)
+        except Exception as exc:
+            print(f"[inbox_daemon] skill_merge EXC {type(exc).__name__}: {str(exc)[:200]}",
+                  file=sys.stderr, flush=True)
         time.sleep(_DAEMON_INTERVAL_SECONDS)
 
 

@@ -649,7 +649,7 @@ def promote_candidate_to_skill(
         from agent_memory.llm_text_helpers import call_llm_for_text
         evidence_summary = "\n".join(
             f"[{e['at'][:19]}] {e['actor']}: {e['content']}"
-            for e in evidence_texts[:30]
+            for e in evidence_texts[:40]
         )
         prompt = (
             "你是夥伴大腦的 skill consolidation curator.\n"
@@ -657,13 +657,15 @@ def promote_candidate_to_skill(
             f"概念名稱: {candidate['concept_name']}\n"
             f"摘要: {candidate.get('summary', '')}\n\n"
             "下面是教學當時夥伴與對方的完整對話 (user/bot 交替), 請看整個過程理解這個概念的正確用法:\n"
-            f"{evidence_summary[:4000]}\n\n"
-            "請看完整段教學對話, 輸出純 JSON (no code fence). 目標: 讓夥伴日後撈出這條技能就能『實際做出來』, 要多面向且具體.\n"
+            f"{evidence_summary[:8000]}\n\n"
+            "請看完整段教學對話, 輸出純 JSON (no code fence). 目標: 讓夥伴日後撈出這條技能就能『實際做出來』, 要多面向、具體、且內容詳盡完整.\n"
             "⚠ 最高優先【逐字保留】: 對話原文若出現任何可複製執行的字面內容 (emoji 完整碼如 <a:name:12345>、Discord 標記 <@數字>、貼圖檔名、URL、指令、固定話術詞), "
             "必須一字不差原封不動放進 literal_mechanism, 連特殊字元都不可改, 嚴禁概括成抽象描述 (例: 看到 <a:donbee:123> 絕不可寫成「用表情貼」). 寧多抽不可漏.\n"
             "其餘欄位只能依對話內容抽取, 不要臆造; 抽不到就給空字串/空陣列.\n\n"
             '{"trigger_situations": ["<2~4 條, 每條≤60字, 不同情緒/場合/意圖的「何時用」場面>"],\n'
-            ' "description": "<≤100字 核心做法, 不要重抄觸發情境>",\n'
+            ' "description": "<≤150字 核心做法一句話, 不要重抄觸發情境>",\n'
+            ' "core_summary": "<200~400字 核心摘要: 這技能是什麼 + 為何 + 核心做法, 供快速回顧>",\n'
+            ' "full_content": "<完整內容, 盡量詳盡完整 (可長達數千字, 上限約 18000 字): 把整段教學的來龍去脈、所有規則與細節、例外、為什麼這樣做、不同情況下的應對, 條理清楚地完整寫下來, 像這個技能的完整說明書. 務必逐字保留對話中所有實際 code/語法/原句>",\n'
             ' "literal_mechanism": [{"kind": "<類型 emoji_code/mention/話術/指令>", "literal": "<逐字原文, 一字不改>", "note": "<≤20字 何時/放哪>"}],\n'
             ' "worked_example": {"trigger_input": "<≤40字 使用者說什麼/什麼情境>", "ideal_output": "<bot 該回的整句成品, 把 literal_mechanism 嵌在正確位置>", "note": "<≤30字 重點>"},\n'
             ' "procedure_steps": ["<1~4 條操作步驟, 每條≤40字, 有序>"],\n'
@@ -687,7 +689,9 @@ def promote_candidate_to_skill(
         data = {
             "trigger_situations": [_s[:80]] if _s else [],
             "trigger_situation": _s[:80],
-            "description": _s[:120],
+            "description": _s[:150],
+            "core_summary": _s[:400],
+            "full_content": _s,
             "procedure_steps": [],
             "literal_mechanism": [],
             "worked_example": {},
@@ -702,13 +706,15 @@ def promote_candidate_to_skill(
     _ub = data.get("usage_boundaries")
     skill = SkillRegistration(
         skill_name=candidate["concept_name"],
-        description=data.get("description", "")[:200],
+        description=data.get("description", "")[:300],
+        core_summary=(data.get("core_summary") or "")[:600],
+        full_content=(data.get("full_content") or "")[:20000],
         trigger_situation=_trig_single,
         trigger_situations=_trig_situations,
-        literal_mechanism=[m for m in (data.get("literal_mechanism") or []) if isinstance(m, dict)][:8],
+        literal_mechanism=[m for m in (data.get("literal_mechanism") or []) if isinstance(m, dict)][:20],
         worked_example=_we if isinstance(_we, dict) else {},
         usage_boundaries=_ub if isinstance(_ub, dict) else {},
-        procedure_steps=[s for s in (data.get("procedure_steps") or []) if s][:5],
+        procedure_steps=[s for s in (data.get("procedure_steps") or []) if s][:6],
         emotional_origin=candidate.get("candidate_id", ""),
         success_rate=0.0,
         source="teaching_detector",
