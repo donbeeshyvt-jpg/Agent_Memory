@@ -140,6 +140,17 @@ def _parse_skill_md(path: Path) -> dict:
         fm = yaml.safe_load(fm_text) or {}
     except Exception:
         return {}
+    # ⭐ V3-O.15.28: 結構化 literal_mechanism (frontmatter 全量持久化, 破 body ## 實際打法 [:8] 顯示上限).
+    # round-trip 真相來源: 有此欄就用它 (任意數量無損); 沒有(舊技能)才 fallback 解 body bullet.
+    _lit_struct = []
+    _lmj = fm.get("literal_mechanism_json")
+    if _lmj:
+        try:
+            _parsed = json.loads(_lmj) if isinstance(_lmj, str) else _lmj
+            if isinstance(_parsed, list):
+                _lit_struct = [m for m in _parsed if isinstance(m, dict) and (m.get("literal") or "").strip()]
+        except Exception:
+            _lit_struct = []
     # ⭐ V3-O.15.19: 抽 body rich 段落 (供合併「保留內容、不壓掉」)
     body = text[end + 5:]
 
@@ -170,6 +181,8 @@ def _parse_skill_md(path: Path) -> dict:
         "_full_raw": _sec("完整內容"),
         "_boundary_raw": _sec("使用邊界"),
         "_steps_raw": _sec("步驟摘要"),
+        # V3-O.15.28: 結構化 code (frontmatter 全量) — merge/promote round-trip 優先用此, 任意數量無損
+        "_literal_struct": _lit_struct,
     }
 
 
@@ -311,11 +324,14 @@ def _write_merged_skill(vault_root: Path, cluster: list, merged: dict) -> Path:
     ))
 
     # ⭐ V3-O.15.19: 機械式 union 保留各來源 rich 內容 (不靠 LLM 壓縮, 保證 code/細節不丟, 可以很多字)
+    # ⭐ V3-O.15.28: 來源優先用 _literal_struct (frontmatter 全量, 任意數量), 舊技能無此欄才 fallback 解 body bullet ([:8] 上限)
     _merged_literal, _seen_lit = [], set()
     for s in cluster:
-        for m in _parse_literal_bullets(s.get("_literal_raw", "")):
-            if m["literal"] and m["literal"] not in _seen_lit:
-                _seen_lit.add(m["literal"]); _merged_literal.append(m)
+        _src_lits = s.get("_literal_struct") or _parse_literal_bullets(s.get("_literal_raw", ""))
+        for m in _src_lits:
+            _lit = (m.get("literal") or "").strip()
+            if _lit and _lit not in _seen_lit:
+                _seen_lit.add(_lit); _merged_literal.append(m)
     _merged_trigs, _seen_t = [], set()
     for s in cluster:
         for ln in (s.get("_trigger_raw", "") or "").splitlines():
@@ -355,7 +371,7 @@ def _write_merged_skill(vault_root: Path, cluster: list, merged: dict) -> Path:
         full_content=_merged_full,
         trigger_situation=merged.get("trigger_situation", "")[:200],
         trigger_situations=_merged_trigs[:8],
-        literal_mechanism=_merged_literal[:25],
+        literal_mechanism=_merged_literal[:100],  # V3-O.15.28: 25→100 (frontmatter 全量持久化, 不再被 [:8] 卡)
         usage_boundaries={"avoid_when": _avoid[:6], "constraints": _cons[:5]} if (_avoid or _cons) else {},
         procedure_steps=[s for s in (merged.get("procedure_steps") or []) if s][:6],
         emotional_origin=";".join(s["skill_id"] for s in cluster),

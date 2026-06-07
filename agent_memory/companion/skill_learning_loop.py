@@ -13,6 +13,7 @@ Phase 3 MVP: 介面 + skill 寫入. Phase 4 接 Memory Router retrieve.
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -144,6 +145,13 @@ def register_skill(
     if skill.trigger_keywords:
         frontmatter_lines.append(f"trigger_keywords: {skill.trigger_keywords}")
         frontmatter_lines.append(f"related_concept_ids: []")  # placeholder for V3-O.15 雙關聯 (skill_merge_curator 會回填)
+    # ⭐ V3-O.15.28 (2026-06-07 user 拍板): literal_mechanism 全量持久化進 frontmatter (機器欄位).
+    # 修「body ## 實際打法 寫死 [:8] → >8 個 code 沒進磁碟 → 下一輪 merge/再升格 round-trip 靜默丟失」.
+    # body 仍 [:8] 精簡顯示; round-trip 真相來源改讀此欄 (_parse_skill_md._literal_struct). 任意數量無損.
+    _lm_persist = [m for m in (skill.literal_mechanism or []) if isinstance(m, dict) and (m.get("literal") or "").strip()]
+    if _lm_persist:
+        _lm_json = json.dumps(_lm_persist, ensure_ascii=False).replace("'", "''")  # YAML 單引號 scalar: 只需 ' → ''
+        frontmatter_lines.append(f"literal_mechanism_json: '{_lm_json}'")
     frontmatter_lines.append("---")
     frontmatter_lines.append("")
 

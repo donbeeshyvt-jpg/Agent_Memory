@@ -625,7 +625,9 @@ def promote_candidate_to_skill(
             if _cp.exists():
                 _em = _parse_skill_md(_cp)
                 if _em:
-                    _existing_literal = _parse_literal_bullets(_em.get("_literal_raw", ""))
+                    # V3-O.15.28: 既有 code 優先讀 _literal_struct (frontmatter 全量, 任意數量無損);
+                    # 舊技能無此欄才 fallback 解 body ## 實際打法 bullet ([:8] 上限).
+                    _existing_literal = _em.get("_literal_struct") or _parse_literal_bullets(_em.get("_literal_raw", ""))
                     _existing_full = (_em.get("_full_raw", "") or "")[:8000]
                     break
     except Exception:
@@ -741,7 +743,7 @@ def promote_candidate_to_skill(
         full_content=(data.get("full_content") or "")[:20000],
         trigger_situation=_trig_single,
         trigger_situations=_trig_situations,
-        literal_mechanism=_merged_literal[:25],
+        literal_mechanism=_merged_literal[:100],  # V3-O.15.28: 25→100 (frontmatter 全量持久化, 不再被 [:8] 卡)
         worked_example=_we if isinstance(_we, dict) else {},
         usage_boundaries=_ub if isinstance(_ub, dict) else {},
         procedure_steps=[s for s in (data.get("procedure_steps") or []) if s][:6],
