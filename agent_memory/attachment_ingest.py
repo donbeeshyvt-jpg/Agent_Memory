@@ -183,13 +183,15 @@ def build_attachment_xml_blocks(results: list[dict[str, Any]]) -> str:
         attrs = f'filename="{fn}" kind="{kind}"'
         if note:
             attrs += f' note="{_xml_attr_escape(note)}"'
+        vis = str(r.get("vision_description", "")).strip()
         if text and kind != "image":
             blocks.append(f"<attachment {attrs}>\n{text}\n</attachment>")
-        elif kind == "image" and text:
-            # 圖片 base64 太長, 不直接塞進 prompt; LLM 知道有圖在但要靠未來 vision pipeline
+        elif kind == "image" and vis:
+            # ⭐ V3-O.15.25: vision LLM 分析結果夾進 prompt → bot 能「看到」這張圖回應
+            blocks.append(f"<attachment {attrs}>\n[圖片內容分析] {vis}\n</attachment>")
+        elif kind == "image":
             blocks.append(
-                f"<attachment {attrs}>\n[image content omitted from text prompt; "
-                f"base64 stored separately for vision pipeline]\n</attachment>"
+                f"<attachment {attrs}>\n[收到一張圖片, 但這次沒分析出內容 (vision 失敗或模型不支援)]\n</attachment>"
             )
         else:
             blocks.append(f"<attachment {attrs} />")
@@ -262,6 +264,17 @@ def ingest_attachments_for_turn(
             result.update(extract)
         except Exception as exc:  # noqa: BLE001
             result["note"] = f"extract 失敗: {exc}"
+        # ⭐ V3-O.15.25 (user 拍板): 圖片 → 內部 vision LLM 分析, 描述夾進 prompt (看圖線路)
+        if result.get("kind") == "image" and url:
+            try:
+                from agent_memory.vision_analyze import analyze_image_url
+                _vd = analyze_image_url(url)
+                if _vd:
+                    result["vision_description"] = _vd
+                    result["ok"] = True
+                    result["note"] = "已用 vision 模型分析圖片內容"  # 覆蓋 extract 的「不支援 vision」舊註解
+            except Exception:
+                pass
         results.append(result)
 
     xml_blocks = build_attachment_xml_blocks(results)

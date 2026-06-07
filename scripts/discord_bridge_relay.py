@@ -525,10 +525,11 @@ class BridgeRelayClient(discord.Client):
             text = "請回覆：已收到你的標記，請提供要我處理的任務。"
         # ⭐ V3-O.15.24 (2026-06-06 user 拍板): 圖片/附件純檔(無文字) 先給佔位文字, 否則 text 空 → 下面 return
         # → 「傳圖沒收訊」. bot 暫無視覺(視覺分析之後接內部 LLM), 但至少要收得到 + 能回應.
-        if not text and (message.attachments or []):
+        _has_sticker = bool(getattr(message, "stickers", None) or [])
+        if not text and ((message.attachments or []) or _has_sticker):
             _imgs = [a for a in (message.attachments or [])
                      if str(getattr(a, "content_type", "") or "").startswith("image")]
-            text = "[用戶傳了一張圖片]" if _imgs else "[用戶傳了一個附件]"
+            text = "[用戶傳了一張圖片]" if (_imgs or _has_sticker) else "[用戶傳了一個附件]"
         if not text:
             return
 
@@ -549,6 +550,21 @@ class BridgeRelayClient(discord.Client):
                     "content_type": str(getattr(att, "content_type", "") or ""),
                     "size": int(getattr(att, "size", 0) or 0),
                 })
+            except Exception:  # noqa: BLE001
+                continue
+
+        # ⭐ V3-O.15.25 (2026-06-07 user 拍板): 伺服器貼圖 (message.stickers) 也帶進 payload 當圖片.
+        # 大型/伺服器貼圖不是 attachment, 原本完全沒被接收 → 補上, 一起走 vision 分析線路.
+        for _st in (getattr(message, "stickers", None) or []):
+            try:
+                _su = str(getattr(_st, "url", "") or "")
+                if _su:
+                    attachments_payload.append({
+                        "url": _su,
+                        "filename": (str(getattr(_st, "name", "") or "sticker") + ".png"),
+                        "content_type": "image/png",
+                        "size": 0,
+                    })
             except Exception:  # noqa: BLE001
                 continue
 
