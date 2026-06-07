@@ -268,7 +268,7 @@ def ingest_attachments_for_turn(
         if result.get("kind") == "image" and url:
             try:
                 from agent_memory.vision_analyze import analyze_image_url
-                _vd = analyze_image_url(url)
+                _vd = analyze_image_url(url, vault_root=vault_root)  # V3-O.15.26: 讓 vision 讀 config 的 image_analysis model
                 if _vd:
                     result["vision_description"] = _vd
                     result["ok"] = True
