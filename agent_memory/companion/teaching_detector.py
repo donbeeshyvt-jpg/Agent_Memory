@@ -609,8 +609,27 @@ def promote_candidate_to_skill(
 
     Returns: skill_id (寫成功) 或 None (失敗).
     """
-    from agent_memory.companion.skill_learning_loop import SkillRegistration, register_skill
+    from agent_memory.companion.skill_learning_loop import SkillRegistration, register_skill, _safe_skill_id
     from agent_memory.companion.companion_db import open_companion_db
+
+    # ⭐ V3-O.15.27 (2026-06-07 user 拍板): re-consolidation 保留+累加, 不覆蓋丟失.
+    # 讀既有 SKILL.md (L0 或 L1 _consolidated) 的 literal_mechanism(code) + 完整內容 → 後面 union code
+    # (不丟舊的) + 餵 LLM 既有內容指示「整合保留」. 修「再教把舊技能覆蓋、舊 code 不見了」.
+    _existing_literal: list = []
+    _existing_full = ""
+    try:
+        from agent_memory.companion.skill_merge_curator import _parse_skill_md, _parse_literal_bullets
+        _sid_name = _safe_skill_id(candidate.get("concept_name", "")) or ""
+        _skbase = vault_root / "50_Skills_Tools" / "54_Taught_Skills"
+        for _cp in (_skbase / _sid_name / "SKILL.md", _skbase / "_consolidated" / _sid_name / "SKILL.md"):
+            if _cp.exists():
+                _em = _parse_skill_md(_cp)
+                if _em:
+                    _existing_literal = _parse_literal_bullets(_em.get("_literal_raw", ""))
+                    _existing_full = (_em.get("_full_raw", "") or "")[:8000]
+                    break
+    except Exception:
+        pass
 
     # V3-O.15.16 (2026-06-06 user 拍板): evidence 改撈「該教學 session 全對話」(user+bot 交替),
     # 取代原本用 evidence_event_ids 去 raw_events 撈 — aggregator flush 路徑下 user raw_event 被 skip,
@@ -658,7 +677,9 @@ def promote_candidate_to_skill(
             f"摘要: {candidate.get('summary', '')}\n\n"
             "下面是教學當時夥伴與對方的完整對話 (user/bot 交替), 請看整個過程理解這個概念的正確用法:\n"
             f"{evidence_summary[:8000]}\n\n"
-            "請看完整段教學對話, 輸出純 JSON (no code fence). 目標: 讓夥伴日後撈出這條技能就能『實際做出來』, 要多面向、具體、且內容詳盡完整.\n"
+            + (f"⭐ 這個技能【已有舊版】, 既有完整內容如下 — 你必須『整合本次新教學 + 完整保留既有所有規則/code/用法, "
+               f"一個都不能丟失或覆蓋』, 產出涵蓋新舊的完整版本:\n{_existing_full}\n\n" if _existing_full else "")
+            + "請看完整段教學對話, 輸出純 JSON (no code fence). 目標: 讓夥伴日後撈出這條技能就能『實際做出來』, 要多面向、具體、且內容詳盡完整.\n"
             "⚠ 最高優先【逐字保留】: 對話原文若出現任何可複製執行的字面內容 (emoji 完整碼如 <a:name:12345>、Discord 標記 <@數字>、貼圖檔名、URL、指令、固定話術詞), "
             "必須一字不差原封不動放進 literal_mechanism, 連特殊字元都不可改, 嚴禁概括成抽象描述 (例: 看到 <a:donbee:123> 絕不可寫成「用表情貼」). 寧多抽不可漏.\n"
             "其餘欄位只能依對話內容抽取, 不要臆造; 抽不到就給空字串/空陣列.\n\n"
@@ -704,6 +725,15 @@ def promote_candidate_to_skill(
     _trig_single = (data.get("trigger_situation") or (_trig_situations[0] if _trig_situations else ""))[:120]
     _we = data.get("worked_example")
     _ub = data.get("usage_boundaries")
+    # ⭐ V3-O.15.27: union 既有 code + 新 code (dedup by literal) → re-consolidation 絕不丟舊 code
+    _new_literal = [m for m in (data.get("literal_mechanism") or []) if isinstance(m, dict)]
+    _merged_literal: list = []
+    _seen_lit: set = set()
+    for _m in (_existing_literal + _new_literal):
+        _lit = (_m.get("literal") or "").strip()
+        if _lit and _lit not in _seen_lit:
+            _seen_lit.add(_lit)
+            _merged_literal.append(_m)
     skill = SkillRegistration(
         skill_name=candidate["concept_name"],
         description=data.get("description", "")[:300],
@@ -711,7 +741,7 @@ def promote_candidate_to_skill(
         full_content=(data.get("full_content") or "")[:20000],
         trigger_situation=_trig_single,
         trigger_situations=_trig_situations,
-        literal_mechanism=[m for m in (data.get("literal_mechanism") or []) if isinstance(m, dict)][:20],
+        literal_mechanism=_merged_literal[:25],
         worked_example=_we if isinstance(_we, dict) else {},
         usage_boundaries=_ub if isinstance(_ub, dict) else {},
         procedure_steps=[s for s in (data.get("procedure_steps") or []) if s][:6],
