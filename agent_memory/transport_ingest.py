@@ -500,10 +500,13 @@ def _check_and_flush_aggregator(vault_root: Path, payload: dict[str, Any]) -> di
                 last_owner_uid = m.user_id
                 last_owner_display = m.display_name or ""
 
+        # ⭐ V3-O.15.24 (2026-06-06 user 拍板): 去掉「列隊彙整/統一回應這批訊息」的系統指令味
+        # (會讓 LLM 把它當「分析這批訊息」→ 輸出 meta 分析、破角色). 改角色口吻 + 明文禁止分析/複述.
         batch_msg = (
-            f"[本輪列隊彙整 — 共 {len(msgs)} 則訊息]\n"
+            f"(對方剛剛連續傳了 {len(msgs)} 句, 整理如下供你看語境)\n"
             + "\n".join(batch_lines) + "\n\n"
-            + "請統一回應這批訊息。"
+            + "請用你的角色口吻, 自然地一次回應上面這些話。"
+            "不要分析、拆解、複述或用旁白描述訊息本身, 直接以角色身分回應內容。"
         )
 
         # 用最後一筆 owner (有就優先) 當代表, 否則用最後一筆訊息

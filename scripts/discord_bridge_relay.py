@@ -523,6 +523,12 @@ class BridgeRelayClient(discord.Client):
             text = re.sub(rf"<@!?{me.id}>", "", text).strip()
         if not text and mention_only_mode:
             text = "請回覆：已收到你的標記，請提供要我處理的任務。"
+        # ⭐ V3-O.15.24 (2026-06-06 user 拍板): 圖片/附件純檔(無文字) 先給佔位文字, 否則 text 空 → 下面 return
+        # → 「傳圖沒收訊」. bot 暫無視覺(視覺分析之後接內部 LLM), 但至少要收得到 + 能回應.
+        if not text and (message.attachments or []):
+            _imgs = [a for a in (message.attachments or [])
+                     if str(getattr(a, "content_type", "") or "").startswith("image")]
+            text = "[用戶傳了一張圖片]" if _imgs else "[用戶傳了一個附件]"
         if not text:
             return
 
