@@ -185,8 +185,11 @@ class BridgeRelayClient(discord.Client):
         self._flush_executor: ThreadPoolExecutor = ThreadPoolExecutor(
             max_workers=4, thread_name_prefix="bridge_flush",
         )
-        # flush_check 用較短 timeout (60s) — 它只是 should_flush 詢問, 不該跟主 LLM 240s 平起平坐.
-        self._flush_check_timeout_s: float = 60.0
+        # ⭐ V3-O.15.29 (2026-06-08): flush_check 不是輕量 should_flush 查詢 — bridge 在這個請求裡
+        # 「邊判斷邊跑完整輪 LLM(主 deepseek 60s + fallback chain) + vision 同步分析 + 回覆」.
+        # 原 60s 太短 → viewer/貼圖那輪(vision+LLM fallback)輕鬆破 60s → flush_check 先逾時放棄 →
+        # 不投遞也無 fallback 訊息 → 靜默 (見 §A.29 根因). 提到 180s 容納整輪 (仍 < 主 reply 240s).
+        self._flush_check_timeout_s: float = 180.0
         # 連續失敗 ≥3 次才開始 exp backoff. backoff = base * 2^(fail - threshold), cap @ max.
         self._FLUSH_FAIL_THRESHOLD: int = 3
         self._FLUSH_BACKOFF_BASE_S: float = 5.0
