@@ -22,6 +22,7 @@ import shutil
 import yaml
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 
 SIMILARITY_THRESHOLD = 0.4  # jaccard ≥ 0.4 視為 cluster 候選
@@ -316,12 +317,11 @@ def _cluster_by_keywords(skills: list, *, threshold: float) -> list[list]:
     return list(clusters_map.values())
 
 
-def _llm_judge_pair(vault_root: Path, a: dict, b: dict) -> bool:
-    """⭐ V3-O.15.35: LLM 只看語意判斷兩個 SKILL 是否同概念 (對齊 user「15min LLM 檢索判定合併」設計).
+_LLM_JUDGE_PAIR_VOTES = 3  # V3-O.15.37: 每對 N 次 majority vote 削減 LLM 邊緣案例隨機性
 
-    被 _merge_skills 主迴圈在「字面 jaccard < 0.4」時 invoke (字面像走快速通道).
-    回 True → union-find 進同 cluster; False / LLM 失敗 → 不合 (寧分不合, 下次 tick 再看).
-    """
+
+def _llm_judge_pair_once(vault_root: Path, a: dict, b: dict) -> Optional[bool]:
+    """單次 LLM judge. 回 True/False/None (parse 失敗)."""
     from agent_memory.llm_text_helpers import call_llm_for_text
 
     prompt = (
@@ -338,12 +338,14 @@ def _llm_judge_pair(vault_root: Path, a: dict, b: dict) -> bool:
         f"  描述: {(b.get('_desc_raw') or '')[:200]}\n"
         f"  核心摘要: {(b.get('_core_raw') or '')[:400]}\n\n"
         "判斷標準:\n"
-        "- 是否同一個概念/技能, 觸發情境是否本質上重疊 (核心做法/觸發/目的對齊 → 同)\n"
-        "- 字面不同名但語意/做法/觸發相同算同; 字面像但實質不同算不同\n"
-        "- 邊緣寧分不合 (下次 tick 仍可再 judge)\n\n"
+        "- 看核心: 觸發情境/做法/目的是否本質重疊 → 重疊就是同概念, 字面不同名也算同\n"
+        "- 不同名稱角度教同件事 (e.g. 流程名 vs 規則名 vs 變體做法) 都應視為同\n"
+        "- 邊緣若核心/觸發有顯著重疊就視為同 (不要因細節差異就分; 細節差異留給合併時 union)\n"
+        "- 真正不同概念 (觸發情境/目的/做法都不一致) 才判 false\n\n"
         "輸出純 JSON (不要 code fence):\n"
         '{"same_concept": true/false, "reason": "<≤60字 判斷依據>"}'
     )
+    text = ""
     try:
         text = (call_llm_for_text(
             vault_root, prompt,
@@ -358,9 +360,31 @@ def _llm_judge_pair(vault_root: Path, a: dict, b: dict) -> bool:
         data = json.loads(text)
         return bool(data.get("same_concept"))
     except Exception:
-        # JSON 解失敗 fallback: regex 撈 same_concept
-        m = re.search(r'"same_concept"\s*:\s*(true|false)', text if 'text' in dir() else "")
-        return bool(m and m.group(1) == "true")
+        m = re.search(r'"same_concept"\s*:\s*(true|false)', text)
+        if m:
+            return m.group(1) == "true"
+        return None
+
+
+def _llm_judge_pair(vault_root: Path, a: dict, b: dict) -> bool:
+    """⭐ V3-O.15.35/.37: LLM 只看語意判斷兩個 SKILL 是否同概念 (對齊 user「15min LLM 檢索判定合併」設計).
+
+    被 _merge_skills 主迴圈在「字面 jaccard < 0.4」時 invoke (字面像走快速通道).
+    V3-O.15.37: 每對 N=3 majority vote 削減 LLM 邊緣案例隨機性 (deepseek-v4-flash 等
+    sub_task 模型在邊緣案例同 prompt 不同 run 會給不同答案, 三次取多數穩定判斷).
+    成本: N(N-1)/2 × 3 LLM call per tick (user 拍板「管控成本是 user 的事情」, 嫌貴調 yaml interval).
+    """
+    votes = []
+    for _ in range(_LLM_JUDGE_PAIR_VOTES):
+        try:
+            v = _llm_judge_pair_once(vault_root, a, b)
+        except Exception:
+            v = None
+        if v is not None:
+            votes.append(v)
+    if not votes:
+        return False  # 全部 LLM 失敗 → 不合
+    return sum(votes) > len(votes) / 2  # majority vote
 
 
 def _llm_judge_merge(vault_root: Path, cluster: list) -> dict:
