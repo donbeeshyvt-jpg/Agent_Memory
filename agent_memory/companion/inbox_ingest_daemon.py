@@ -190,7 +190,7 @@ INGEST_PROMPT_TEMPLATE = """你是夥伴大腦的 external_knowledge ingest cura
   "core_summary": "<200-400 字, 核心要點 + 為什麼這份知識重要>",
   "full_content": "<重新寫一份結構化版本, 涵蓋原文所有重要資訊, 必要時改寫得更易讀, 最多 22000 字>",
   "trigger_keywords": ["<8-15 個 RAG 撈時可能用的關鍵字, 包含: 主關鍵字 + 常見同義詞 + 相關場景詞>"],
-  "related_concept_ids": ["<若提到夥伴大腦已有的 concept, 列其 id 做雙關聯, 例: 菜單管理, 客人記憶系統>"],
+  "related_concept_ids": ["<若提到夥伴大腦已有的 concept, 列其 id 做雙關聯>"],
   "structure_outline": ["<章節標題1>", "<2>", "<3>", "<4>", "<5>"],
   "important_quotes": ["<原文中最關鍵 3-5 句, 不改寫, 各 ≤200 字>"],
   "applicable_situations": "<≤120 字, 什麼情境下我會用到這份知識>"

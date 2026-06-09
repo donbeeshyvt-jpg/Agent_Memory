@@ -203,7 +203,7 @@ def consolidate_semantic_concepts_via_llm(vault_root: Path) -> int:
         "你是夥伴大腦的 sleep cycle curator. 以下是近 24h 中等以上情緒的對話事件 (episodic).\n"
         "請從這些事件中提煉 1-3 個「夥伴自己學到的概念」(semantic memory).\n"
         "格式: 每條一行, 「TOPIC|CLAIM|EVIDENCE_IDS(逗號分隔, 從上面 memory_id 抓)」\n"
-        "例: 「主人偏好直接|我發現主人喜歡不繞圈廢話的回應, 過去 3 次都有效|abc123,def456」\n"
+        "格式範例: 「<主題短語>|<我發現開頭的學習claim>|<event_id1>,<event_id2>」\n"
         "Claim 用第一人稱「我發現 / 我學到」開頭, ≤80 字.\n\n"
         f"事件:\n{episodes_text}\n\n"
         f"輸出 (僅 1-3 行, 無解釋):"
