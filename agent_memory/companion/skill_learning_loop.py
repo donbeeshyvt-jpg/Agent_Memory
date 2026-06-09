@@ -269,10 +269,20 @@ def register_skill(
 
     content = "\n".join(frontmatter_lines + body_lines) + origin_link
     atomic_write(skill_path, content)
+    skill_rel = str(skill_path.relative_to(vault_root))
+    # ⭐ V3-O.15.33 (2026-06-09 user 拍板): 寫完 SKILL.md 立刻 FTS5 索引, 對齊「keyword 撈得快」
+    # 設計. 不靠 retrieve_skills 走 fallback substring 全掃 50_Skills_Tools/*.md (技能多了就 O(N))
+    # → 走 hybrid_search BM25 直接擊中 tags(trigger:xxx). 失敗 fallback 仍可掃, 故 swallow.
+    try:
+        from agent_memory.search import MemorySearchManager
+        from agent_memory.vault import ObsidianVaultAdapter
+        MemorySearchManager(ObsidianVaultAdapter(vault_root)).index_path(skill_rel)
+    except Exception:
+        pass
     return {
         "registered": True,
         "skill_id": skill_id,
-        "path": str(skill_path.relative_to(vault_root)),
+        "path": skill_rel,
     }
 
 

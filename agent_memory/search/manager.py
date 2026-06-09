@@ -1021,12 +1021,17 @@ class MemorySearchManager:
         return paths
 
     def _build_doc(self, *, note: MemoryNote, mtime_ns: int) -> dict[str, Any]:
-        embed_source = f"{_extract_title(note)}\n{note.body[:12000]}"
+        # ⭐ V3-O.15.33 (2026-06-09 user 拍板): skill 的 RAG 比對 body 上限 5000 字 (前綴關鍵字
+        # + 觸發情境 + 實際打法 + 正確示範 + 描述 + 核心摘要), 不讓 ## 完整內容 / ## 範例對話 等
+        # 後段大量字干擾相似度. 注入階段 retrieve_skills max_chars=25000 仍取整張 (此處只截 index
+        # 比對 body, body 欄位寫 FTS5 + dense embedding 來源). 其他路徑 (KB/友人卡/journal) 不受影響.
+        _body_for_index = note.body[:5000] if note.path.startswith("50_Skills_Tools/") else note.body
+        embed_source = f"{_extract_title(note)}\n{_body_for_index[:12000]}"
         vector, backend = self._embed_for_index(embed_source)
         return {
             "path": note.path,
             "title": _extract_title(note),
-            "body": note.body,
+            "body": _body_for_index,
             "type": note.frontmatter.type.value,
             "source": note.frontmatter.source.value,
             "status": note.frontmatter.status,

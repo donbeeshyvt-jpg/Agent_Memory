@@ -250,8 +250,11 @@ def fetch_layer3_long(
         from agent_memory.companion.skill_learning_loop import list_recent_skills_summary
         skill_hits = []
         if current_message.strip():
+            # ⭐ V3-O.15.33 (2026-06-09 user 拍板, 多次重申): RAG 撈到後「整張技能卡注入」, 不截.
+            # 設計 = 前綴關鍵字+RAG 摘要約 5000 字 (撈用), 命中後整張 SKILL.md (上限 25000 字)
+            # 全塞進 prompt 給 main_chat. 不傳 max_chars → 走 retrieve_skills 預設 25000.
             skill_hits = retrieve_skills(
-                vault_root, current_message, top_k=3, max_chars=500,
+                vault_root, current_message, top_k=3,
             )
         if not skill_hits:
             # fallback: 最近 N 個 metadata (relevancy 不足或無 query)

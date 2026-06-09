@@ -125,7 +125,11 @@ def _fallback_substring_search(
             content = md.read_text(encoding="utf-8", errors="ignore")
         except Exception:
             continue
-        content_lower = content.lower()
+        # ⭐ V3-O.15.33 (2026-06-09 user 拍板): skill 路徑比對 content 只看前 5000 字 (對齊
+        # FTS5 _build_doc 截 body 一致), 避免 ## 完整內容 後段大量字誤命中. 注入階段下面 _read_md_body
+        # 仍依 max_chars_per_hit (25000) 取整張.
+        _content_for_match = content[:5000] if source_path_prefix == "50_Skills_Tools" else content
+        content_lower = _content_for_match.lower()
         # 計算 score: 主 query 完整命中 +2, 個別 keyword 命中 +0.5
         score = 0.0
         if query_lower in content_lower:
@@ -165,20 +169,24 @@ def _tokenize_query(s: str) -> list[str]:
 # ─── thin wrappers per source ───────────────────────────────────────────
 
 def retrieve_skills(
-    vault_root: Path, query: str, *, top_k: int = 3, max_chars: int = 2000,
+    vault_root: Path, query: str, *, top_k: int = 3, max_chars: int = 25000,
 ) -> list[dict]:
     """V3-O.14 C3 + V3-O.15: 撈 50_Skills_Tools 相關完整內容.
 
     給 memory_router L3 用 — 取代 list_recent_skills_summary 那 50 字 truncate.
-    V3-O.15 (2026-06-05): max_chars 800→2000 — schema v12 內文可達 25000, 撈 2000 字夠用.
+    ⭐ V3-O.15.33 (2026-06-09 user 拍板, 多次重申): 撈到後「整張技能卡注入」 — schema v12
+    SKILL.md body 上限 25000 字 (含 full_content 20000 + 觸發情境/實際打法/正確示範/核心摘要
+    /步驟摘要/使用邊界/範例對話/教學追溯/標籤 等多 section), max_chars 預設 25000 = 整張塞.
+    歷史錯誤: 800→2000→500 一路被誤改小違反 user 設計. RAG hit 階段靠 FTS5 tags(trigger:xxx)
+    BM25 + title + body + fallback substring 比對; 命中後注入階段無截斷.
+    L0 單技能 + L1 _consolidated/ 合併版 都被掃; _merged/_archived 是歷史殘留 (現實作 daemon
+    成功合併直接 rmtree, 不會留下) 仍排除以防遺留.
     """
     return retrieve_md_by_prefix(
         vault_root, query,
         source_path_prefix="50_Skills_Tools",
         top_k=top_k,
         max_chars_per_hit=max_chars,
-        # ⭐ V3-O.15.20 (2026-06-06 user 抓到): 排除已合併 archive 的舊技能, 否則 RAG 會同時撈到
-        # 合併版 + _merged 裡的舊版 → 搜到重複/過時技能.
         exclude_subdirs=["_merged", "_archived", "_inbox", "_processed"],
     )
 

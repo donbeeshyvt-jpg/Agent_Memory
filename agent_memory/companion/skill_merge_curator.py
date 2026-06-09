@@ -81,8 +81,24 @@ def _merge_skills(vault_root: Path, skills: list, out: dict) -> None:
             new_path = _write_merged_skill(vault_root, cluster, merged)  # 寫進 L1 _consolidated/
             if new_path:  # 確認合併成功
                 out["merged"] += 1
+                # ⭐ V3-O.15.33 (2026-06-09 user 拍板): FTS5 索引同步 — L1 新 path index_path,
+                # L0 被吸收的 path 全 remove_path. (register_skill 內已對 L0 母 path index 過,
+                # 但 _write_merged_skill 接著 shutil.move 到 L1, 故重新對 L1 新 path index +
+                # 把 L0 那次 index 撤掉. 失敗 swallow, fallback substring 仍可掃.)
+                try:
+                    from agent_memory.search import MemorySearchManager
+                    from agent_memory.vault import ObsidianVaultAdapter
+                    _sm = MemorySearchManager(ObsidianVaultAdapter(vault_root))
+                    _sm.index_path(str(new_path.relative_to(vault_root)))
+                except Exception:
+                    _sm = None
                 for old in cluster:  # V3-O.15.23: 確認成功後刪除被吸收的舊技能 (不保留)
                     try:
+                        if _sm is not None:
+                            try:
+                                _sm.remove_path(str(old["_path"].relative_to(vault_root)))
+                            except Exception:
+                                pass
                         _archive_skill_dir(old["_dir"])
                         out["archived"] += 1
                     except Exception:
