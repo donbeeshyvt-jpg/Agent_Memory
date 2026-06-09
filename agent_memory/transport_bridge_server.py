@@ -208,6 +208,18 @@ class _TransportBridgeHandler(BaseHTTPRequestHandler):
 
 
 def serve_transport_bridge(vault_root: Path, *, host: str = "127.0.0.1", port: int = 16000) -> None:
+    # ⭐ V3-O.15.38 (2026-06-09 user 拍板): bridge 啟動就直接起 inbox_daemon background thread,
+    # 不再等 chat_runtime lazy 觸發. user 設計「15min daemon 在背景定時跑技能合併」必須 bridge
+    # 起來就跑, 不該綁 message-triggered (沒 user 講話 daemon 永遠不啟動, 違反「真背景」).
+    # daemon 是 idempotent singleton (threading.Lock + module flag), chat_runtime 那條 lazy
+    # call 保留作 fallback. 啟動失敗印 stderr 不擋 bridge 起.
+    try:
+        from agent_memory.companion.inbox_ingest_daemon import start_inbox_daemon
+        start_inbox_daemon(Path(vault_root), interval_seconds=300)
+    except Exception as exc:
+        import sys
+        print(f"[transport_bridge] inbox_daemon start failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr, flush=True)
     server = _TransportBridgeServer((host, int(port)), Path(vault_root))
     try:
         server.serve_forever(poll_interval=0.5)
