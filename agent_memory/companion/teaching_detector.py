@@ -669,7 +669,13 @@ def promote_candidate_to_skill(
             ' "worked_example": {"trigger_input": "<≤40字 使用者說什麼/什麼情境>", "ideal_output": "<bot 該回的整句成品, 把 literal_mechanism 嵌在正確位置>", "note": "<≤30字 重點>"},\n'
             ' "procedure_steps": ["<1~4 條操作步驟, 每條≤40字, 有序>"],\n'
             ' "usage_boundaries": {"avoid_when": ["<1~3 條不該用的場合, 每條≤30字>"], "constraints": ["<1~2 條使用者親口說的限制, 如 偶爾/最後面/只在本群有效>"]},\n'
-            ' "trigger_keywords": ["<≤8 個, 含口語情緒變體(爽/讚/耶)+ literal_mechanism 關鍵 token>"]}\n'
+            ' "trigger_keywords": ["<≤8 個, 含口語情緒變體(爽/讚/耶)+ literal_mechanism 關鍵 token>"],\n'
+            ' "example_dialogues": [{"actor": "user", "content": "<典型觸發句, ≤80字>"}, {"actor": "bot", "content": "<冬比該回的整段, 把 literal_mechanism 嵌進去, ≤300字>"}]}\n'
+            "⭐ example_dialogues 規則 (V3-O.15.32 user 拍板):\n"
+            "  - 2~4 條, user/bot 交替, 由你**根據本技能概念自行構造代表性示範**\n"
+            "  - 嚴禁從上面教學對話原文照抄整段; 也嚴禁拼湊與本技能無關的歷史對話\n"
+            "  - 把 literal_mechanism 的 emoji/話術/code 自然嵌進 bot 回應\n"
+            "  - 場景要跟本概念直接相關 (e.g. 「雨天準備」就構造下雨/出門/淋濕情境, 不要抄到「說話的藝術」對話)\n"
         )
         text = (call_llm_for_text(
             vault_root, prompt,
@@ -696,6 +702,7 @@ def promote_candidate_to_skill(
             "worked_example": {},
             "usage_boundaries": {},
             "trigger_keywords": [],
+            "example_dialogues": [],
         }
 
     # ⭐ V3-O.15.18: 多面向欄位 + 向後相容回填單數 trigger_situation
@@ -734,7 +741,14 @@ def promote_candidate_to_skill(
         evidence_count=candidate.get("evidence_count", 0),
         evidence_event_ids=candidate.get("evidence_event_ids", []),
         trigger_keywords=[k for k in (data.get("trigger_keywords") or []) if k][:8],
-        evidence_dialogues=evidence_texts[:3],
+        # ⭐ V3-O.15.32 (2026-06-09 user 拍板): 改 LLM 看當前教學後自行構造代表性示範對話,
+        # 不再從 raw_events 撈 evidence_texts[:3] — session 跨幾天長壽會抓到無關舊教學對話
+        # (例: 06-09 教雨天準備, evidence_texts 最早 3 條撈到 06-06 的「說話的藝術」對話).
+        evidence_dialogues=[
+            {"actor": (d.get("actor") or "?")[:8], "content": (d.get("content") or "")[:300], "at": "", "event_id": ""}
+            for d in (data.get("example_dialogues") or [])
+            if isinstance(d, dict) and (d.get("content") or "").strip()
+        ][:4],
     )
     try:
         result = register_skill(vault_root, skill)

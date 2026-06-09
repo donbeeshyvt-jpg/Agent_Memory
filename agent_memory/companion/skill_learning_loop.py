@@ -233,14 +233,17 @@ def register_skill(
                 body_lines.append(f"- ⚠ 限制: {c}")
             body_lines.append("")
     # V3-O.14 範例對話 (RAG 撈時帶上下文)
+    # V3-O.15.32: LLM 自己構造代表性示範 (見 teaching_detector.promote_candidate_to_skill),
+    # at 為空 → 不印 [] 空括號. 改用 4 上限 (對齊 promoter LLM 構造 [:4]).
     if skill.evidence_dialogues:
         body_lines.append("## 範例對話")
         body_lines.append("")
-        for d in skill.evidence_dialogues[:3]:
+        for d in skill.evidence_dialogues[:4]:
             at = (d.get("at") or "")[:19]
             actor = d.get("actor", "?")
             content = (d.get("content") or "").strip()
-            body_lines.append(f"- [{at}] **{actor}**: {content[:200]}")
+            _prefix = f"[{at}] " if at else ""
+            body_lines.append(f"- {_prefix}**{actor}**: {content[:300]}")
         body_lines.append("")
     # V3-O.14 教學追溯 + V3-O.15 contributor wikilink
     if skill.taught_by_name or skill.evidence_count:
