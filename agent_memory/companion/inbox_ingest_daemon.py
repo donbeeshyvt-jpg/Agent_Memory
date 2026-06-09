@@ -109,7 +109,15 @@ def _daemon_loop(vault_root: Path) -> None:
         except Exception as exc:
             print(f"[inbox_daemon] LOOP EXC {type(exc).__name__}: {str(exc)[:200]}",
                   file=sys.stderr, flush=True)
-        # ⭐ V3-O.15.19 (user 拍板): 每 15 分鐘跑一次技能合併 (掛 5min daemon tick + 900s gate)
+        # ⭐ V3-O.15.30 (2026-06-09 user 拍板): merge interval 改讀 yaml (每 tick 重讀, 改即生效).
+        try:
+            from agent_memory.companion.companion_config import load_companion_config
+            _sl_cfg = load_companion_config(vault_root).skill_learning
+            _merge_gate_s = _sl_cfg.consolidate_interval_s
+            _weekly_gate_s = _sl_cfg.weekly_consolidate_interval_s
+        except Exception:
+            _merge_gate_s, _weekly_gate_s = 900, 604800  # fallback 歷史值
+        # ⭐ V3-O.15.19 (user 拍板): 跑一次技能合併 (掛 5min daemon tick + gate, gate 由 yaml 控)
         try:
             from datetime import datetime, timezone
             _mk = vault_root / ".ai" / "last_skill_merge_run.txt"
@@ -117,7 +125,7 @@ def _daemon_loop(vault_root: Path) -> None:
             if _mk.exists():
                 try:
                     _last = datetime.fromisoformat(_mk.read_text(encoding="utf-8").strip())
-                    _do_merge = (datetime.now(timezone.utc) - _last).total_seconds() > 900
+                    _do_merge = (datetime.now(timezone.utc) - _last).total_seconds() > _merge_gate_s
                 except Exception:
                     _do_merge = True
             if _do_merge:
@@ -138,7 +146,7 @@ def _daemon_loop(vault_root: Path) -> None:
             if _wmk.exists():
                 try:
                     _wlast = datetime.fromisoformat(_wmk.read_text(encoding="utf-8").strip())
-                    _do_weekly = (datetime.now(timezone.utc) - _wlast).total_seconds() > 604800  # 7 天
+                    _do_weekly = (datetime.now(timezone.utc) - _wlast).total_seconds() > _weekly_gate_s
                 except Exception:
                     _do_weekly = True
             if _do_weekly:

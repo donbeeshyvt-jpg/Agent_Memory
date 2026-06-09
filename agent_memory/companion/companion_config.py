@@ -60,11 +60,21 @@ class HermesConfig:
     ingest_direct: bool = True
 
 
+# ⭐ V3-O.15.30 (2026-06-09 user 拍板): 教學升格門檻 + 合併間隔 config 化, 每 turn / 每 daemon tick 重讀.
+# 預設 = 歷史值 (向後相容). 設 evidence_threshold=1 = 「一次教學即升格」極端模式試.
+@dataclass
+class SkillLearningConfig:
+    evidence_threshold: int = 3                    # 教幾次升格 (1=一次即升, 3=歷史保守值)
+    consolidate_interval_s: int = 900              # 15 min 合併間隔 (秒)
+    weekly_consolidate_interval_s: int = 604800    # 7 天跨層合併間隔 (秒)
+
+
 @dataclass
 class CompanionConfig:
     owner: OwnerConfig = field(default_factory=OwnerConfig)
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
     hermes: HermesConfig = field(default_factory=HermesConfig)
+    skill_learning: SkillLearningConfig = field(default_factory=SkillLearningConfig)
 
 
 def load_companion_config(vault_root: Path) -> CompanionConfig:
@@ -109,7 +119,15 @@ def load_companion_config(vault_root: Path) -> CompanionConfig:
         ingest_direct=bool(h.get("ingest_direct", True)),
     )
 
-    return CompanionConfig(owner=owner, channels=channels, hermes=hermes)
+    # V3-O.15.30: skill_learning 區段 (升格門檻 + 合併間隔)
+    sl = data.get("skill_learning", {}) or {}
+    skill_learning = SkillLearningConfig(
+        evidence_threshold=max(1, int(sl.get("evidence_threshold", 3) or 3)),  # 最小 1 防呆
+        consolidate_interval_s=max(60, int(sl.get("consolidate_interval_s", 900) or 900)),  # 最小 60s 防呆
+        weekly_consolidate_interval_s=max(3600, int(sl.get("weekly_consolidate_interval_s", 604800) or 604800)),
+    )
+
+    return CompanionConfig(owner=owner, channels=channels, hermes=hermes, skill_learning=skill_learning)
 
 
 def get_owner_user_id_for_transport(vault_root: Path, transport: str) -> str:

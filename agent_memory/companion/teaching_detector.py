@@ -454,6 +454,14 @@ def accumulate_teaching_evidence(
     from agent_memory.companion.companion_db import open_companion_db
     now_iso = datetime.now(timezone.utc).isoformat()
 
+    # ⭐ V3-O.15.30 (2026-06-09 user 拍板): 升格門檻改讀 yaml (每 turn 重讀, 改即生效不重啟).
+    # 蓋過 DB candidate.promotion_threshold 欄位 → 既有候選也跟著新門檻走 (e.g. yaml 改 1 → ev=2 candidate 下次累積到 3 立刻升).
+    try:
+        from agent_memory.companion.companion_config import load_companion_config
+        _cfg_threshold = load_companion_config(vault_root).skill_learning.evidence_threshold
+    except Exception:
+        _cfg_threshold = 3  # fallback 歷史值
+
     with open_companion_db(vault_root) as conn:
         ensure_skill_candidates_schema(conn)
         # 查既有 candidate (concept_id + teacher_user_id 是 UNIQUE key)
@@ -499,25 +507,29 @@ def accumulate_teaching_evidence(
 
         if row is None:
             candidate_id = str(uuid.uuid4())
+            # ⭐ V3-O.15.30: yaml threshold=1 → ev=1 立刻達門檻 → INSERT 直接寫 status='promoting'
+            # (上游 list_promotable_candidates 撈 promoting 的才會 promote; 一次即升必須這裡就標)
+            _ready_now = 1 >= _cfg_threshold
+            _init_status = "promoting" if _ready_now else "working"
             conn.execute(
                 "INSERT INTO skill_candidates "
                 "(candidate_id, concept_id, concept_name, teacher_user_id, teacher_display_name, "
                 "summary, evidence_count, evidence_event_ids, first_seen_at, last_reinforced_at, "
                 "status, promotion_threshold, last_session_id) "
-                "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, 'working', 3, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)",
                 (candidate_id, concept_id, concept_name, teacher_user_id, teacher_display_name,
-                 summary, json.dumps([event_id]), now_iso, now_iso, session_id),
+                 summary, json.dumps([event_id]), now_iso, now_iso, _init_status, _cfg_threshold, session_id),
             )
             conn.commit()
             return {
                 "candidate_id": candidate_id,
-                "evidence_count": 1, "threshold": 3,
-                "ready_to_promote": False, "status": "working",
+                "evidence_count": 1, "threshold": _cfg_threshold,
+                "ready_to_promote": _ready_now, "status": _init_status,
             }
         # update 既有
         candidate_id = row["candidate_id"]
         new_count = int(row["evidence_count"] or 0) + 1
-        threshold = int(row["promotion_threshold"] or 3)
+        threshold = _cfg_threshold  # V3-O.15.30: yaml 蓋過 DB 欄位 (hot-reload)
         try:
             evt_ids = json.loads(row["evidence_event_ids"] or "[]")
             if not isinstance(evt_ids, list):
