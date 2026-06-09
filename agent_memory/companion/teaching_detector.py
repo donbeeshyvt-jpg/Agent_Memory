@@ -344,19 +344,13 @@ def detect_teaching_intent(
         "viewer": f"觀眾朋友 ({speaker_display_name})" if speaker_display_name else "觀眾朋友",
         "audience": f"觀眾 ({speaker_display_name})" if speaker_display_name else "觀眾",
     }.get(speaker_role, speaker_display_name or "說話者")
-    # ⭐ V3-O.15.18 (2026-06-06 user 拍板): 餵這位說話者既有概念清單給 LLM, 同概念收斂用同名
-    # (修「同一件事每次取不同名 → 證據散成多候選 → 沒一個到門檻 → 升不了格」).
+    # ⭐ V3-O.15.31 (2026-06-09 user 拍板): 拿掉 15.18 existing_concepts 強制收斂塊.
+    # 回到原設計: 教學當下不收斂, 每概念自由命名 → ev_thr=1 立刻升格成獨立 SKILL.md
+    # → 15min daemon LLM judge 才判定要不要合併 (保留擴增).
+    # 副作用根因: 15.18 強迫 LLM 沿用既有名 → 不相關概念 (說話藝術/標記/稱呼) 被吃進「貼圖使用」
+    # 黑洞, daemon 永遠沒第二個獨立 SKILL 可看, 你期望的「散→合」循環卡死.
+    # 保留 existing_concepts 參數簽名以維持 callers 不變; 餵進來的內容此處不再使用.
     _existing_block = ""
-    if existing_concepts:
-        _names = "、".join(str(c) for c in existing_concepts[:20] if c)
-        if _names:
-            _existing_block = (
-                "\n⭐ 你已經在追蹤這位說話者的這些概念 (收斂命名, 很重要):\n"
-                f"  [{_names}]\n"
-                "  若這次教的跟上面某個概念是『同一件事』(即使措辭不同), 請務必回傳那個**一模一樣**的名字,\n"
-                "  不要發明新名字 (否則同概念的證據會散開, 永遠累積不到門檻、升不了格).\n"
-                "  只有確實是全新、不同的概念時才取新名字.\n\n"
-            )
     # V3-O.15.6: prompt 加 examples + 一致性指示 — 同一概念多次教學 LLM 要抽出同名字
     prompt = (
         "你是夥伴大腦的 teaching-intent 偵測 sub_task.\n"
@@ -471,39 +465,9 @@ def accumulate_teaching_evidence(
             (concept_id, teacher_user_id),
         ).fetchone()
 
-        # ⭐ V3-O.15.6 (2026-06-06 user 拍板): 若無 exact match, 對該 teacher 所有
-        # working candidates 做 jaccard fuzzy match — ≥0.4 視為同 concept 合併.
-        # 修「@標記人」教 5 次抽出 5 個不同 concept_id 沒升格的 bug.
-        if row is None:
-            sim_rows = conn.execute(
-                "SELECT candidate_id, concept_id, concept_name, evidence_count, "
-                "evidence_event_ids, status, promotion_threshold "
-                "FROM skill_candidates WHERE teacher_user_id=? AND status='working' "
-                "ORDER BY evidence_count DESC, last_reinforced_at DESC",  # ⭐ 優先 evidence 高的
-                (teacher_user_id,),
-            ).fetchall()
-            best_sim = 0.0
-            best_match = None
-            for sr in sim_rows:
-                sim = max(
-                    _concept_jaccard_similarity(concept_id, sr["concept_id"]),
-                    _concept_jaccard_similarity(concept_name, sr["concept_name"]),
-                )
-                # tie-breaking: 同 sim 優先 evidence 高的 (因 SQL 排序已優先, 用 > 而非 >=)
-                if sim > best_sim:
-                    best_sim = sim
-                    best_match = sr
-            if best_match is not None and best_sim >= 0.4:
-                row = best_match
-                # 用既有 concept_id (不改, 保持穩定 wikilink)
-                concept_id = best_match["concept_id"]
-                try:
-                    import sys as _sys
-                    print(f"[teaching_detector] FUZZY MATCH: '{concept_name}' → 既有 '{best_match['concept_name']}' "
-                          f"(sim={best_sim:.2f}, ev={best_match['evidence_count']})",
-                          file=_sys.stderr, flush=True)
-                except Exception:
-                    pass
+        # ⭐ V3-O.15.31 (2026-06-09 user 拍板): 拿掉 15.6 fuzzy match 強制併同 candidate.
+        # 回到原設計: 不同名 concept_id = 不同 candidate (散), 各自累積到 ev_thr 各自升格成獨立 SKILL.md,
+        # 15min daemon LLM judge 才判定要不要合併. 配合 15.18 收斂塊也拿掉, 雙補丁一起回滾.
 
         if row is None:
             candidate_id = str(uuid.uuid4())
