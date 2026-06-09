@@ -53,18 +53,64 @@ def _collect_skills(skill_dirs) -> list:
 
 
 def _merge_skills(vault_root: Path, skills: list, out: dict) -> None:
-    """共用核心: cluster + LLM judge + 寫合併結果(進 L1) + 刪除被吸收的舊技能."""
+    """共用核心: 全 N² LLM judge 語意 → cluster → 寫合併結果(進 L1) → 刪除被吸收的舊技能.
+
+    ⭐ V3-O.15.35 (2026-06-09 user 拍板, 多次重申): 拿掉「字面 jaccard ≥ 0.4 預篩當看門人」.
+    原本 _cluster_by_keywords 字面預篩擋下「字面不像但語意像」對 (如「擲骰子」vs「判定」字面
+    共 0 bigram, 預篩 0.0 < 0.4 → LLM judge 連看都沒看). 對齊 user 設計「15min LLM 檢索判定
+    合併」: 所有 N² 對都過 LLM 看語意, 字面 jaccard ≥ 0.4 仍當「快速通道」直接認同 (省 LLM
+    call), 其餘走 _llm_judge_pair. 成本管控走 yaml consolidate_interval_s + L0 規模自然控制
+    (user 拍板: 管控成本是 user 的事情, 不該由 code 擅自字面預篩省 LLM call).
+    """
     out["scanned"] = len(skills)
     if len(skills) < 2:
-        return
-    clusters = _cluster_by_keywords(skills, threshold=SIMILARITY_THRESHOLD)
-    out["clusters"] = sum(1 for c in clusters if len(c) >= MIN_CLUSTER_SIZE)
-    if out["clusters"] == 0:
         return
     try:
         from agent_memory.llm_text_helpers import call_llm_for_text  # noqa: F401  early import check
     except Exception:
         return
+
+    # ⭐ V3-O.15.35: 全 N² 對 LLM 語意 judge (字面像直通, 其餘 LLM 判)
+    n = len(skills)
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(x, y):
+        rx, ry = find(x), find(y)
+        if rx != ry:
+            parent[rx] = ry
+
+    llm_judged_pairs = 0
+    for i in range(n):
+        for j in range(i + 1, n):
+            sim_kw = _jaccard(skills[i]["trigger_keywords"], skills[j]["trigger_keywords"])
+            sim_name = _name_jaccard(skills[i].get("skill_name", ""), skills[j].get("skill_name", ""))
+            if sim_kw >= SIMILARITY_THRESHOLD or sim_name >= SIMILARITY_THRESHOLD:
+                # 字面顯然像 → 快速通道, 省 LLM call
+                union(i, j)
+            else:
+                # ⭐ 字面不像 → LLM judge 看語意 (V3-O.15.35 核心)
+                try:
+                    if _llm_judge_pair(vault_root, skills[i], skills[j]):
+                        union(i, j)
+                except Exception:
+                    pass
+                llm_judged_pairs += 1
+
+    clusters_map: dict[int, list] = {}
+    for i in range(n):
+        clusters_map.setdefault(find(i), []).append(skills[i])
+    clusters = list(clusters_map.values())
+    out["clusters"] = sum(1 for c in clusters if len(c) >= MIN_CLUSTER_SIZE)
+    out["llm_judged_pairs"] = llm_judged_pairs  # V3-O.15.35: 暴露 LLM call 數方便監控成本
+    if out["clusters"] == 0:
+        return
+
     for cluster in clusters:
         if len(cluster) < MIN_CLUSTER_SIZE:
             continue
@@ -72,11 +118,14 @@ def _merge_skills(vault_root: Path, skills: list, out: dict) -> None:
             judge_result = _llm_judge_merge(vault_root, cluster)
         except Exception:
             continue
-        if not judge_result or not judge_result.get("should_merge"):
+        # V3-O.15.35: cluster 已確定要合 (pair judge 已通過), 此處只需 merged_skill 方案;
+        # 不再用 should_merge 當二次 gate (避免 LLM 在彙整階段又否定 pair 階段判斷).
+        if not judge_result:
             continue
         merged = judge_result.get("merged_skill", {})
         if not merged.get("skill_name"):
-            continue
+            # fallback: 取 cluster 內 evidence 最多的 SKILL 名當合併名
+            merged["skill_name"] = max(cluster, key=lambda s: s.get("evidence_count", 0))["skill_name"]
         try:
             new_path = _write_merged_skill(vault_root, cluster, merged)  # 寫進 L1 _consolidated/
             if new_path:  # 確認合併成功
@@ -267,8 +316,57 @@ def _cluster_by_keywords(skills: list, *, threshold: float) -> list[list]:
     return list(clusters_map.values())
 
 
+def _llm_judge_pair(vault_root: Path, a: dict, b: dict) -> bool:
+    """⭐ V3-O.15.35: LLM 只看語意判斷兩個 SKILL 是否同概念 (對齊 user「15min LLM 檢索判定合併」設計).
+
+    被 _merge_skills 主迴圈在「字面 jaccard < 0.4」時 invoke (字面像走快速通道).
+    回 True → union-find 進同 cluster; False / LLM 失敗 → 不合 (寧分不合, 下次 tick 再看).
+    """
+    from agent_memory.llm_text_helpers import call_llm_for_text
+
+    prompt = (
+        "你是夥伴大腦的 skill consolidation curator.\n"
+        "夥伴學了兩個技能, 字面相似度低. 請只看語意判斷是否在描述「同一個概念/技能」.\n\n"
+        f"Skill A:\n"
+        f"  name: {a.get('skill_name', '')}\n"
+        f"  keywords: {a.get('trigger_keywords', [])}\n"
+        f"  描述: {(a.get('_desc_raw') or '')[:200]}\n"
+        f"  核心摘要: {(a.get('_core_raw') or '')[:400]}\n\n"
+        f"Skill B:\n"
+        f"  name: {b.get('skill_name', '')}\n"
+        f"  keywords: {b.get('trigger_keywords', [])}\n"
+        f"  描述: {(b.get('_desc_raw') or '')[:200]}\n"
+        f"  核心摘要: {(b.get('_core_raw') or '')[:400]}\n\n"
+        "判斷標準:\n"
+        "- 是否同一個概念/技能, 觸發情境是否本質上重疊 (例: 「擲骰子」vs「判定」都是隨機決定機制 → 同)\n"
+        "- 字面不同名但語意/做法/觸發相同算同; 字面像但實質不同算不同\n"
+        "- 邊緣寧分不合 (下次 tick 仍可再 judge)\n\n"
+        "輸出純 JSON (不要 code fence):\n"
+        '{"same_concept": true/false, "reason": "<≤60字 判斷依據>"}'
+    )
+    try:
+        text = (call_llm_for_text(
+            vault_root, prompt,
+            persona_id="companion",
+            temperature=0.2,
+            timeout_s=60.0,
+            auxiliary="skill_consolidation",
+        ) or "").strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        data = json.loads(text)
+        return bool(data.get("same_concept"))
+    except Exception:
+        # JSON 解失敗 fallback: regex 撈 same_concept
+        m = re.search(r'"same_concept"\s*:\s*(true|false)', text if 'text' in dir() else "")
+        return bool(m and m.group(1) == "true")
+
+
 def _llm_judge_merge(vault_root: Path, cluster: list) -> dict:
-    """LLM 判斷該不該 merge cluster 內的 N 個 skill. V3-O.15 fix: 用 vault_root."""
+    """LLM 給「已判定同概念 cluster」提合併方案. V3-O.15.35: 不再 gate should_merge
+    (主迴圈已用 _llm_judge_pair 確定同 cluster); 此處只取 merged_skill 內容.
+    """
     from agent_memory.llm_text_helpers import call_llm_for_text
 
     cluster_summary_lines = []
@@ -282,9 +380,10 @@ def _llm_judge_merge(vault_root: Path, cluster: list) -> dict:
             f"  evidence_count: {s['evidence_count']}"
         )
     prompt = (
-        "你是夥伴大腦的 skill consolidation curator (每日 merge).\n"
-        "夥伴最近學到 N 個技能, 可能是同一件事的不同說法, 請判斷該不該合併.\n\n"
-        f"候選技能 (已用 trigger_keywords jaccard>0.4 篩出):\n"
+        "你是夥伴大腦的 skill consolidation curator (15min merge).\n"
+        "下列 N 個技能已被判定為『同一概念』 (由前一階段 LLM judge_pair 兩兩判定通過), "
+        "請提一份合併後的技能方案.\n\n"
+        f"已判同的候選技能:\n"
         + "\n\n".join(cluster_summary_lines)
         + "\n\n"
         "判斷標準:\n"
