@@ -155,10 +155,14 @@ def register_skill(
     frontmatter_lines.append("---")
     frontmatter_lines.append("")
 
-    # ⭐ V3-O.15.18 多面向技能模板 — literal_mechanism/worked_example 排前段
-    # (retrieve_skills max_chars=2000 截斷保護: 最關鍵的「實際打法」要在前面不被截掉)
+    # ⭐ V3-O.15.34 (2026-06-09 user 拍板): SKILL.md body section 重排, 分「比對段 / 注入段」.
+    # 設計: RAG 比對只看前 5000 字 (FTS5 body 截 5000 + fallback substring 截 5000) →
+    # 前段集中高密度語意 (觸發情境 / 描述 / 核心摘要 / 標籤), 不讓 ## 實際打法 (literal_mechanism
+    # 可達 100 bullet ≈ 6000 字) / ## 完整內容 (20000 字) 等大段塞滿 5000 把語意段擠出.
+    # 注入階段 max_chars=25000 整張塞, 細節 (實際打法/完整內容/範例對話) 在後段仍全部進 prompt.
     body_lines = [f"# {skill.skill_name}", ""]
-    # 觸發情境 (多條優先, fallback 單條) — ⭐ RAG embed 主要靠這段
+
+    # ─── 比對段 (≤2000 字, 高密度語意, RAG 比對主擊中) ──────────
     body_lines.append("## 觸發情境")
     if skill.trigger_situations:
         for s in skill.trigger_situations[:5]:
@@ -167,11 +171,30 @@ def register_skill(
     else:
         body_lines.append(skill.trigger_situation or "(未填)")
     body_lines.append("")
-    # ⭐ 實際打法 (可直接複製) — 修「撈出來不知道怎麼用」核心
+    # 描述 (≤300 字一句話)
+    body_lines.append("## 描述")
+    body_lines.append(skill.description or "(未填)")
+    body_lines.append("")
+    # 核心摘要 (200-600 字, 最高語意密度)
+    if skill.core_summary:
+        body_lines.append("## 核心摘要")
+        body_lines.append(skill.core_summary)
+        body_lines.append("")
+    # 標籤 (trigger:xxx, 跟 frontmatter tags 重複但 fallback substring 也命中)
+    if skill.trigger_keywords:
+        body_lines.append("## 標籤")
+        body_lines.append("")
+        body_lines.append(" ".join(f"#{k}" for k in skill.trigger_keywords[:8]))
+        body_lines.append("")
+
+    # ─── 注入段 (細節, 5000 字後, 注入時 max_chars=25000 整張塞) ──────────
+    # ⭐ 實際打法 (可直接複製) — literal_mechanism 全條, V3-O.15.34: [:8]→[:100] 對齊
+    # frontmatter literal_mechanism_json 上限 (15.28). 不再被 [:8] 截掉, _read_md_body strip
+    # frontmatter 後 bot 仍能從 body 看到所有 emoji code/mention/話術.
     if skill.literal_mechanism:
         body_lines.append("## 實際打法 (可直接複製)")
         body_lines.append("")
-        for m in skill.literal_mechanism[:8]:
+        for m in skill.literal_mechanism[:100]:
             if not isinstance(m, dict):
                 continue
             literal = (m.get("literal") or m.get("verbatim") or "").strip()
@@ -187,7 +210,7 @@ def register_skill(
                 line += f" — {note}"
             body_lines.append(line)
         body_lines.append("")
-    # ⭐ 正確示範 (情境 → 成品)
+    # 正確示範 (情境 → 成品)
     if isinstance(skill.worked_example, dict) and skill.worked_example:
         _we = skill.worked_example
         _ti = (_we.get("trigger_input") or "").strip()
@@ -203,15 +226,7 @@ def register_skill(
             if _wn:
                 body_lines.append(f"- 重點: {_wn}")
             body_lines.append("")
-    # 描述
-    body_lines.append("## 描述")
-    body_lines.append(skill.description or "(未填)")
-    body_lines.append("")
-    # ⭐ V3-O.15.19 核心摘要 + 完整內容 (對齊 KB write_knowledge_v12 ≤25000 字規格)
-    if skill.core_summary:
-        body_lines.append("## 核心摘要")
-        body_lines.append(skill.core_summary)
-        body_lines.append("")
+    # 完整內容 (≤20000 字, 對齊 KB write_knowledge_v12 規格)
     if skill.full_content:
         body_lines.append("## 完整內容")
         body_lines.append(skill.full_content)
@@ -220,7 +235,7 @@ def register_skill(
     body_lines.append("## 步驟摘要")
     body_lines.append(steps_md or "(無明確步驟)")
     body_lines.append("")
-    # ⭐ 使用邊界 (不要用 / 限制)
+    # 使用邊界 (不要用 / 限制)
     if isinstance(skill.usage_boundaries, dict) and skill.usage_boundaries:
         _avoid = [a for a in (skill.usage_boundaries.get("avoid_when") or []) if a]
         _cons = [c for c in (skill.usage_boundaries.get("constraints") or []) if c]
@@ -232,9 +247,7 @@ def register_skill(
             for c in _cons[:3]:
                 body_lines.append(f"- ⚠ 限制: {c}")
             body_lines.append("")
-    # V3-O.14 範例對話 (RAG 撈時帶上下文)
-    # V3-O.15.32: LLM 自己構造代表性示範 (見 teaching_detector.promote_candidate_to_skill),
-    # at 為空 → 不印 [] 空括號. 改用 4 上限 (對齊 promoter LLM 構造 [:4]).
+    # 範例對話 (V3-O.15.32: LLM 自構代表性示範, at 空不印 [])
     if skill.evidence_dialogues:
         body_lines.append("## 範例對話")
         body_lines.append("")
@@ -245,7 +258,7 @@ def register_skill(
             _prefix = f"[{at}] " if at else ""
             body_lines.append(f"- {_prefix}**{actor}**: {content[:300]}")
         body_lines.append("")
-    # V3-O.14 教學追溯 + V3-O.15 contributor wikilink
+    # 教學追溯
     if skill.taught_by_name or skill.evidence_count:
         body_lines.append("## 教學追溯")
         body_lines.append("")
@@ -259,12 +272,6 @@ def register_skill(
             body_lines.append(f"- 最後強化: {str(skill.last_reinforced_at)[:19]}")
         if skill.evidence_count:
             body_lines.append(f"- 重複次數: {skill.evidence_count}")
-        body_lines.append("")
-    # V3-O.14 標籤 (給 FTS5 撈 + 視覺索引)
-    if skill.trigger_keywords:
-        body_lines.append("## 標籤")
-        body_lines.append("")
-        body_lines.append(" ".join(f"#{k}" for k in skill.trigger_keywords[:8]))
         body_lines.append("")
 
     content = "\n".join(frontmatter_lines + body_lines) + origin_link
