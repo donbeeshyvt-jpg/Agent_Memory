@@ -86,7 +86,7 @@ def write_semantic_concept(
         "type: self_concept",
         "schema_version: 10",
         f"memory_id: {memory_id}",
-        f"user_id: {user_id}",
+        f'user_id: "{user_id}"',
         f"confidence: {confidence:.4f}",
         f"evidence_count: {len(derived_from)}",
         f"tags: {tags}",

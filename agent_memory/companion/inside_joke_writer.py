@@ -141,7 +141,7 @@ def write_inside_joke_md(
         "type: inside_joke",
         "schema_version: 10",
         f"joke_keyword: {keyword}",
-        f"user_id: {user_id}",
+        f'user_id: "{user_id}"',
         f"intimacy_threshold: {intimacy_threshold:.2f}",
         f"use_count: {use_count}",
         f"first_seen_at: {first_seen_at or now}",

@@ -69,10 +69,13 @@ def _build_contributor_wikilink(
     elif source == "agent_self_lookup":
         return "[[00_System_Core/00.06_Companion_SOUL|Self lookup]]"
     elif contributor_user_id:
-        # 默認當 viewer 朋友卡
-        safe_uid = contributor_user_id.replace("/", "_").replace("\\", "_")[:120]
+        # 默認當 viewer 朋友卡 — V3-O.15.45: 朋友卡檔名改暱稱制 (15.44) 後 uid 路徑=死連結,
+        # 改連暱稱推導檔名 (對齊 resolve_viewer_card_wikilink 未建卡 fallback 規則: 之後
+        # 建卡同名自動連上). 此分支目前 latent — KB source 只有 owner/agent 兩種,
+        # hermes trusted viewer 投放啟用後才會走到.
         label = contributor_name or contributor_user_id[:18]
-        return f"[[20_Audience_Graph/22_Casual_Viewers/{safe_uid}|{label}]]"
+        safe_name = "".join(("_" if c in '\\/:*?"<>|#^[]' else c) for c in label).strip(" ._")[:60]
+        return f"[[20_Audience_Graph/22_Casual_Viewers/{safe_name or contributor_user_id[:18]}|{label}]]"
     return ""
 
 

@@ -70,7 +70,7 @@ def write_emotion_event_md(
         "type: emotional_memory",
         "schema_version: 10",
         f"event_id: {event_id}",
-        f"user_id: {user_id}",
+        f'user_id: "{user_id}"',
         f"valence: {valence:.4f}",
         f"arousal: {arousal:.4f}",
         f"dominance: {dominance:.4f}",
@@ -129,7 +129,7 @@ def write_drift_candidate_md(
         "schema_version: 10",
     ]
     if user_id:
-        lines.append(f"user_id: {user_id}")
+        lines.append(f'user_id: "{user_id}"')
     lines.append(f"trait_name: {trait_name}")
     lines.append(f"proposed_value: {proposed_value:.4f}")
     if current_value is not None:
@@ -278,7 +278,7 @@ def write_preference_md(
         "---",
         "type: preference",
         "schema_version: 10",
-        f"user_id: {user_id}",
+        f'user_id: "{user_id}"',
         f"topic: {topic}",
         f"strength: {strength:.4f}",
         f"confidence: {confidence:.4f}",
@@ -332,7 +332,7 @@ def write_decision_trace_md(
         "type: decision_trace",
         "schema_version: 10",
         f"trace_id: {trace_id}",
-        f"user_id: {user_id}",
+        f'user_id: "{user_id}"',
         f"decision: {decision}",
         f"created_at: {now}",
         "---",
@@ -402,7 +402,7 @@ def write_injection_audit_md(
         "type: injection_audit",
         "schema_version: 10",
         f"detected_id: {detected_id}",
-        f"user_id: {user_id}",
+        f'user_id: "{user_id}"',
         f"risk_score: {risk_score:.4f}",
         f"action_taken: {action_taken}",
         f"created_at: {now}",
@@ -515,7 +515,7 @@ def write_memory_audit_md(
         "schema_version: 10",
         f"audit_id: {audit_id}",
         f"audit_type: {audit_type}",
-        f"user_id: {user_id}",
+        f'user_id: "{user_id}"',
         f"session_id: {session_id}",
         f"created_at: {now}",
         "---",
@@ -566,7 +566,7 @@ def write_core_affect_log_md(
         "schema_version: 10",
         f"log_id: {log_id}",
         f"session_id: {session_id}",
-        f"user_id: {user_id}",
+        f'user_id: "{user_id}"',
         f"valence: {valence:.4f}",
         f"arousal: {arousal:.4f}",
         f"dominance: {dominance:.4f}",
@@ -613,7 +613,7 @@ def write_self_concept_md(
         f"concept_id: {concept_id}",
         f"identity_relevance: {identity_relevance:.4f}",
         f"source_event_id: {source_event_id}",
-        f"user_id: {user_id}",
+        f'user_id: "{user_id}"',
         f"session_id: {session_id}",
         f"created_at: {now}",
         "---",

@@ -221,8 +221,16 @@ def _parse_skill_md(path: Path) -> dict:
     body = text[end + 5:]
 
     def _sec(*headers) -> str:
+        # ⭐ V3-O.15.45: v13 body 有 <summary>/<context> XML 包覆 + H1 分區 (# 核心摘要 /
+        # # 詳細內容 / # 相關實體與偏好影響) — 停止點補 H1 行與 </...> 關閉行, 否則
+        # <context> 區最後一個 ## section 會把「</context> + # 相關實體…」尾巴吃進 raw,
+        # merge verbatim round-trip 時散落的 </context> 會提早關閉 prompt XML 邊界.
+        # (^#\s 需 # 後空白 → 內文 #標籤 行不誤停; v12 卡 body 無這些行為不變.)
         for h in headers:
-            m = re.search(r'(?m)^##\s*' + re.escape(h) + r'[^\n]*\n(.*?)(?=(?:^##\s)|\Z)', body, re.S)
+            m = re.search(
+                r'(?m)^##\s*' + re.escape(h) + r'[^\n]*\n(.*?)(?=(?:^##\s)|(?:^#\s)|(?:^</)|\Z)',
+                body, re.S,
+            )
             if m:
                 return m.group(1).strip()
         return ""

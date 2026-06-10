@@ -78,7 +78,7 @@ def write_narrative_memory(
         "type: narrative_memory",
         "schema_version: 10",
         f"narrative_id: {narrative_id}",
-        f"user_id: {user_id}",
+        f'user_id: "{user_id}"',
         f"theme: {theme}",
         f"relationship_arc: {relationship_arc}",
         f"events_count: {len(events_chain)}",

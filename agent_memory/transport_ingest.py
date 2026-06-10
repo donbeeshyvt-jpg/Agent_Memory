@@ -370,7 +370,7 @@ def _handle_hermes_ingest(vault_root: Path, turn: "InboundTurn") -> dict[str, An
     content = (
         "---\n"
         "source: hermes\n"
-        f"user_id: {turn.user_id}\n"
+        f"user_id: \"{turn.user_id}\"\n"  # V3-O.15.45: 引號防 Obsidian JS 精度毀 18 位 uid
         f"transport: {turn.transport}\n"
         f"received_at: {datetime.now(timezone.utc).isoformat()}\n"
         "---\n\n"
