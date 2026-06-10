@@ -135,10 +135,12 @@ def register_skill(
                 safe_uid = skill.taught_by_user_id.replace("/", "_").replace("\\", "_")[:120]
                 contributor_link = f"[[20_Audience_Graph/22_Casual_Viewers/{safe_uid}|{label}]]"
 
+    # V3-O.15.44b: 名字可能含雙引號 → YAML ParserError 整張卡炸, 消毒
+    _yaml_skill_name = str(skill.skill_name).replace('"', "'")
     frontmatter_lines = [
         "---",
         # ── 使用者面 (V3-O.15.41 內化格式: title/aliases/tags/created/updated/security) ──
-        f"title: \"{skill.skill_name}\"",
+        f"title: \"{_yaml_skill_name}\"",
         *_yaml_block_list("aliases", aliases_list),
         *_yaml_block_list("tags", tags_list, quote=False),
         f"created_at: {now_date}",

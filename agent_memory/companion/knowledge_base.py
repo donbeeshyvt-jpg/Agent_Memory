@@ -143,11 +143,13 @@ def write_knowledge_v13(
             out.append(f'  - "{v_safe}"' if quote else f"  - {v_safe}")
         return out
 
+    # V3-O.15.44b: title 可能含雙引號 (LLM 取名) → YAML ParserError 整張卡炸, 消毒
+    _yaml_title = title.replace('"', "'")
     # ─── frontmatter (使用者面 + 系統追溯) ──────────────────────
     frontmatter_lines = [
         "---",
         # ── 使用者面 (user 內化格式設計) ──
-        f"title: \"{title}\"",
+        f"title: \"{_yaml_title}\"",
         *_yaml_block_list("aliases", aliases),
         *_yaml_block_list("tags", ["knowledge", source, "schema_v13"], quote=False),
         f"created_at: {now_date}",

@@ -187,10 +187,13 @@ def _find_card_by_uid(dir_path: Path, user_id: str) -> Path | None:
     legacy = dir_path / f"{user_id[:120]}.md"
     if legacy.exists():
         return legacy
-    needle = f"user_id: {user_id}"
+    # V3-O.15.44: user_id 帶引號 (防 Obsidian JS 精度毀大整數) — 兼容新舊兩種寫法;
+    # contributor_user_id 一直有引號, 當第三道保險 (舊卡 user_id 已被 Obsidian 毀時仍找得到).
+    needles = (f'user_id: "{user_id}"', f"user_id: {user_id}", f'contributor_user_id: "{user_id}"')
     for p in dir_path.glob("*.md"):
         try:
-            if needle in p.read_text(encoding="utf-8", errors="ignore")[:600]:
+            head = p.read_text(encoding="utf-8", errors="ignore")[:600]
+            if any(n in head for n in needles):
                 return p
         except Exception:
             continue
@@ -378,14 +381,20 @@ def write_viewer_profile(
     lines.append("---")
     lines.append("type: friend_card")  # V3-O.15.6: viewer_profile → friend_card
     lines.append("schema_version: 12")  # V3-O.15.6: 10 → 12
-    lines.append(f"user_id: {user_id}")
-    lines.append(f"display_name: {final_name}")
-    lines.append(f"title: {final_name}")  # alias for KB-style RAG query
+    # V3-O.15.44: user_id 必須加引號 — Obsidian 是 JS 環境 (Number 精度 16 位),
+    # user 在 Obsidian Properties 編輯朋友卡時, 未引號的 18 位 Discord uid 會被
+    # 四捨五入毀掉 (實際發生: ...546 → ...500). 引號 = YAML string, JS 不碰.
+    # V3-O.15.44b: 暱稱可能本身含雙引號 (實際發生: "序列8小丑"蒼月楓 → YAML ParserError
+    # 整張卡 read_note 炸) — 所有名字欄位寫入前 " → ' 消毒 + 一律加引號.
+    _yaml_name = final_name.replace('"', "'")
+    lines.append(f"user_id: \"{user_id}\"")
+    lines.append(f"display_name: \"{_yaml_name}\"")
+    lines.append(f"title: \"{_yaml_name}\"")  # alias for KB-style RAG query
     lines.append(f"contributor_user_id: \"{user_id}\"")
-    lines.append(f"contributor_name: \"{final_name}\"")
+    lines.append(f"contributor_name: \"{_yaml_name}\"")
     # Obsidian wikilink 回連自己 (給 backlink graph 用)
     # V3-O.15.44: 檔名改暱稱制 → 連到實際檔名 stem (不再是 uid)
-    lines.append(f"contributor_link: \"[[{profile_path.stem}|{final_name}]]\"")
+    lines.append(f"contributor_link: \"[[{profile_path.stem}|{_yaml_name}]]\"")
     lines.append(f"loyalty_tier: {loyalty_tier}")
     lines.append(f"intimacy_score: {intimacy_score:.4f}")
     lines.append(f"intimacy_stage: {intim_stage}")
