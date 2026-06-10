@@ -280,12 +280,19 @@ def _list_inbox(inbox: Path) -> list[Path]:
 
 
 def move_to_processed(inbox_file: Path, vault_root: Path) -> Optional[Path]:
-    """V3-O.15: 處理完搬到對應 _processed/."""
+    """V3-O.15: 處理完搬到對應 _processed/.
+
+    V3-O.15.39 bug fix (2026-06-10 user 首次投放 KB 時暴露): 原本
+    `OWNER_INBOX_DIR in str(inbox_file)` 用 "/" 比對 Windows "\\" 路徑 always False,
+    全部檔被搬到 42_External_Knowledge/_processed/ (即使是 41/_inbox/ 投放的).
+    改用 parent 替換邏輯 (跨平台, 不依賴 hardcode 子目錄名, 未來加新層自動 work).
+    """
     try:
-        if OWNER_INBOX_DIR in str(inbox_file):
-            dest_dir = vault_root / OWNER_PROCESSED_DIR
+        # parent.name == "_inbox" → 同層 _processed (41/_inbox → 41/_processed, 42 同理)
+        if inbox_file.parent.name == "_inbox":
+            dest_dir = inbox_file.parent.parent / "_processed"
         else:
-            dest_dir = vault_root / AGENT_PROCESSED_DIR
+            dest_dir = vault_root / AGENT_PROCESSED_DIR  # fallback (理論不該到)
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / inbox_file.name
         # 同名衝突 → append timestamp
