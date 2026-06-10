@@ -5,8 +5,9 @@
 - 41_Daily_Knowledge/_inbox/   ← 主人投放 (你拖檔)
 - 42_External_Knowledge/_inbox/ ← agent 自查 (hermes 未來)
 - 每 5 分鐘 tick → 依序處理 (一個一個, 不平行避免 LLM rate limit + lock)
-- LLM (sub_task V4 Flash 60s timeout) 用 INGEST_PROMPT 摘整成 schema v12 md
-- 處理完搬到 _processed/, RAG + DB index 自動同步 (走 vault FTS5/dense, 不需顯式)
+- LLM (sub_task V4 Flash 60s timeout) 用 INGEST_PROMPT 摘整成 schema v13 md
+- 處理完搬到 _processed/ + 顯式 index_path 進 FTS5 (V3-O.15.42 — 之前註解寫「自動同步
+  不需顯式」是錯的, ingest 路徑從沒 index 過, 新 KB 只有 fallback substring 撈得到)
 
 設計:
 - bot 啟動時跑 start_inbox_daemon(vault_root) — 起一個 background daemon thread
@@ -316,6 +317,16 @@ def process_one_inbox_file(
     )
     if not out_path:
         return {"success": False, "error": "write_knowledge_v13 returned None"}
+    # ⭐ V3-O.15.42 (2026-06-10): KB 寫完立刻 FTS5 索引 — 對齊 register_skill (V3-O.15.33 同 pattern).
+    # 沒這段時新 KB 卡 BM25/hybrid 完全撈不到 (只剩 fallback substring). 失敗 swallow, fallback 仍可掃.
+    try:
+        from agent_memory.search import MemorySearchManager
+        from agent_memory.vault import ObsidianVaultAdapter
+        MemorySearchManager(ObsidianVaultAdapter(vault_root)).index_path(
+            str(out_path.relative_to(vault_root))
+        )
+    except Exception:
+        pass
     return {"success": True, "output_path": str(out_path.relative_to(vault_root))}
 
 
