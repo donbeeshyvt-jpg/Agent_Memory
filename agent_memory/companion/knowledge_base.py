@@ -153,7 +153,9 @@ def write_knowledge_v13(
         f"last_reinforced_at: {now}",
         "evidence_count: 1",
         f"confidence: {confidence:.4f}",
-        f"source_origin_path: \"{source_origin_path or ''}\"",
+        # V3-O.15.43: Windows 反斜線在 YAML 雙引號裡是非法跳脫 (\4 → ScannerError) → read_note
+        # 對整張卡全炸 → index_path 靜默 False, KB 從不進 FTS5. 正規化 forward slash.
+        f"source_origin_path: \"{(source_origin_path or '').replace(chr(92), '/')}\"",
         f"trigger_keywords: {trigger_keywords}",
         f"related_concept_ids: {related_concept_ids}",
         f"content_chars: {len(full_content)}",

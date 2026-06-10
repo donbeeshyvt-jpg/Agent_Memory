@@ -318,15 +318,20 @@ def process_one_inbox_file(
     if not out_path:
         return {"success": False, "error": "write_knowledge_v13 returned None"}
     # ⭐ V3-O.15.42 (2026-06-10): KB 寫完立刻 FTS5 索引 — 對齊 register_skill (V3-O.15.33 同 pattern).
-    # 沒這段時新 KB 卡 BM25/hybrid 完全撈不到 (只剩 fallback substring). 失敗 swallow, fallback 仍可掃.
+    # 沒這段時新 KB 卡 BM25/hybrid 完全撈不到 (只剩 fallback substring). 失敗不擋流程, 但要出聲:
+    # V3-O.15.43 — 15.42 純 swallow 害 YAML 跳脫 bug 隱形 15 分鐘, 改成 False/EXC 都印 bridge.log.
     try:
         from agent_memory.search import MemorySearchManager
         from agent_memory.vault import ObsidianVaultAdapter
-        MemorySearchManager(ObsidianVaultAdapter(vault_root)).index_path(
+        _ix_ok = MemorySearchManager(ObsidianVaultAdapter(vault_root)).index_path(
             str(out_path.relative_to(vault_root))
         )
-    except Exception:
-        pass
+        if not _ix_ok:
+            print(f"[inbox_daemon] ⚠ index_path=False {out_path.name} (FTS5 沒進, 只剩 fallback 撈得到)",
+                  file=sys.stderr, flush=True)
+    except Exception as exc:
+        print(f"[inbox_daemon] ⚠ index_path EXC {type(exc).__name__}: {str(exc)[:160]}",
+              file=sys.stderr, flush=True)
     return {"success": True, "output_path": str(out_path.relative_to(vault_root))}
 
 
