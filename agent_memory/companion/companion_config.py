@@ -69,12 +69,29 @@ class SkillLearningConfig:
     weekly_consolidate_interval_s: int = 604800    # 7 天跨層合併間隔 (秒)
 
 
+# ⭐ V3-O.15.39 (2026-06-10 user 拍板): RAG 撈廣度 + 注入長度 config 化, 每 turn 重讀, 改即生效.
+# 預設值 = §A.33「整張塞」設計 — 50 層技能 25000、40 層 KB 25000、20 層朋友卡 5000、90 層日誌 400.
+# 過去 hardcode 散在 memory_router.py 多處 (50 step15=4000, 40 step15=2000, 50 L3=25000) 不一致,
+# 此次統一走 yaml 一個來源, 想試保守值 (例 8000) 或激進 (50000+) 都改 yaml 即可.
+@dataclass
+class RAGRetrievalConfig:
+    skill_top_k: int = 3                # 50 層 撈幾張技能卡
+    skill_max_chars: int = 25000        # 50 層 每張技能卡注入字數 (對齊 §A.33 整張塞)
+    kb_top_k: int = 3                   # 40 層 撈幾張知識卡
+    kb_max_chars: int = 25000           # 40 層 每張知識卡注入字數 (KB schema v12 full_content ≤22000 字)
+    friend_top_k: int = 3               # 20 層 撈幾張朋友卡
+    friend_max_chars: int = 5000        # 20 層 每張朋友卡注入字數
+    daily_journal_top_k: int = 2        # 90 層 撈幾篇日誌
+    daily_journal_max_chars: int = 300  # 90 層 每篇日誌注入字數 (對齊 memory_router L3 歷史值)
+
+
 @dataclass
 class CompanionConfig:
     owner: OwnerConfig = field(default_factory=OwnerConfig)
     channels: ChannelsConfig = field(default_factory=ChannelsConfig)
     hermes: HermesConfig = field(default_factory=HermesConfig)
     skill_learning: SkillLearningConfig = field(default_factory=SkillLearningConfig)
+    rag_retrieval: RAGRetrievalConfig = field(default_factory=RAGRetrievalConfig)
 
 
 def load_companion_config(vault_root: Path) -> CompanionConfig:
@@ -127,7 +144,23 @@ def load_companion_config(vault_root: Path) -> CompanionConfig:
         weekly_consolidate_interval_s=max(3600, int(sl.get("weekly_consolidate_interval_s", 604800) or 604800)),
     )
 
-    return CompanionConfig(owner=owner, channels=channels, hermes=hermes, skill_learning=skill_learning)
+    # V3-O.15.39: rag_retrieval 區段 (撈廣度 + 注入長度)
+    rr = data.get("rag_retrieval", {}) or {}
+    rag_retrieval = RAGRetrievalConfig(
+        skill_top_k=max(1, int(rr.get("skill_top_k", 3) or 3)),
+        skill_max_chars=max(500, int(rr.get("skill_max_chars", 25000) or 25000)),
+        kb_top_k=max(1, int(rr.get("kb_top_k", 3) or 3)),
+        kb_max_chars=max(500, int(rr.get("kb_max_chars", 25000) or 25000)),
+        friend_top_k=max(1, int(rr.get("friend_top_k", 3) or 3)),
+        friend_max_chars=max(500, int(rr.get("friend_max_chars", 5000) or 5000)),
+        daily_journal_top_k=max(1, int(rr.get("daily_journal_top_k", 2) or 2)),
+        daily_journal_max_chars=max(100, int(rr.get("daily_journal_max_chars", 300) or 300)),
+    )
+
+    return CompanionConfig(
+        owner=owner, channels=channels, hermes=hermes,
+        skill_learning=skill_learning, rag_retrieval=rag_retrieval,
+    )
 
 
 def get_owner_user_id_for_transport(vault_root: Path, transport: str) -> str:

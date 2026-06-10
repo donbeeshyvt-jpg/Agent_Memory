@@ -213,6 +213,13 @@ def fetch_layer3_long(
         current_valence: 給情緒 md 決定要不要載 (|v|>0.4 才載, 避免太雜訊).
     """
     items: list[str] = []
+    # ⭐ V3-O.15.39 (2026-06-10): RAG 撈廣度+注入長度 全函式共用 yaml 設定, load 一次防呆.
+    try:
+        from agent_memory.companion.companion_config import load_companion_config, RAGRetrievalConfig
+        _rr = load_companion_config(vault_root).rag_retrieval
+    except Exception:
+        from agent_memory.companion.companion_config import RAGRetrievalConfig
+        _rr = RAGRetrievalConfig()  # fallback default
     # 00.07 Companion MEMORY (always)
     p = vault_root / "00_System_Core" / "00.07_Companion_MEMORY.md"
     if p.exists():
@@ -252,9 +259,10 @@ def fetch_layer3_long(
         if current_message.strip():
             # ⭐ V3-O.15.33 (2026-06-09 user 拍板, 多次重申): RAG 撈到後「整張技能卡注入」, 不截.
             # 設計 = 前綴關鍵字+RAG 摘要約 5000 字 (撈用), 命中後整張 SKILL.md (上限 25000 字)
-            # 全塞進 prompt 給 main_chat. 不傳 max_chars → 走 retrieve_skills 預設 25000.
+            # V3-O.15.39: top_k / max_chars 改讀 yaml rag_retrieval.skill_*, 改即生效不重啟.
             skill_hits = retrieve_skills(
-                vault_root, current_message, top_k=3,
+                vault_root, current_message,
+                top_k=_rr.skill_top_k, max_chars=_rr.skill_max_chars,
             )
         if not skill_hits:
             # fallback: 最近 N 個 metadata (relevancy 不足或無 query)
@@ -276,9 +284,13 @@ def fetch_layer3_long(
         except Exception:
             pass
     # ⭐ V3-O.14 audit 補洞: 90_Daily_Journal 最近反思
+    # V3-O.15.39: top_k / max_chars 改讀 yaml rag_retrieval.daily_journal_*.
     try:
         from agent_memory.companion.vault_md_search import retrieve_daily_journal
-        for h in retrieve_daily_journal(vault_root, current_message, top_k=2, max_chars=300):
+        for h in retrieve_daily_journal(
+            vault_root, current_message,
+            top_k=_rr.daily_journal_top_k, max_chars=_rr.daily_journal_max_chars,
+        ):
             items.append(f"[journal {h['path']}]\n{h['content']}")
     except Exception:
         pass
@@ -502,10 +514,21 @@ def render_skills_and_knowledge_sections(
     }
     if not current_message or not vault_root:
         return out
+    # ⭐ V3-O.15.39 (2026-06-10 user 拍板): RAG 撈廣度+注入長度 全段共用 yaml 設定.
+    # 過去 hardcode 散在各 caller (50=4000, 40=2000, 20=5000) → 統一 yaml rag_retrieval.
+    try:
+        from agent_memory.companion.companion_config import load_companion_config, RAGRetrievalConfig
+        _rr = load_companion_config(vault_root).rag_retrieval
+    except Exception:
+        from agent_memory.companion.companion_config import RAGRetrievalConfig
+        _rr = RAGRetrievalConfig()  # fallback default
     # 50 — learned skills (完整內容 RAG)
     try:
         from agent_memory.companion.vault_md_search import retrieve_skills
-        hits = retrieve_skills(vault_root, current_message, top_k=3, max_chars=4000)  # V3-O.15.19: 2000→4000 讓 rich 段落更完整進 prompt
+        hits = retrieve_skills(
+            vault_root, current_message,
+            top_k=_rr.skill_top_k, max_chars=_rr.skill_max_chars,
+        )
         if hits:
             lines = []
             for h in hits:
@@ -516,7 +539,10 @@ def render_skills_and_knowledge_sections(
     # 40 — external knowledge (完整 schema v12 內文 RAG)
     try:
         from agent_memory.companion.vault_md_search import retrieve_external_knowledge
-        hits = retrieve_external_knowledge(vault_root, current_message, top_k=3, max_chars=2000)
+        hits = retrieve_external_knowledge(
+            vault_root, current_message,
+            top_k=_rr.kb_top_k, max_chars=_rr.kb_max_chars,
+        )
         if hits:
             lines = []
             for h in hits:
@@ -527,7 +553,10 @@ def render_skills_and_knowledge_sections(
     # ⭐ V3-O.15.6: 20 — friend cards RAG (整張卡, 標明「查回來的」)
     try:
         from agent_memory.companion.vault_md_search import retrieve_friend_cards
-        hits = retrieve_friend_cards(vault_root, current_message, top_k=3, max_chars=5000)
+        hits = retrieve_friend_cards(
+            vault_root, current_message,
+            top_k=_rr.friend_top_k, max_chars=_rr.friend_max_chars,
+        )
         if hits:
             lines = []
             for h in hits:
