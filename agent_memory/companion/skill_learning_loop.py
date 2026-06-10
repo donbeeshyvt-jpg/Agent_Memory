@@ -75,15 +75,34 @@ def register_skill(
 
     steps_md = "\n".join(f"{i+1}. {s}" for i, s in enumerate(skill.procedure_steps))
     # ⭐ V3-N (user 2026-05-27): emotional_origin 加 wikilink body backlink
-    origin_link = f"\n## 來源 (Origin)\n\n- [[{skill.emotional_origin}]] (對應 semantic_concept 或 episodic memory 或 skill_candidate)\n" if skill.emotional_origin else ""
+    # ⭐ V3-O.15.44 (user 拍板「每個關聯文字都要自己的 [[]]」): 合併卡 origin 是 "a;b;c"
+    # 分號串 → 拆開每個各自 [[]] 一行, 不再擠成一個 [[a;b;c]] 假連結.
+    origin_link = ""
+    if skill.emotional_origin:
+        _origin_items = [o.strip() for o in str(skill.emotional_origin).split(";") if o.strip()]
+        _origin_bullets = "\n".join(f"- [[{o}]]" for o in _origin_items)
+        origin_link = f"\n## 來源 (Origin)\n\n{_origin_bullets}\n- (對應 semantic_concept 或 episodic memory 或 skill_candidate)\n"
 
     # ⭐ V3-O.15.41 (2026-06-10 user 拍板): schema v13 內化格式 — 對齊 knowledge_base.write_knowledge_v13
+    # ⭐ V3-O.15.44: trigger:xxx → trigger/xxx (Obsidian tag 禁冒號, 斜線=巢狀 tag;
+    # FTS5 tokenizer 對 : 和 / 同樣斷詞, 搜尋中性). tags/aliases 改 block list 每項一行.
     tags_list = ["skill", "learned", skill.source, "schema_v13"]
     if skill.trigger_keywords:
-        tags_list.extend([f"trigger:{k}" for k in skill.trigger_keywords[:5]])
+        tags_list.extend([f"trigger/{k}" for k in skill.trigger_keywords[:5]])
     # aliases = trigger_keywords 前 5 個 (user 設計: title/aliases/tags frontmatter 三件套)
     aliases_list = skill.trigger_keywords[:5] if skill.trigger_keywords else []
     now_date = now_iso[:10]
+
+    def _yaml_block_list(key: str, items: list, *, quote: bool = True) -> list[str]:
+        """V3-O.15.44: YAML block list — Obsidian Properties 每項一個 chip, 不擠一行."""
+        vals = [str(x).strip() for x in (items or []) if str(x).strip()]
+        if not vals:
+            return [f"{key}: []"]
+        out = [f"{key}:"]
+        for v in vals:
+            v_safe = v.replace('"', "'")
+            out.append(f'  - "{v_safe}"' if quote else f"  - {v_safe}")
+        return out
 
     # V3-O.15: contributor_link — obsidian wikilink 連教學者朋友卡
     # V3-O.15.9 (2026-06-06 user 拍正): 判斷 owner — 走 00.08_Owner_Profile, 不是 22_Casual_Viewers
@@ -107,20 +126,29 @@ def register_skill(
             # owner 教 → 走 00.08_Owner_Profile, 顯示 "主人" 字面 (user 拍板, 不顯示 yaml.label)
             contributor_link = f"[[00_System_Core/00.08_Owner_Profile|主人]]"
         else:
-            # viewer 教 → 22_Casual_Viewers/<uid>
-            safe_uid = skill.taught_by_user_id.replace("/", "_").replace("\\", "_")[:120]
+            # viewer 教 → V3-O.15.44: 朋友卡檔名改暱稱制, 走 resolver 找實際檔名
             label = skill.taught_by_name or skill.taught_by_user_id[:18]
-            contributor_link = f"[[20_Audience_Graph/22_Casual_Viewers/{safe_uid}|{label}]]"
+            try:
+                from agent_memory.companion.audience_writer import resolve_viewer_card_wikilink
+                contributor_link = resolve_viewer_card_wikilink(vault_root, skill.taught_by_user_id, label)
+            except Exception:
+                safe_uid = skill.taught_by_user_id.replace("/", "_").replace("\\", "_")[:120]
+                contributor_link = f"[[20_Audience_Graph/22_Casual_Viewers/{safe_uid}|{label}]]"
 
     frontmatter_lines = [
         "---",
         # ── 使用者面 (V3-O.15.41 內化格式: title/aliases/tags/created/updated/security) ──
         f"title: \"{skill.skill_name}\"",
-        f"aliases: {aliases_list}",
-        f"tags: {tags_list}",
+        *_yaml_block_list("aliases", aliases_list),
+        *_yaml_block_list("tags", tags_list, quote=False),
         f"created_at: {now_date}",
         f"updated_at: {now_date}",
         "security_level: safe_data",
+        # V3-O.15.44: 強關聯上游 (Obsidian graph edge) — emotional_origin 每項自己的 [[]]
+        *_yaml_block_list(
+            "related",
+            [f"[[{o.strip()}]]" for o in str(skill.emotional_origin or "").split(";") if o.strip()],
+        ),
         # ── 系統追溯 ──
         "type: learned_skill",
         "schema_version: 13",  # V3-O.15.41: 12→13 內化格式

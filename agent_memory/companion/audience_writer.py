@@ -170,14 +170,74 @@ def _intimacy_stage(intimacy_score: float) -> str:
     return "初識"
 
 
-def get_viewer_profile_path(vault_root: Path, user_id: str, loyalty_tier: str) -> Path:
-    """根據 loyalty_tier 算出 markdown 路徑."""
+def _safe_card_name(name: str) -> str:
+    """V3-O.15.44: 暱稱 → 檔名安全字串 (Windows 禁字元 + 路徑分隔 → _)."""
+    bad = '\\/:*?"<>|#^[]'
+    out = "".join(("_" if c in bad else c) for c in (name or "").strip())
+    return out.strip(" ._")[:60]
+
+
+def _find_card_by_uid(dir_path: Path, user_id: str) -> Path | None:
+    """V3-O.15.44: 檔名改暱稱制後, 以 frontmatter user_id 掃資料夾找既有卡.
+
+    舊 uid 檔名走快路徑; 找不到才逐檔讀 frontmatter 頭 600 字比對.
+    """
+    if not dir_path.exists():
+        return None
+    legacy = dir_path / f"{user_id[:120]}.md"
+    if legacy.exists():
+        return legacy
+    needle = f"user_id: {user_id}"
+    for p in dir_path.glob("*.md"):
+        try:
+            if needle in p.read_text(encoding="utf-8", errors="ignore")[:600]:
+                return p
+        except Exception:
+            continue
+    return None
+
+
+def get_viewer_profile_path(
+    vault_root: Path, user_id: str, loyalty_tier: str, display_name: str = "",
+) -> Path:
+    """根據 loyalty_tier 算出 markdown 路徑.
+
+    ⭐ V3-O.15.44 (2026-06-10 user 拍板): 檔名改「第一次建卡時的暱稱」(Obsidian graph
+    可讀), 不再用 user_id 序號. 同名不同人 → 暱稱_1, _2…. 既有卡 (任何檔名) 以
+    frontmatter user_id 為準 — 卡名第一次建卡即固定, 之後改暱稱不改檔名 (avoids
+    link rot), display_name 變化記在 frontmatter/trigger_keywords.
+    """
     safe_uid = user_id.replace("/", "_").replace("\\", "_")[:120]
     if loyalty_tier == "vip":
-        return vault_root / VIP_DIR / f"{safe_uid}.md"
+        d = vault_root / VIP_DIR
     elif loyalty_tier == "banned":
-        return vault_root / BANNED_DIR / f"{safe_uid}.md"
-    return vault_root / CASUAL_DIR / f"{safe_uid}.md"
+        d = vault_root / BANNED_DIR
+    else:
+        d = vault_root / CASUAL_DIR
+    existing = _find_card_by_uid(d, user_id)
+    if existing:
+        return existing
+    base = _safe_card_name(display_name) or safe_uid
+    cand = d / f"{base}.md"
+    n = 0
+    while cand.exists():  # 同名但是別人的卡 (自己的卡上面 existing 已涵蓋)
+        n += 1
+        cand = d / f"{base}_{n}.md"
+    return cand
+
+
+def resolve_viewer_card_wikilink(vault_root: Path, user_id: str, label: str) -> str:
+    """V3-O.15.44: 給跨檔引用 (skill 教學追溯等) 解析 viewer 卡 wikilink.
+
+    掃 casual + vip 兩層找既有卡 (frontmatter user_id 為準); 未建卡 → 用暱稱推
+    未來檔名 (之後建卡同名即自動連上).
+    """
+    for d_rel in (CASUAL_DIR, VIP_DIR):
+        p = _find_card_by_uid(vault_root / d_rel, user_id)
+        if p is not None:
+            return f"[[{d_rel}/{p.stem}|{label}]]"
+    future = _safe_card_name(label) or user_id.replace("/", "_").replace("\\", "_")[:120]
+    return f"[[{CASUAL_DIR}/{future}|{label}]]"
 
 
 def write_viewer_profile(
@@ -280,7 +340,8 @@ def write_viewer_profile(
     now_iso = datetime.now(timezone.utc).isoformat()
     final_name = (display_name or user_row["display_name"] or user_id)[:MAX_DISPLAY_NAME_LEN]
 
-    profile_path = get_viewer_profile_path(vault_root, user_id, loyalty_tier)
+    # V3-O.15.44: 傳 display_name — 新卡用暱稱命名檔案 (Obsidian graph 可讀)
+    profile_path = get_viewer_profile_path(vault_root, user_id, loyalty_tier, display_name=final_name)
     profile_path.parent.mkdir(parents=True, exist_ok=True)
 
     # V3-O.15.6 (2026-06-06 user 拍板): schema v10 → v12 對齊 SKILL/KB RAG 友善格式.
@@ -323,7 +384,8 @@ def write_viewer_profile(
     lines.append(f"contributor_user_id: \"{user_id}\"")
     lines.append(f"contributor_name: \"{final_name}\"")
     # Obsidian wikilink 回連自己 (給 backlink graph 用)
-    lines.append(f"contributor_link: \"[[{user_id}|{final_name}]]\"")
+    # V3-O.15.44: 檔名改暱稱制 → 連到實際檔名 stem (不再是 uid)
+    lines.append(f"contributor_link: \"[[{profile_path.stem}|{final_name}]]\"")
     lines.append(f"loyalty_tier: {loyalty_tier}")
     lines.append(f"intimacy_score: {intimacy_score:.4f}")
     lines.append(f"intimacy_stage: {intim_stage}")
@@ -479,9 +541,19 @@ def write_viewer_profile(
 
     try:
         atomic_write(profile_path, content_text)
-        return profile_path
     except Exception:
         return None
+    # ⭐ V3-O.15.44: 朋友卡寫完立刻 FTS5 索引 — 跟 KB (15.42) 同一顆漏: 從沒 index 過,
+    # RAG 只能靠 fallback substring. worker thread 內非同步, 失敗 swallow 不擋寫卡.
+    try:
+        from agent_memory.search import MemorySearchManager
+        from agent_memory.vault import ObsidianVaultAdapter
+        MemorySearchManager(ObsidianVaultAdapter(vault_root)).index_path(
+            str(profile_path.relative_to(vault_root))
+        )
+    except Exception:
+        pass
+    return profile_path
 
 
 def load_viewer_profile_md(vault_root: Path, user_id: str) -> str:

@@ -132,16 +132,29 @@ def write_knowledge_v13(
         contributor_name=contributor_name,
     )
 
+    # V3-O.15.44: YAML block list — Obsidian Properties 每項一個 chip, 不擠一行 flow
+    def _yaml_block_list(key: str, items: list, *, quote: bool = True) -> list[str]:
+        vals = [str(x).strip() for x in (items or []) if str(x).strip()]
+        if not vals:
+            return [f"{key}: []"]
+        out = [f"{key}:"]
+        for v in vals:
+            v_safe = v.replace('"', "'")
+            out.append(f'  - "{v_safe}"' if quote else f"  - {v_safe}")
+        return out
+
     # ─── frontmatter (使用者面 + 系統追溯) ──────────────────────
     frontmatter_lines = [
         "---",
         # ── 使用者面 (user 內化格式設計) ──
         f"title: \"{title}\"",
-        f"aliases: {aliases}",
-        f"tags: [knowledge, {source}, schema_v13]",
+        *_yaml_block_list("aliases", aliases),
+        *_yaml_block_list("tags", ["knowledge", source, "schema_v13"], quote=False),
         f"created_at: {now_date}",
         f"updated_at: {now_date}",
         f"security_level: {security_level}",
+        # V3-O.15.44: 強關聯上游 (Obsidian graph edge) — 每個概念自己的 [[]]
+        *_yaml_block_list("related", [f"[[{c}]]" for c in related_concept_ids]),
         # ── 系統追溯 (RAG / merge / migration) ──
         "type: external_knowledge",
         "schema_version: 13",
@@ -198,7 +211,10 @@ def write_knowledge_v13(
     if applicable_situations:
         body_lines.append(f"- 應用場景: {applicable_situations}")
     if related_concept_ids:
-        body_lines.append("- 關聯概念: " + ", ".join(f"[[{cid}]]" for cid in related_concept_ids))
+        # V3-O.15.44 (user 拍板): 每個關聯自己一行自己的 [[]], 不擠一行逗號分隔
+        body_lines.append("- 關聯概念:")
+        for cid in related_concept_ids:
+            body_lines.append(f"  - [[{cid}]]")
     if trigger_keywords:
         body_lines.append("- 標籤: " + " ".join(f"#{k}" for k in trigger_keywords[:10]))
     body_lines.append("")
