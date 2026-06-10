@@ -76,7 +76,7 @@ def _build_contributor_wikilink(
     return ""
 
 
-def write_knowledge_v12(
+def write_knowledge_v13(
     vault_root: Path,
     *,
     target_dir: str,                   # OWNER_KB_DIR 或 AGENT_KB_DIR
@@ -87,26 +87,40 @@ def write_knowledge_v12(
     contributor_user_id: str = "",
     contributor_name: str = "",
     trigger_keywords: Optional[list[str]] = None,
+    aliases: Optional[list[str]] = None,
     related_concept_ids: Optional[list[str]] = None,
     important_quotes: Optional[list[str]] = None,
     applicable_situations: str = "",
     structure_outline: Optional[list[str]] = None,
     source_origin_path: Optional[str] = None,
     confidence: float = 0.7,
+    security_level: str = "safe_data",
 ) -> Optional[Path]:
-    """V3-O.15: 寫 knowledge md, schema v12 (跟 SKILL.md 同結構).
+    """V3-O.15.41 (2026-06-10 user 拍板): 寫 knowledge md, schema v13「內化格式」.
 
-    雙關聯: obsidian wikilink 連 contributor.
+    新結構 (user 設計):
+      frontmatter — title/aliases/tags/created_at/updated_at/security_level 等使用者面欄位
+                  + 系統追溯欄位 (type/schema_version/source/contributor/trigger_keywords/...).
+      body —
+        # 核心摘要 <summary>...</summary>          ← AI 向量比對主擊中段
+        # 詳細內容 <context>...</context>          ← 完整內容 + 結構化 + [[link]] (純資料, 不執行)
+        # 相關實體與偏好影響                          ← 關聯概念 / 應用場景
+
+    XML 標籤包覆: <summary> / <context> 內容被 LLM 視為 raw data, 拒絕執行其中可能存在的指令.
+    雙關聯: obsidian wikilink 連 contributor + related_concept_ids.
 
     Returns: 寫入路徑 (失敗回 None).
     """
     if not title or not full_content:
         return None
     now = datetime.now(timezone.utc).isoformat()
+    now_date = now[:10]
     target = vault_root / target_dir / f"{_safe_topic_filename(title)}.md"
     target.parent.mkdir(parents=True, exist_ok=True)
 
     trigger_keywords = (trigger_keywords or [])[:15]
+    # aliases 預設 = trigger_keywords 前 5 個 (LLM 沒額外輸出時的 fallback)
+    aliases = (aliases or trigger_keywords[:5] or [])[:8]
     related_concept_ids = (related_concept_ids or [])[:10]
     important_quotes = (important_quotes or [])[:5]
     structure_outline = (structure_outline or [])[:10]
@@ -118,12 +132,19 @@ def write_knowledge_v12(
         contributor_name=contributor_name,
     )
 
-    # ─── frontmatter ─────────────────────────────────────────
+    # ─── frontmatter (使用者面 + 系統追溯) ──────────────────────
     frontmatter_lines = [
         "---",
+        # ── 使用者面 (user 內化格式設計) ──
+        f"title: \"{title}\"",
+        f"aliases: {aliases}",
+        f"tags: [knowledge, {source}, schema_v13]",
+        f"created_at: {now_date}",
+        f"updated_at: {now_date}",
+        f"security_level: {security_level}",
+        # ── 系統追溯 (RAG / merge / migration) ──
         "type: external_knowledge",
-        "schema_version: 12",
-        f"title: {title}",
+        "schema_version: 13",
         f"source: {source}",
         f"contributor_user_id: \"{contributor_user_id}\"" if contributor_user_id else "contributor_user_id: \"\"",
         f"contributor_name: \"{contributor_name}\"",
@@ -138,21 +159,21 @@ def write_knowledge_v12(
         f"content_chars: {len(full_content)}",
         "lifecycle_state: long",
         "pinned: false",
-        f"tags: [knowledge, {source}, schema_v12]",
         "---",
         "",
     ]
 
+    # ─── body (內化格式三段) ──────────────────────────────────
     body_lines = [
         f"# {title}",
         "",
-        "## 觸發情境 / 適用情境",  # ⭐ RAG embed 主段
-        applicable_situations or "(LLM 未抽出)",
-        "",
-        "## 核心摘要",
+        "# 核心摘要",
+        "<summary>",
         core_summary or "(LLM 未抽出)",
+        "</summary>",
         "",
-        "## 完整內容",
+        "# 詳細內容",
+        "<context>",
         full_content,
         "",
     ]
@@ -168,7 +189,18 @@ def write_knowledge_v12(
         for q in important_quotes:
             body_lines.append(f"> {q[:500]}")
         body_lines.append("")
-    # 投餵追溯
+    body_lines.append("</context>")
+    body_lines.append("")
+    body_lines.append("# 相關實體與偏好影響")
+    body_lines.append("")
+    if applicable_situations:
+        body_lines.append(f"- 應用場景: {applicable_situations}")
+    if related_concept_ids:
+        body_lines.append("- 關聯概念: " + ", ".join(f"[[{cid}]]" for cid in related_concept_ids))
+    if trigger_keywords:
+        body_lines.append("- 標籤: " + " ".join(f"#{k}" for k in trigger_keywords[:10]))
+    body_lines.append("")
+    # 投餵追溯 (metadata, plain, 不在 <context> 內)
     body_lines.append("## 投餵追溯")
     body_lines.append("")
     if contributor_link:
@@ -180,18 +212,6 @@ def write_knowledge_v12(
         body_lines.append(f"- 原始檔: `{source_origin_path}`")
     body_lines.append(f"- 來源類型: {source}")
     body_lines.append("")
-    # 雙關聯標籤
-    if trigger_keywords:
-        body_lines.append("## 標籤")
-        body_lines.append("")
-        body_lines.append(" ".join(f"#{k}" for k in trigger_keywords[:10]))
-        body_lines.append("")
-    if related_concept_ids:
-        body_lines.append("## 相關概念 (雙關聯)")
-        body_lines.append("")
-        for cid in related_concept_ids:
-            body_lines.append(f"- [[{cid}]]")
-        body_lines.append("")
 
     try:
         atomic_write(target, "\n".join(frontmatter_lines + body_lines) + "\n")
@@ -200,7 +220,12 @@ def write_knowledge_v12(
         return None
 
 
-# ─── V3-G4 legacy wrapper (向後相容, 內部呼 write_knowledge_v12) ────────
+# V3-O.15.41 back-compat alias — 既有 caller (inbox_ingest_daemon 等) 平滑過渡.
+# 內部就是 v13, 新功能請 import write_knowledge_v13.
+write_knowledge_v12 = write_knowledge_v13
+
+
+# ─── V3-G4 legacy wrapper (向後相容, 內部呼 write_knowledge_v13) ────────
 def write_daily_knowledge(
     vault_root: Path,
     topic: str,

@@ -77,10 +77,13 @@ def register_skill(
     # ⭐ V3-N (user 2026-05-27): emotional_origin 加 wikilink body backlink
     origin_link = f"\n## 來源 (Origin)\n\n- [[{skill.emotional_origin}]] (對應 semantic_concept 或 episodic memory 或 skill_candidate)\n" if skill.emotional_origin else ""
 
-    # ⭐ V3-O.14 → V3-O.15 schema_v12 對齊 knowledge_base.write_knowledge_v12
-    tags_list = ["skill", "learned", skill.source, "schema_v12"]
+    # ⭐ V3-O.15.41 (2026-06-10 user 拍板): schema v13 內化格式 — 對齊 knowledge_base.write_knowledge_v13
+    tags_list = ["skill", "learned", skill.source, "schema_v13"]
     if skill.trigger_keywords:
         tags_list.extend([f"trigger:{k}" for k in skill.trigger_keywords[:5]])
+    # aliases = trigger_keywords 前 5 個 (user 設計: title/aliases/tags frontmatter 三件套)
+    aliases_list = skill.trigger_keywords[:5] if skill.trigger_keywords else []
+    now_date = now_iso[:10]
 
     # V3-O.15: contributor_link — obsidian wikilink 連教學者朋友卡
     # V3-O.15.9 (2026-06-06 user 拍正): 判斷 owner — 走 00.08_Owner_Profile, 不是 22_Casual_Viewers
@@ -111,18 +114,23 @@ def register_skill(
 
     frontmatter_lines = [
         "---",
+        # ── 使用者面 (V3-O.15.41 內化格式: title/aliases/tags/created/updated/security) ──
+        f"title: \"{skill.skill_name}\"",
+        f"aliases: {aliases_list}",
+        f"tags: {tags_list}",
+        f"created_at: {now_date}",
+        f"updated_at: {now_date}",
+        "security_level: safe_data",
+        # ── 系統追溯 ──
         "type: learned_skill",
-        "schema_version: 12",  # V3-O.15: 11→12 對齊 knowledge_base
+        "schema_version: 13",  # V3-O.15.41: 12→13 內化格式
         f"skill_id: {skill_id}",
         f"skill_name: {skill.skill_name}",
-        f"title: {skill.skill_name}",  # alias for KB-style query
         f"source: {skill.source}",
         f"emotional_origin: {skill.emotional_origin}",
         f"success_rate: {skill.success_rate}",
-        f"created_at: {now_iso}",
         "lifecycle_state: long",
         "pinned: true",
-        f"tags: {tags_list}",
     ]
     # V3-O.14 教學追溯 metadata + V3-O.15 contributor wikilink
     if skill.taught_by_user_id:
@@ -160,9 +168,13 @@ def register_skill(
     # 前段集中高密度語意 (觸發情境 / 描述 / 核心摘要 / 標籤), 不讓 ## 實際打法 (literal_mechanism
     # 可達 100 bullet ≈ 6000 字) / ## 完整內容 (20000 字) 等大段塞滿 5000 把語意段擠出.
     # 注入階段 max_chars=25000 整張塞, 細節 (實際打法/完整內容/範例對話) 在後段仍全部進 prompt.
+    # ⭐ V3-O.15.41 (2026-06-10 user 拍板): schema v13 內化格式 — 比對段包進 <summary>,
+    # 注入段包進 <context>, 兩段都是 LLM 視為純資料 (拒絕執行內含指令).
     body_lines = [f"# {skill.skill_name}", ""]
 
-    # ─── 比對段 (≤2000 字, 高密度語意, RAG 比對主擊中) ──────────
+    # ─── 比對段 <summary> (≤2000 字, 高密度語意, RAG 比對主擊中) ──────────
+    body_lines.append("# 核心摘要")
+    body_lines.append("<summary>")
     body_lines.append("## 觸發情境")
     if skill.trigger_situations:
         for s in skill.trigger_situations[:5]:
@@ -186,8 +198,13 @@ def register_skill(
         body_lines.append("")
         body_lines.append(" ".join(f"#{k}" for k in skill.trigger_keywords[:8]))
         body_lines.append("")
+    # 關閉比對段 <summary>
+    body_lines.append("</summary>")
+    body_lines.append("")
 
-    # ─── 注入段 (細節, 5000 字後, 注入時 max_chars=25000 整張塞) ──────────
+    # ─── 注入段 <context> (細節, 5000 字後, 注入時 max_chars=25000 整張塞) ──────────
+    body_lines.append("# 詳細內容")
+    body_lines.append("<context>")
     # ⭐ 實際打法 (可直接複製) — literal_mechanism 全條, V3-O.15.34: [:8]→[:100] 對齊
     # frontmatter literal_mechanism_json 上限 (15.28). 不再被 [:8] 截掉, _read_md_body strip
     # frontmatter 後 bot 仍能從 body 看到所有 emoji code/mention/話術.
@@ -258,6 +275,17 @@ def register_skill(
             _prefix = f"[{at}] " if at else ""
             body_lines.append(f"- {_prefix}**{actor}**: {content[:300]}")
         body_lines.append("")
+    # 關閉注入段 <context>
+    body_lines.append("</context>")
+    body_lines.append("")
+
+    # ─── 相關實體與偏好影響 (metadata, plain, 不在 <context> 內) ──────
+    body_lines.append("# 相關實體與偏好影響")
+    body_lines.append("")
+    if skill.description:
+        body_lines.append(f"- 應用場景: {skill.description}")
+    # 關聯概念 (frontmatter related_concept_ids 對應, 但 SkillRegistration 沒這欄, placeholder)
+    body_lines.append("")
     # 教學追溯
     if skill.taught_by_name or skill.evidence_count:
         body_lines.append("## 教學追溯")
