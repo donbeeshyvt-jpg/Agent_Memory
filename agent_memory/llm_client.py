@@ -35,9 +35,20 @@ def _repair_provider_mojibake(text: str) -> str:
     if high < 4 or high / len(text) < 0.3:
         return text
     try:
-        repaired = text.encode("latin-1").decode("utf-8")
-    except (UnicodeEncodeError, UnicodeDecodeError):
+        raw_bytes = text.encode("latin-1")
+    except UnicodeEncodeError:
         return text
+    try:
+        repaired = raw_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        # V3-O.15.48 (2026-06-11 07:35 實測): provider 亂碼偶帶壞 byte (pos63 invalid
+        # continuation) → strict 全滅整段放棄. 降級 errors=replace 解, 拔 U+FFFD;
+        # 壞字率 >10% 視為非 double-encoding (真歐文) → 原文返回. CJK 門檻仍把關.
+        repaired = raw_bytes.decode("utf-8", errors="replace")
+        bad = repaired.count("�")
+        if bad > max(2, len(repaired) // 10):
+            return text
+        repaired = repaired.replace("�", "")
     cjk = sum(1 for ch in repaired if "一" <= ch <= "鿿")
     if cjk >= 2:
         print(f"[llm_client] ⚠ provider mojibake repaired ({high}/{len(text)} high-bytes → {cjk} CJK chars)",
