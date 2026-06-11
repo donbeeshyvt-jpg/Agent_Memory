@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import threading
 import time
 import gc
@@ -15,6 +16,34 @@ from urllib import error as url_error
 from urllib import request as url_request
 
 from agent_memory.llm_routing import load_llm_router_config, resolve_llm_route
+
+
+def _repair_provider_mojibake(text: str) -> str:
+    """V3-O.15.46 (2026-06-11 實際發生): openrouter 上游 provider 偶發 double-encoding
+    (UTF-8 bytes 被當 Latin-1 解後回傳) → 整段回覆變「å\\x94\\x94å\\x99\\x97」系亂碼.
+    中招案例: step15 主聊兩 turn (28s/24s 慢 provider) + teaching_detector concept=ç¨±å¼.
+    我方 _post_json 是顯式 decode("utf-8"), 問題在 provider 回的 JSON 字串本身已亂.
+
+    三重門檻確定性偵測 + 還原 (零誤傷):
+      1. Latin-1 高位字元 (U+0080~U+00FF) ≥ 4 個且占比 ≥ 30% (正常中文回覆趨近 0)
+      2. encode('latin-1') 嚴格成功 (正常文含 CJK/emoji 必炸 → 不動原文)
+      3. 還原後 CJK ≥ 2 字 (確認還原方向正確; 真歐文 latin-1 內容 decode utf-8 會炸在門檻 2 後)
+    """
+    if not text:
+        return text
+    high = sum(1 for ch in text if "" <= ch <= "ÿ")
+    if high < 4 or high / len(text) < 0.3:
+        return text
+    try:
+        repaired = text.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return text
+    cjk = sum(1 for ch in repaired if "一" <= ch <= "鿿")
+    if cjk >= 2:
+        print(f"[llm_client] ⚠ provider mojibake repaired ({high}/{len(text)} high-bytes → {cjk} CJK chars)",
+              file=sys.stderr, flush=True)
+        return repaired
+    return text
 
 
 class LLMClientError(RuntimeError):
@@ -522,22 +551,22 @@ class LLMClient:
     ) -> str:
         kind_norm = kind.lower().strip()
         if kind_norm == "ollama":
-            return self._call_ollama(
+            out = self._call_ollama(
                 base_url=base_url,
                 model=model,
                 messages=messages,
                 temperature=temperature,
                 timeout_s=timeout_s,
             )
-        if kind_norm in {"llama_cpp_python", "llama_cpp_local"}:
-            return self._call_llama_cpp_python(
+        elif kind_norm in {"llama_cpp_python", "llama_cpp_local"}:
+            out = self._call_llama_cpp_python(
                 provider_cfg=provider_cfg,
                 model=model,
                 messages=messages,
                 temperature=temperature,
             )
-        if kind_norm == "anthropic":
-            return self._call_anthropic(
+        elif kind_norm == "anthropic":
+            out = self._call_anthropic(
                 base_url=base_url,
                 model=model,
                 api_key=api_key,
@@ -545,14 +574,17 @@ class LLMClient:
                 temperature=temperature,
                 timeout_s=timeout_s,
             )
-        return self._call_openai_compatible(
-            base_url=base_url,
-            model=model,
-            api_key=api_key,
-            messages=messages,
-            temperature=temperature,
-            timeout_s=timeout_s,
-        )
+        else:
+            out = self._call_openai_compatible(
+                base_url=base_url,
+                model=model,
+                api_key=api_key,
+                messages=messages,
+                temperature=temperature,
+                timeout_s=timeout_s,
+            )
+        # V3-O.15.46: 所有 provider 路徑 (含 streaming) 單一匯流點 — 出口統一修 mojibake
+        return _repair_provider_mojibake(out)
 
     def _call_ollama(
         self,
