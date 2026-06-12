@@ -593,6 +593,8 @@ class LLMClient:
                 messages=messages,
                 temperature=temperature,
                 timeout_s=timeout_s,
+                # V3-O.15.49: provider config max_tokens 帶進 payload (0/缺 = 不送)
+                max_tokens=_as_int(provider_cfg.get("max_tokens"), default=0, min_value=0),
             )
         # V3-O.15.46: 所有 provider 路徑 (含 streaming) 單一匯流點 — 出口統一修 mojibake
         return _repair_provider_mojibake(out)
@@ -631,6 +633,7 @@ class LLMClient:
         temperature: float,
         timeout_s: float,
         on_token=None,  # V3-O.10 #26: optional streaming callback (token: str) -> None
+        max_tokens: int = 0,  # V3-O.15.49: >0 才送 (provider config 驅動)
     ) -> str:
         url = base_url.rstrip("/") + "/chat/completions"
         headers: dict[str, str] = {}
@@ -651,6 +654,12 @@ class LLMClient:
             "temperature": temperature,
             "stream": False,
         }
+        # ⭐ V3-O.15.49 (2026-06-12 實測 402): 不帶 max_tokens 時 openrouter 按模型輸出上限
+        # (deepseek-v4-pro=65536) 預扣授權 → 餘額 < 65536×單價 直接 402, 即使實際只要
+        # 幾百 token. llm_router.yaml providers.max_tokens 一直有寫 500 但 call 路徑沒用
+        # (V3-E5 註解宣稱有, refactor 丟失). 帶上 → 預扣縮到 500, 低餘額也能跑.
+        if max_tokens > 0:
+            payload["max_tokens"] = max_tokens
         data = _post_json(url, payload, headers=headers, timeout_s=timeout_s)
         choices = data.get("choices", [])
         if not isinstance(choices, list) or not choices:
